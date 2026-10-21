@@ -1,0 +1,187 @@
+{
+  "description": "Recommended for the owner's server: local Flash-Next on TabbyAPI for spec-writer, builder, security review, chat and scout; Claude Sonnet 5.5 for the code, ux and ui reviews; Claude Opus 5.5 approves; Claude Fable 5.1 leads plans. Needs TABBY_API_KEY and ANTHROPIC_API_KEY.",
+  "providers": {
+    "tabby": {
+      "type": "openai",
+      "base_url": "http://127.0.0.1:5000/v1",
+      "api_key_env": "TABBY_API_KEY",
+      "auth": "both",
+      "max_concurrency": 1,
+      "concurrency_scope": "run",
+      "timeout": 1800
+    },
+    "anthropic": {
+      "type": "anthropic",
+      "base_url": "https://api.anthropic.com",
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "headers": {
+        "anthropic-beta": "server-side-fallback-2026-07-01"
+      },
+      "timeout": 900
+    }
+  },
+  "models": {
+    "local": {
+      "provider": "tabby",
+      "model": "qwen3.8-flash-next",
+      "max_tokens": 16384,
+      "context_tokens": 262144,
+      "keep_reasoning": false,
+      "stream": true,
+      "extra_body": {}
+    },
+    "claude-sonnet": {
+      "provider": "anthropic",
+      "model": "claude-sonnet-5-5",
+      "max_tokens": 64000,
+      "context_tokens": 1000000,
+      "stream": true,
+      "allow_history_edits": false,
+      "eager_tools": true,
+      "extra_body": {
+        "thinking": {
+          "type": "adaptive",
+          "display": "summarized"
+        },
+        "output_config": {
+          "effort": "medium"
+        },
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "fallbacks": "default"
+      }
+    },
+    "claude-opus": {
+      "provider": "anthropic",
+      "model": "claude-opus-5-5",
+      "max_tokens": 64000,
+      "context_tokens": 1000000,
+      "stream": true,
+      "allow_history_edits": false,
+      "eager_tools": true,
+      "extra_body": {
+        "thinking": {
+          "type": "adaptive",
+          "display": "summarized"
+        },
+        "output_config": {
+          "effort": "high"
+        },
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "fallbacks": "default"
+      }
+    },
+    "claude-fable": {
+      "provider": "anthropic",
+      "model": "claude-fable-5-1",
+      "max_tokens": 64000,
+      "context_tokens": 1000000,
+      "stream": true,
+      "allow_history_edits": false,
+      "eager_tools": true,
+      "extra_body": {
+        "thinking": {
+          "type": "adaptive",
+          "display": "summarized"
+        },
+        "output_config": {
+          "effort": "high"
+        },
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "fallbacks": "default"
+      }
+    },
+    "opus": {
+      "provider": "tabby",
+      "model": "qwen3.8-flash-next",
+      "max_tokens": 16384,
+      "context_tokens": 262144,
+      "keep_reasoning": false,
+      "stream": true,
+      "extra_body": {}
+    },
+    "sonnet": {
+      "provider": "anthropic",
+      "model": "claude-sonnet-5-5",
+      "max_tokens": 64000,
+      "context_tokens": 1000000,
+      "stream": true,
+      "allow_history_edits": false,
+      "eager_tools": true,
+      "extra_body": {
+        "thinking": {
+          "type": "adaptive",
+          "display": "summarized"
+        },
+        "output_config": {
+          "effort": "medium"
+        },
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "fallbacks": "default"
+      }
+    },
+    "haiku": {
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "max_tokens": 64000,
+      "context_tokens": 1000000,
+      "stream": true,
+      "allow_history_edits": false,
+      "eager_tools": true,
+      "extra_body": {
+        "thinking": {
+          "type": "adaptive",
+          "display": "summarized"
+        },
+        "output_config": {
+          "effort": "low"
+        },
+        "cache_control": {
+          "type": "ephemeral"
+        }
+      }
+    }
+  },
+  "agents": {
+    "*": {
+      "driver": "builtin"
+    },
+    "spec-writer": {
+      "model": "local"
+    },
+    "builder": {
+      "model": "local"
+    },
+    "approver": {
+      "model": "claude-opus"
+    },
+    "reviewer-security": {
+      "model": "local"
+    },
+    "reviewer-ux": {
+      "model": "claude-sonnet"
+    },
+    "reviewer-ui": {
+      "model": "claude-sonnet"
+    },
+    "reviewer-code": {
+      "model": "claude-sonnet"
+    },
+    "lead": {
+      "model": "claude-fable"
+    },
+    "coder": {
+      "model": "local"
+    },
+    "repo-scout": {
+      "model": "local"
+    }
+  }
+}

@@ -1,0 +1,83 @@
+{
+  "description": "The built-in default: DeepSeek V4 Pro on the opus tier and V4 Flash on the sonnet tier, both with thinking on, through DeepSeek's OpenAI-compatible API. Needs DEEPSEEK_API_KEY.",
+  "providers": {
+    "deepseek": {
+      "type": "openai",
+      "base_url": "https://api.deepseek.com",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "timeout": 900
+    }
+  },
+  "models": {
+    "opus": {
+      "provider": "deepseek",
+      "model": "deepseek-v4-pro",
+      "max_tokens": 32768,
+      "stream": true,
+      "extra_body": {
+        "thinking": {
+          "type": "enabled"
+        },
+        "reasoning_effort": "high"
+      }
+    },
+    "sonnet": {
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "max_tokens": 32768,
+      "stream": true,
+      "extra_body": {
+        "thinking": {
+          "type": "enabled"
+        },
+        "reasoning_effort": "high"
+      }
+    },
+    "haiku": {
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "max_tokens": 16384,
+      "stream": true,
+      "extra_body": {
+        "thinking": {
+          "type": "disabled"
+        }
+      }
+    }
+  },
+  "agents": {
+    "*": {
+      "driver": "builtin"
+    },
+    "spec-writer": {
+      "model": "opus"
+    },
+    "builder": {
+      "model": "opus"
+    },
+    "approver": {
+      "model": "opus"
+    },
+    "reviewer-security": {
+      "model": "opus"
+    },
+    "reviewer-ux": {
+      "model": "sonnet"
+    },
+    "reviewer-ui": {
+      "model": "sonnet"
+    },
+    "reviewer-code": {
+      "model": "sonnet"
+    },
+    "lead": {
+      "model": "opus"
+    },
+    "coder": {
+      "model": "opus"
+    },
+    "repo-scout": {
+      "model": "sonnet"
+    }
+  }
+}

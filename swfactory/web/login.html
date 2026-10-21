@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<title>Sign in · Software Factory</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    color-scheme: light;
+    --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
+    --font-mono: ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+    --bg: #f4f5f7; --surface: #ffffff; --surface-2: #f8f9fa; --border: #e1e4e9; --border-strong: #cbd0d8;
+    --text: #14171c; --text-2: #444a55; --text-3: #5f6672;
+    --accent: #4a51d6; --accent-hover: #3d43bf; --accent-fg: #ffffff; --ring: rgba(74, 81, 214, .55);
+    --err: #be2a2a; --err-soft: #fcebea; --err-border: #efb6b3; --code-bg: #f1f3f6; --c-cyan: #1a9bb0;
+    --shadow: 0 16px 40px rgba(16, 24, 40, .12), 0 2px 8px rgba(16, 24, 40, .05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --bg: #0b0d11; --surface: #12151a; --surface-2: #161a20; --border: #242932; --border-strong: #353b47;
+      --text: #e6e8ec; --text-2: #b2b8c2; --text-3: #8e96a2;
+      --accent: #8f95ff; --accent-hover: #a6abff; --accent-fg: #0b0d11; --ring: rgba(143, 149, 255, .6);
+      --err: #f47070; --err-soft: #2b1416; --err-border: #6a292c; --code-bg: #1a1e25; --c-cyan: #3ec3d6;
+      --shadow: 0 16px 40px rgba(0, 0, 0, .55);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #0b0d11; --surface: #12151a; --surface-2: #161a20; --border: #242932; --border-strong: #353b47;
+    --text: #e6e8ec; --text-2: #b2b8c2; --text-3: #8e96a2;
+    --accent: #8f95ff; --accent-hover: #a6abff; --accent-fg: #0b0d11; --ring: rgba(143, 149, 255, .6);
+    --err: #f47070; --err-soft: #2b1416; --err-border: #6a292c; --code-bg: #1a1e25; --c-cyan: #3ec3d6;
+    --shadow: 0 16px 40px rgba(0, 0, 0, .55);
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.55 var(--font-sans); -webkit-font-smoothing: antialiased;
+    display: grid; place-items: center; padding: 24px 16px;
+  }
+  main { width: 100%; max-width: 420px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow); padding: 28px 28px 24px; }
+  .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
+  .logo { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; color: var(--accent-fg);
+    background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 55%, var(--c-cyan))); }
+  .logo svg { width: 21px; height: 21px; fill: none; stroke: currentColor; stroke-width: 2.1; stroke-linecap: round; stroke-linejoin: round; }
+  h1 { margin: 0; font-size: 17px; font-weight: 650; letter-spacing: -.01em; }
+  .sub { margin: 2px 0 0; color: var(--text-3); font-size: 13px; }
+  label { display: block; font-size: 12px; font-weight: 600; color: var(--text-2); margin-bottom: 6px; }
+  input {
+    width: 100%; height: 38px; padding: 0 12px; border-radius: 8px;
+    border: 1px solid var(--border-strong); background: var(--surface); color: var(--text);
+    font: 13px var(--font-mono);
+  }
+  input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+  button {
+    margin-top: 14px; width: 100%; height: 38px; border-radius: 8px; border: 1px solid var(--accent);
+    background: var(--accent); color: var(--accent-fg); font: 600 14px var(--font-sans); cursor: pointer;
+  }
+  button:hover:not(:disabled) { background: var(--accent-hover); }
+  button:disabled { opacity: .6; cursor: progress; }
+  button:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+  .error { margin-top: 12px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--err-border); background: var(--err-soft); color: var(--err); font-size: 13px; }
+  .help { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--border); color: var(--text-3); font-size: 13px; }
+  .help p { margin: 0 0 10px; }
+  .help p:last-child { margin-bottom: 0; }
+  code { font: 12px var(--font-mono); background: var(--code-bg); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; color: var(--text); overflow-wrap: anywhere; }
+  pre { margin: 6px 0 0; padding: 8px 10px; border-radius: 8px; background: var(--code-bg); border: 1px solid var(--border); font: 12px/1.5 var(--font-mono); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <div class="card">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h6l3 5-3 5H4"/><path d="M13 12h7"/><path d="m17 9 3 3-3 3"/></svg></span>
+      <div>
+        <h1>Software Factory</h1>
+        <p class="sub">Sign in with your access token</p>
+      </div>
+    </div>
+    <form id="login-form" novalidate>
+      <label for="token">Access token</label>
+      <input id="token" name="token" type="password" autocomplete="current-password" spellcheck="false" autocapitalize="off" required autofocus placeholder="32 hex characters">
+      <button type="submit" id="submit">Sign in</button>
+      <div class="error" id="error" role="alert" hidden></div>
+    </form>
+    <div class="help">
+      <p><strong>Where is the token?</strong> On the server, run:</p>
+      <pre>factory url</pre>
+      <p style="margin-top:10px">It prints a login link that already contains the token: open it and you are signed in. The token is also stored as <code>server.token</code> in <code>~/.config/software-factory/config.json</code>.</p>
+      <p>Working remotely? Tunnel the port first, then open the link on this machine:</p>
+      <pre>ssh -N -L 8765:127.0.0.1:8765 you@server</pre>
+    </div>
+  </div>
+</main>
+<script>
+(function () {
+  'use strict';
+  try {
+    var t = window.localStorage.getItem('sf.theme');
+    if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+  } catch (e) { /* storage unavailable */ }
+  var form = document.getElementById('login-form');
+  var input = document.getElementById('token');
+  var submit = document.getElementById('submit');
+  var error = document.getElementById('error');
+  function showError(msg) { error.textContent = msg; error.hidden = !msg; }
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var token = input.value.trim();
+    if (!token) { showError('Paste the access token first.'); input.focus(); return; }
+    showError('');
+    submit.disabled = true;
+    submit.textContent = 'Signing in…';
+    fetch('/api/login', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({ token: token })
+    }).then(function (res) {
+      if (res.ok) {
+        // Keep a deep link (#/job/...) the visitor arrived with. Same path: reload (replace() with only a
+        // fragment would not reload the page).
+        if (window.location.pathname === '/' && !window.location.search) window.location.reload();
+        else window.location.replace('/' + window.location.hash);
+        return;
+      }
+      return res.json().catch(function () { return {}; }).then(function (data) {
+        var msg = res.status === 401 || res.status === 403
+          ? 'That token was not accepted. Check it with "factory url" on the server.'
+          : (data && data.error ? String(data.error) : 'Sign-in failed (' + res.status + ').');
+        throw new Error(msg);
+      });
+    }).catch(function (err) {
+      showError(err && err.message && err.message !== 'Failed to fetch' ? err.message : 'Cannot reach the server. Is "factory serve" running?');
+      submit.disabled = false;
+      submit.textContent = 'Sign in';
+      input.select();
+    });
+  });
+})();
+</script>
+</body>
+</html>

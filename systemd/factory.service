@@ -1,0 +1,30 @@
+# Software Factory: systemd *user* unit template.
+#
+# `./install.sh --systemd-user` renders it to ~/.config/systemd/user/factory.service:
+# ExecStart gets the absolute path of bin/factory, and the environment placeholder
+# line becomes Environment= lines with the installing shell's PATH (so agent CLIs
+# in ~/.local/bin or an npm prefix are found), plus FACTORY_PYTHON and
+# FACTORY_CONFIG when they were set.
+#
+# API keys go in ~/.config/software-factory/env (NAME=value lines, chmod 600).
+# Logs: journalctl --user -u factory -f
+# Keep it running after you log out: sudo loginctl enable-linger <user>
+
+[Unit]
+Description=Software Factory (coding agents with a web GUI)
+
+[Service]
+Type=simple
+ExecStart="@FACTORY_BIN@" serve
+WorkingDirectory=%h
+Environment=PYTHONUNBUFFERED=1
+@ENVIRONMENT@
+EnvironmentFile=-%h/.config/software-factory/env
+Restart=on-failure
+RestartSec=5
+# SIGTERM goes to the factory first, so it can stop its agents and save job state.
+KillMode=mixed
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

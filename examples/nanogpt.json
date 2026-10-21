@@ -1,0 +1,69 @@
+{
+  "description": "Claude through NanoGPT's OpenAI-format API: one NANOGPT_API_KEY for many vendors. The model ids are best guesses; check them against NanoGPT's model list.",
+  "providers": {
+    "nanogpt": {
+      "type": "openai",
+      "base_url": "https://nano-gpt.com/api/v1",
+      "api_key_env": "NANOGPT_API_KEY",
+      "timeout": 900
+    }
+  },
+  "models": {
+    "opus": {
+      "provider": "nanogpt",
+      "model": "claude-opus-5-5",
+      "max_tokens": 32768,
+      "stream": true,
+      "extra_body": {}
+    },
+    "sonnet": {
+      "provider": "nanogpt",
+      "model": "claude-sonnet-5-5",
+      "max_tokens": 32768,
+      "stream": true,
+      "extra_body": {}
+    },
+    "haiku": {
+      "provider": "nanogpt",
+      "model": "claude-haiku-5-5",
+      "max_tokens": 16384,
+      "stream": true,
+      "extra_body": {}
+    }
+  },
+  "agents": {
+    "*": {
+      "driver": "builtin"
+    },
+    "spec-writer": {
+      "model": "opus"
+    },
+    "builder": {
+      "model": "opus"
+    },
+    "approver": {
+      "model": "opus"
+    },
+    "reviewer-security": {
+      "model": "opus"
+    },
+    "reviewer-ux": {
+      "model": "sonnet"
+    },
+    "reviewer-ui": {
+      "model": "sonnet"
+    },
+    "reviewer-code": {
+      "model": "sonnet"
+    },
+    "lead": {
+      "model": "opus"
+    },
+    "coder": {
+      "model": "opus"
+    },
+    "repo-scout": {
+      "model": "sonnet"
+    }
+  }
+}

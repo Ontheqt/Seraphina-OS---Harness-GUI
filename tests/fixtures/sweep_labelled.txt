@@ -1,0 +1,111 @@
+# Labelled sentences for the Housekeeping Tracker's sweep (DESIGN.md section 32, items.SWEEP_PATTERNS).
+#
+# One sentence per line: "1<TAB>text" is a promise or an admitted gap the sweep should propose,
+# "0<TAB>text" is narration, a fact or finished work it should leave alone. The sentences are
+# written in the style of the factory's durable agent text (final replies, build.md Log and
+# Validation sections, review Checks, decision.md Why), including the narration that trips simple
+# patterns. They are not yet taken from the owner's real factory logs: replace and extend them
+# with real ones as the logs accumulate, and tune the patterns against them (the research note's
+# lesson from email commitment detection: patterns tuned on one corpus do worse on another).
+1	I could not run the UI check because the dev server needs a database.
+1	The end-to-end tests were not run; Playwright is not installed here.
+1	Left the error copy for later: it needs a product decision.
+1	TODO: handle the X-Forwarded-For spoofing case.
+1	The rate-limit section of docs/api.md still needs to be updated.
+1	I'll add the migration once the schema change is approved.
+1	Skipped the lint step for the generated files.
+1	Rate limiting for the login form is out of scope for now.
+1	Follow-up: the import command uses the same parser and needs the same fix.
+1	The other callers of parse_rate() should also be checked.
+1	We'll need to revisit the cache headers after the CDN switch.
+1	Did not get to the mobile layout.
+1	The retry logic is not tested against a real server.
+1	Remaining: the settings page still shows the old label.
+1	Unable to reproduce the flaky test locally.
+1	For now the limit is hard-coded to five requests per minute.
+1	Next step: wire the new endpoint into the admin dashboard.
+1	The Windows path handling is not verified.
+1	FIXME: the upload timeout is too short for large files.
+1	I will update the changelog when the release branch is cut.
+1	The README example still has to be updated.
+1	Couldn't check the email template rendering without SMTP credentials.
+1	The password reset flow will need to be tested end to end.
+1	The new dialog was not checked with a screen reader.
+1	Left as a follow-up: merge the two date helpers.
+1	Once the API is stable we'll add typed clients.
+1	The benchmark was skipped because it takes twenty minutes.
+1	Uploads larger than 2 GB are not handled yet; that comes later.
+1	Error messages should also be translated.
+1	The fallback for old browsers needs to be tested.
+1	I could not reach the staging server to confirm the redirect.
+1	The cleanup job is left for a later round.
+1	The admin API still needs to be checked for the same bug.
+1	We will add pagination after the data model settles.
+1	The CSV export was not tested with non-ASCII names.
+1	Didn't get to the keyboard shortcuts.
+1	The dark-mode colours should also be adjusted on the settings page.
+1	The webhook signature is not verified yet.
+1	I'll wire up the metrics once the dashboard exists.
+1	Load testing was skipped.
+1	The config migration will need to be checked on a real install.
+1	TODO: remove the feature flag after the rollout.
+1	The docs for the new flag are still missing; they need to be updated.
+1	The mobile breakpoint was not checked.
+1	I couldn't verify the fix on Safari.
+1	The old endpoint should also return the deprecation header.
+1	The flaky timeout test needs to be checked in CI.
+1	Error handling for the S3 client is a follow-up.
+1	The import of large files is not tested.
+1	We'll switch the default once the users have migrated.
+1	Nobody has measured the new query on the production data size.
+1	The settings page shows the wrong label in German, which is not part of this change.
+0	Added clearCompleted(items) to src/todo.js with a test.
+0	All 14 tests pass.
+0	I read the spec and the existing helpers first.
+0	The change touches two files: src/routes/signup.ts and its test.
+0	Ran the test suite: 32 passed.
+0	Committed as 4f1c2a9.
+0	The limit is enforced per IP address.
+0	Reviewed the diff against the spec; every criterion is covered.
+0	No new dependencies were added.
+0	The endpoint now returns 429 with a Retry-After header.
+0	I kept the existing naming conventions.
+0	The function is pure and has no side effects.
+0	Updated the docs to describe the new flag.
+0	The build passes on Node 20.
+0	Each acceptance criterion has a test.
+0	The reviewer findings from round 1 are fixed.
+0	Lint is clean for the changed files.
+0	The dev server started on port 5110 and the page renders the new button.
+0	Input is validated before it reaches the database.
+0	The new card matches the existing card style.
+0	I'll run the tests.
+0	Let me check the other callers.
+0	Now I'll read the route handler.
+0	Next, I'm opening the test file.
+0	The branch is clean and every change is committed.
+0	The helper is reused from src/lib/time.ts.
+0	Security review: no secrets, no new network calls, no auth changes.
+0	The page loads in under a second on the dev server.
+0	Approve: the change does exactly what the feature asked.
+0	The migration is reversible and was tested both ways.
+0	The test covers both the empty list and the list with only done items.
+0	Contrast ratios meet WCAG AA in both themes.
+0	The label text matches the spec.
+0	Removed the unused import from the old helper.
+0	The function name follows the repo's camelCase convention.
+0	I used the existing fetch wrapper instead of a new client.
+0	The error state shows a retry button.
+0	The diff is 48 lines.
+0	Keyboard focus moves to the dialog when it opens.
+0	The new route is registered in the router.
+0	The later of the two timestamps wins.
+0	I did not change the public API.
+0	The old code skipped blank lines, and the new code keeps that behaviour.
+0	Users who follow up within a minute are rate limited.
+0	The remaining tests pass as before.
+0	We will merge after review, as usual.
+0	The parser could not be simpler: one regular expression.
+0	Requests that arrive later than the deadline are rejected with 408.
+0	The cache is skipped for authenticated requests, as the spec says.
+0	The worker retries failed jobs later with exponential backoff, which the tests cover.

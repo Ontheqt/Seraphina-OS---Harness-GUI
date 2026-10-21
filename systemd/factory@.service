@@ -1,0 +1,40 @@
+# Software Factory as a system service running as the user named after the "@"
+# (for admins; a user unit from `./install.sh --systemd-user` needs no root).
+#
+#   sudo cp systemd/factory@.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now factory@ai-dev
+#
+# The user must have run ./install.sh first: ExecStart uses the link it creates,
+# /home/<user>/.local/bin/factory. If the home directory or the checkout is
+# elsewhere, change ExecStart and PATH with `sudo systemctl edit factory@<user>`.
+# API keys: /home/<user>/.config/software-factory/env (NAME=value lines, chmod 600).
+# Logs: journalctl -u factory@<user> -f
+
+[Unit]
+Description=Software Factory for %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=~
+ExecStart=/home/%i/.local/bin/factory serve
+Environment=PYTHONUNBUFFERED=1
+Environment=PATH=/home/%i/.local/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-/home/%i/.config/software-factory/env
+Restart=on-failure
+RestartSec=5
+# SIGTERM goes to the factory first, so it can stop its agents and save job state.
+KillMode=mixed
+TimeoutStopSec=30
+# Hardening. No ProtectHome: the factory works in the user's home (repos,
+# worktrees, ~/.config). If harness.sandbox = "bwrap" fails under this unit,
+# compare with `factory doctor` run as the user.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

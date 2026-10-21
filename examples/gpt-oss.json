@@ -1,0 +1,129 @@
+{
+  "description": "gpt-oss-120b on llama.cpp (reasoning high) for spec-writer, security review, approver and scout; DeepSeek V4 Pro builds and leads, V4 Flash reviews in parallel. Needs DEEPSEEK_API_KEY.",
+  "providers": {
+    "llamacpp": {
+      "type": "openai",
+      "base_url": "http://127.0.0.1:8080/v1",
+      "api_key_env": null,
+      "max_concurrency": 1,
+      "concurrency_scope": "run",
+      "timeout": 1800
+    },
+    "deepseek": {
+      "type": "openai",
+      "base_url": "https://api.deepseek.com",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "timeout": 900
+    }
+  },
+  "models": {
+    "gpt-oss": {
+      "provider": "llamacpp",
+      "model": "gpt-oss-120b",
+      "max_tokens": 16384,
+      "context_tokens": 131072,
+      "keep_reasoning": true,
+      "stream": true,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "reasoning_effort": "high"
+        }
+      }
+    },
+    "deepseek-pro": {
+      "provider": "deepseek",
+      "model": "deepseek-v4-pro",
+      "max_tokens": 32768,
+      "stream": true,
+      "extra_body": {
+        "thinking": {
+          "type": "enabled"
+        },
+        "reasoning_effort": "high"
+      }
+    },
+    "deepseek-flash": {
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "max_tokens": 32768,
+      "stream": true,
+      "extra_body": {
+        "thinking": {
+          "type": "enabled"
+        },
+        "reasoning_effort": "high"
+      }
+    },
+    "opus": {
+      "provider": "llamacpp",
+      "model": "gpt-oss-120b",
+      "max_tokens": 16384,
+      "context_tokens": 131072,
+      "keep_reasoning": true,
+      "stream": true,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "reasoning_effort": "high"
+        }
+      }
+    },
+    "sonnet": {
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "max_tokens": 32768,
+      "stream": true,
+      "extra_body": {
+        "thinking": {
+          "type": "enabled"
+        },
+        "reasoning_effort": "high"
+      }
+    },
+    "haiku": {
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "max_tokens": 16384,
+      "stream": true,
+      "extra_body": {
+        "thinking": {
+          "type": "disabled"
+        }
+      }
+    }
+  },
+  "agents": {
+    "*": {
+      "driver": "builtin"
+    },
+    "spec-writer": {
+      "model": "gpt-oss"
+    },
+    "builder": {
+      "model": "deepseek-pro"
+    },
+    "approver": {
+      "model": "gpt-oss"
+    },
+    "reviewer-security": {
+      "model": "gpt-oss"
+    },
+    "reviewer-ux": {
+      "model": "deepseek-flash"
+    },
+    "reviewer-ui": {
+      "model": "deepseek-flash"
+    },
+    "reviewer-code": {
+      "model": "deepseek-flash"
+    },
+    "lead": {
+      "model": "deepseek-pro"
+    },
+    "coder": {
+      "model": "deepseek-pro"
+    },
+    "repo-scout": {
+      "model": "gpt-oss"
+    }
+  }
+}

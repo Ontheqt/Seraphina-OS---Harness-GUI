@@ -1,0 +1,20 @@
+#!/bin/sh
+# Software Factory launcher: runs the swfactory package from this checkout.
+# Works through symlinks (install.sh links it into ~/.local/bin).
+# FACTORY_PYTHON picks the interpreter (default: python3, which must be >= 3.10).
+#
+# The checkout goes on sys.path inside Python, never into PYTHONPATH: agent shells,
+# setup commands and CLI drivers inherit this environment, and the checkout's own
+# packages (its tests/, for one) must not shadow a user repo's.
+set -eu
+self=$(readlink -f "$0")
+root=$(dirname "$(dirname "$self")")
+exec "${FACTORY_PYTHON:-python3}" -c '
+import sys
+root = sys.argv.pop(1)
+if sys.path[:1] == [""]:
+    del sys.path[0]  # the working directory: its files must not shadow modules
+sys.path.insert(0, root)
+from swfactory.__main__ import main
+sys.exit(main())
+' "$root" "$@"

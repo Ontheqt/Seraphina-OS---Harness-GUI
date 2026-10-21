@@ -1,0 +1,86 @@
+{
+  "description": "All local on Ollama (qwen3-coder:30b, 262144 context, one slot, agents take turns with a hot prefix cache). Start Ollama with a large OLLAMA_CONTEXT_LENGTH. No keys.",
+  "providers": {
+    "ollama": {
+      "type": "openai",
+      "base_url": "http://127.0.0.1:11434/v1",
+      "api_key_env": null,
+      "max_concurrency": 1,
+      "concurrency_scope": "run",
+      "timeout": 1800
+    }
+  },
+  "models": {
+    "local": {
+      "provider": "ollama",
+      "model": "qwen3-coder:30b",
+      "max_tokens": 16384,
+      "context_tokens": 262144,
+      "keep_reasoning": false,
+      "stream": true,
+      "extra_body": {}
+    },
+    "opus": {
+      "provider": "ollama",
+      "model": "qwen3-coder:30b",
+      "max_tokens": 16384,
+      "context_tokens": 262144,
+      "keep_reasoning": false,
+      "stream": true,
+      "extra_body": {}
+    },
+    "sonnet": {
+      "provider": "ollama",
+      "model": "qwen3-coder:30b",
+      "max_tokens": 16384,
+      "context_tokens": 262144,
+      "keep_reasoning": false,
+      "stream": true,
+      "extra_body": {}
+    },
+    "haiku": {
+      "provider": "ollama",
+      "model": "qwen3-coder:30b",
+      "max_tokens": 16384,
+      "context_tokens": 262144,
+      "keep_reasoning": false,
+      "stream": true,
+      "extra_body": {}
+    }
+  },
+  "agents": {
+    "*": {
+      "driver": "builtin"
+    },
+    "spec-writer": {
+      "model": "local"
+    },
+    "builder": {
+      "model": "local"
+    },
+    "approver": {
+      "model": "local"
+    },
+    "reviewer-security": {
+      "model": "local"
+    },
+    "reviewer-ux": {
+      "model": "local"
+    },
+    "reviewer-ui": {
+      "model": "local"
+    },
+    "reviewer-code": {
+      "model": "local"
+    },
+    "lead": {
+      "model": "local"
+    },
+    "coder": {
+      "model": "local"
+    },
+    "repo-scout": {
+      "model": "local"
+    }
+  }
+}

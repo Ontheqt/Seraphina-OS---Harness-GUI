@@ -1,0 +1,134 @@
+{
+  "description": "Two llama.cpp servers, one model per GPU (Qwen 3.8 27B builds, Gemma 4 reviews ux, ui and code), plus Claude Opus 5.5 for security, the approver and the lead. Needs ANTHROPIC_API_KEY.",
+  "providers": {
+    "llamacpp-qwen": {
+      "type": "openai",
+      "base_url": "http://127.0.0.1:8081/v1",
+      "api_key_env": null,
+      "max_concurrency": 1,
+      "concurrency_scope": "run",
+      "timeout": 1800
+    },
+    "llamacpp-gemma": {
+      "type": "openai",
+      "base_url": "http://127.0.0.1:8082/v1",
+      "api_key_env": null,
+      "max_concurrency": 1,
+      "concurrency_scope": "run",
+      "timeout": 1800
+    },
+    "anthropic": {
+      "type": "anthropic",
+      "base_url": "https://api.anthropic.com",
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "headers": {
+        "anthropic-beta": "server-side-fallback-2026-07-01"
+      },
+      "timeout": 900
+    }
+  },
+  "models": {
+    "qwen-27b": {
+      "provider": "llamacpp-qwen",
+      "model": "qwen3.8-27b",
+      "max_tokens": 16384,
+      "context_tokens": 262144,
+      "keep_reasoning": false,
+      "stream": true,
+      "extra_body": {}
+    },
+    "gemma-4": {
+      "provider": "llamacpp-gemma",
+      "model": "gemma-4",
+      "max_tokens": 8192,
+      "context_tokens": 131072,
+      "keep_reasoning": false,
+      "stream": true,
+      "extra_body": {}
+    },
+    "claude-opus": {
+      "provider": "anthropic",
+      "model": "claude-opus-5-5",
+      "max_tokens": 64000,
+      "context_tokens": 1000000,
+      "stream": true,
+      "allow_history_edits": false,
+      "eager_tools": true,
+      "extra_body": {
+        "thinking": {
+          "type": "adaptive",
+          "display": "summarized"
+        },
+        "output_config": {
+          "effort": "high"
+        },
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "fallbacks": "default"
+      }
+    },
+    "opus": {
+      "provider": "llamacpp-qwen",
+      "model": "qwen3.8-27b",
+      "max_tokens": 16384,
+      "context_tokens": 262144,
+      "keep_reasoning": false,
+      "stream": true,
+      "extra_body": {}
+    },
+    "sonnet": {
+      "provider": "llamacpp-gemma",
+      "model": "gemma-4",
+      "max_tokens": 8192,
+      "context_tokens": 131072,
+      "keep_reasoning": false,
+      "stream": true,
+      "extra_body": {}
+    },
+    "haiku": {
+      "provider": "llamacpp-gemma",
+      "model": "gemma-4",
+      "max_tokens": 8192,
+      "context_tokens": 131072,
+      "keep_reasoning": false,
+      "stream": true,
+      "extra_body": {}
+    }
+  },
+  "agents": {
+    "*": {
+      "driver": "builtin"
+    },
+    "spec-writer": {
+      "model": "qwen-27b"
+    },
+    "builder": {
+      "model": "qwen-27b"
+    },
+    "approver": {
+      "model": "claude-opus"
+    },
+    "reviewer-security": {
+      "model": "claude-opus"
+    },
+    "reviewer-ux": {
+      "model": "gemma-4"
+    },
+    "reviewer-ui": {
+      "model": "gemma-4"
+    },
+    "reviewer-code": {
+      "model": "gemma-4"
+    },
+    "lead": {
+      "model": "claude-opus"
+    },
+    "coder": {
+      "model": "qwen-27b"
+    },
+    "repo-scout": {
+      "model": "qwen-27b"
+    }
+  }
+}

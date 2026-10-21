@@ -1,0 +1,295 @@
+{
+  "description": "All-API value routing through NanoGPT (one NANOGPT_API_KEY): Muse Spark 1.3 builds and escalates to GPT-6.1 Sol high, then xhigh, on CHANGES; four independent families review (Qwen3.8 Max security, GPT-6.1 Sol code, Claude Sonnet 5.5 UX, Gemini 4 Argon UI); Claude Opus 5.5 high writes the spec, approves and leads; MiMo V2.6 Pro scouts. Claude runs on NanoGPT's Anthropic-format endpoint, so adaptive thinking, effort and caching keep working. Prices from examples/prices/nanogpt-2026-10-21.json. Model ids are unverified: run factory doctor to check them.",
+  "providers": {
+    "nanogpt": {
+      "type": "openai",
+      "base_url": "https://nano-gpt.com/api/v1",
+      "api_key_env": "NANOGPT_API_KEY",
+      "timeout": 900
+    },
+    "nanogpt-anthropic": {
+      "type": "anthropic",
+      "base_url": "https://nano-gpt.com/api",
+      "api_key_env": "NANOGPT_API_KEY",
+      "auth": "both",
+      "timeout": 900
+    }
+  },
+  "models": {
+    "claude-opus": {
+      "provider": "nanogpt-anthropic",
+      "model": "claude-opus-5-5",
+      "max_tokens": 64000,
+      "context_tokens": 1000000,
+      "stream": true,
+      "allow_history_edits": false,
+      "eager_tools": true,
+      "extra_body": {
+        "thinking": {
+          "type": "adaptive",
+          "display": "summarized"
+        },
+        "output_config": {
+          "effort": "high"
+        },
+        "cache_control": {
+          "type": "ephemeral"
+        }
+      },
+      "price_in": 4,
+      "price_out": 20
+    },
+    "claude-sonnet": {
+      "provider": "nanogpt-anthropic",
+      "model": "claude-sonnet-5-5",
+      "max_tokens": 64000,
+      "context_tokens": 1000000,
+      "stream": true,
+      "allow_history_edits": false,
+      "eager_tools": true,
+      "extra_body": {
+        "thinking": {
+          "type": "adaptive",
+          "display": "summarized"
+        },
+        "output_config": {
+          "effort": "medium"
+        },
+        "cache_control": {
+          "type": "ephemeral"
+        }
+      },
+      "price_in": 2,
+      "price_out": 10
+    },
+    "claude-haiku": {
+      "provider": "nanogpt-anthropic",
+      "model": "claude-haiku-5-5",
+      "max_tokens": 64000,
+      "context_tokens": 1000000,
+      "stream": true,
+      "allow_history_edits": false,
+      "eager_tools": true,
+      "extra_body": {
+        "thinking": {
+          "type": "adaptive",
+          "display": "summarized"
+        },
+        "output_config": {
+          "effort": "low"
+        },
+        "cache_control": {
+          "type": "ephemeral"
+        }
+      },
+      "price_in": 0.1,
+      "price_out": 0.5
+    },
+    "gpt-sol-high": {
+      "provider": "nanogpt",
+      "model": "openai/gpt-6.1-sol",
+      "max_tokens": 32768,
+      "stream": true,
+      "extra_body": {
+        "reasoning_effort": "high"
+      },
+      "price_in": 2,
+      "price_out": 10
+    },
+    "gpt-sol-xhigh": {
+      "provider": "nanogpt",
+      "model": "openai/gpt-6.1-sol",
+      "max_tokens": 32768,
+      "stream": true,
+      "extra_body": {
+        "reasoning_effort": "xhigh"
+      },
+      "price_in": 2,
+      "price_out": 10
+    },
+    "muse-spark": {
+      "provider": "nanogpt",
+      "model": "meta/muse-spark-1.3",
+      "max_tokens": 32768,
+      "stream": true,
+      "extra_body": {},
+      "price_in": 1.25,
+      "price_out": 4.25
+    },
+    "gemini-argon": {
+      "provider": "nanogpt",
+      "model": "google/gemini-4-argon",
+      "max_tokens": 32768,
+      "stream": true,
+      "extra_body": {},
+      "price_in": 2,
+      "price_out": 10
+    },
+    "qwen-max": {
+      "provider": "nanogpt",
+      "model": "qwen/qwen3.8-max",
+      "max_tokens": 32768,
+      "stream": true,
+      "extra_body": {},
+      "price_in": 2,
+      "price_out": 6
+    },
+    "mimo": {
+      "provider": "nanogpt",
+      "model": "xiaomi/mimo-v2.6-pro",
+      "max_tokens": 32768,
+      "stream": true,
+      "extra_body": {},
+      "price_in": 0.43,
+      "price_out": 0.87
+    },
+    "opus": {
+      "provider": "nanogpt-anthropic",
+      "model": "claude-opus-5-5",
+      "max_tokens": 64000,
+      "context_tokens": 1000000,
+      "stream": true,
+      "allow_history_edits": false,
+      "eager_tools": true,
+      "extra_body": {
+        "thinking": {
+          "type": "adaptive",
+          "display": "summarized"
+        },
+        "output_config": {
+          "effort": "high"
+        },
+        "cache_control": {
+          "type": "ephemeral"
+        }
+      },
+      "price_in": 4,
+      "price_out": 20
+    },
+    "sonnet": {
+      "provider": "nanogpt-anthropic",
+      "model": "claude-sonnet-5-5",
+      "max_tokens": 64000,
+      "context_tokens": 1000000,
+      "stream": true,
+      "allow_history_edits": false,
+      "eager_tools": true,
+      "extra_body": {
+        "thinking": {
+          "type": "adaptive",
+          "display": "summarized"
+        },
+        "output_config": {
+          "effort": "medium"
+        },
+        "cache_control": {
+          "type": "ephemeral"
+        }
+      },
+      "price_in": 2,
+      "price_out": 10
+    },
+    "haiku": {
+      "provider": "nanogpt-anthropic",
+      "model": "claude-haiku-5-5",
+      "max_tokens": 64000,
+      "context_tokens": 1000000,
+      "stream": true,
+      "allow_history_edits": false,
+      "eager_tools": true,
+      "extra_body": {
+        "thinking": {
+          "type": "adaptive",
+          "display": "summarized"
+        },
+        "output_config": {
+          "effort": "low"
+        },
+        "cache_control": {
+          "type": "ephemeral"
+        }
+      },
+      "price_in": 0.1,
+      "price_out": 0.5
+    }
+  },
+  "agents": {
+    "*": {
+      "driver": "builtin"
+    },
+    "spec-writer": {
+      "model": "claude-opus",
+      "reason": {
+        "kind": "capability",
+        "text": "the spec sets the bar for every later stage: Opus 5.5 high, #1 on intelligence"
+      }
+    },
+    "builder": {
+      "model": "muse-spark",
+      "escalate": [
+        "gpt-sol-high",
+        "gpt-sol-xhigh"
+      ],
+      "reason": {
+        "kind": "cost",
+        "text": "the most tokens: Muse Spark 1.3 codes well (75.8) for $1.25/$4.25; CHANGES escalates to GPT-6.1 Sol high, then xhigh, instead of retrying"
+      }
+    },
+    "coder": {
+      "model": "muse-spark",
+      "reason": {
+        "kind": "cost",
+        "text": "interactive coding on the value coder"
+      }
+    },
+    "repo-scout": {
+      "model": "mimo",
+      "reason": {
+        "kind": "cost",
+        "text": "scouting reads much and decides little: MiMo V2.6 Pro at $0.43/$0.87"
+      }
+    },
+    "reviewer-security": {
+      "model": "qwen-max",
+      "reason": {
+        "kind": "stage-fit",
+        "text": "Qwen family (the owner's local security model's), independent of the Meta builder"
+      }
+    },
+    "reviewer-code": {
+      "model": "gpt-sol-high",
+      "reason": {
+        "kind": "stage-fit",
+        "text": "OpenAI family, independent of the builder; GPT-6.1 Sol at high reasoning"
+      }
+    },
+    "reviewer-ux": {
+      "model": "claude-sonnet",
+      "reason": {
+        "kind": "stage-fit",
+        "text": "Anthropic family: Claude Sonnet 5.5 is a fast, careful UX reviewer"
+      }
+    },
+    "reviewer-ui": {
+      "model": "gemini-argon",
+      "reason": {
+        "kind": "stage-fit",
+        "text": "Google family: Gemini 4 Argon (52.6) looks at the UI with other eyes"
+      }
+    },
+    "approver": {
+      "model": "claude-opus",
+      "reason": {
+        "kind": "capability",
+        "text": "the merge gate: independent judgment on Opus 5.5 high"
+      }
+    },
+    "lead": {
+      "model": "claude-opus",
+      "reason": {
+        "kind": "capability",
+        "text": "planning and the final review of a plan: Opus 5.5 high"
+      }
+    }
+  }
+}

@@ -1,0 +1,17 @@
+#!/bin/sh
+# sf-items: outside agents record and close their promises in the Housekeeping Tracker
+# (DESIGN.md §32). Needs SF_ITEMS_TOKEN (an agent token); SF_ITEMS_URL names the harness.
+# Works through symlinks; FACTORY_PYTHON picks the interpreter (default: python3, >= 3.10).
+# The checkout goes on sys.path inside Python, never into PYTHONPATH (see bin/factory).
+set -eu
+self=$(readlink -f "$0")
+root=$(dirname "$(dirname "$self")")
+exec "${FACTORY_PYTHON:-python3}" -c '
+import sys
+root = sys.argv.pop(1)
+if sys.path[:1] == [""]:
+    del sys.path[0]  # the working directory: its files must not shadow modules
+sys.path.insert(0, root)
+from swfactory.items_cli import main
+sys.exit(main())
+' "$root" "$@"

@@ -1,0 +1,28 @@
+{
+  "description": "Add-on, not a routing preset: adds the openwebui provider (Open WebUI's OpenAI-compatible API at http://127.0.0.1:8083/api, key OPENWEBUI_API_KEY, one slot) and the kate model entry, so the shipped kate persona chats with your Open WebUI workspace model kate through Open WebUI, which applies its prompt, settings, skills and filters live. Changes no routing. Set models.kate.model to your workspace model's id if it is not kate.",
+  "providers": {
+    "openwebui": {
+      "type": "openai",
+      "kind": "openwebui",
+      "base_url": "http://127.0.0.1:8083/api",
+      "api_key_env": "OPENWEBUI_API_KEY",
+      "auth": "bearer",
+      "max_concurrency": 1,
+      "concurrency_scope": "run",
+      "timeout": 1800
+    }
+  },
+  "models": {
+    "kate": {
+      "provider": "openwebui",
+      "model": "kate",
+      "max_tokens": 8192,
+      "context_tokens": 262144,
+      "keep_reasoning": false,
+      "stream": true,
+      "extra_body": {
+        "max_tokens": null
+      }
+    }
+  }
+}

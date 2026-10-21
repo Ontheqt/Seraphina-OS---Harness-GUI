@@ -1,0 +1,87 @@
+{
+  "description": "All local on the owner's Strata Qwen3.8-Flash-Next (127.0.0.1:18080, 262144 context, one slot). Key from STRATA_API_KEY or /etc/ai-stack/strata.env.",
+  "providers": {
+    "strata": {
+      "type": "openai",
+      "base_url": "http://127.0.0.1:18080/v1",
+      "api_key_env": "STRATA_API_KEY",
+      "api_key_file": "/etc/ai-stack/strata.env",
+      "max_concurrency": 1,
+      "concurrency_scope": "run",
+      "timeout": 1800
+    }
+  },
+  "models": {
+    "local": {
+      "provider": "strata",
+      "model": "strata",
+      "max_tokens": 16384,
+      "context_tokens": 262144,
+      "keep_reasoning": false,
+      "stream": true,
+      "extra_body": {}
+    },
+    "opus": {
+      "provider": "strata",
+      "model": "strata",
+      "max_tokens": 16384,
+      "context_tokens": 262144,
+      "keep_reasoning": false,
+      "stream": true,
+      "extra_body": {}
+    },
+    "sonnet": {
+      "provider": "strata",
+      "model": "strata",
+      "max_tokens": 16384,
+      "context_tokens": 262144,
+      "keep_reasoning": false,
+      "stream": true,
+      "extra_body": {}
+    },
+    "haiku": {
+      "provider": "strata",
+      "model": "strata",
+      "max_tokens": 16384,
+      "context_tokens": 262144,
+      "keep_reasoning": false,
+      "stream": true,
+      "extra_body": {}
+    }
+  },
+  "agents": {
+    "*": {
+      "driver": "builtin"
+    },
+    "spec-writer": {
+      "model": "local"
+    },
+    "builder": {
+      "model": "local"
+    },
+    "approver": {
+      "model": "local"
+    },
+    "reviewer-security": {
+      "model": "local"
+    },
+    "reviewer-ux": {
+      "model": "local"
+    },
+    "reviewer-ui": {
+      "model": "local"
+    },
+    "reviewer-code": {
+      "model": "local"
+    },
+    "lead": {
+      "model": "local"
+    },
+    "coder": {
+      "model": "local"
+    },
+    "repo-scout": {
+      "model": "local"
+    }
+  }
+}

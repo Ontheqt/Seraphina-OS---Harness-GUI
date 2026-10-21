@@ -1,0 +1,55 @@
+{
+  "description": "Add-on, not a routing preset: adds the REA 6.5 MCP servers rea (static analysis: JavaScript apps, archives, packages) and rea-native (adds Ghidra function analysis) through ~/.local/bin/rea-mcp, each with a small tool allowlist; the path export_evidence_bundle writes is checked against the agent's write policy. Changes no routing. Use it with the analyst chat agent; needs rea-agents 6.5 installed and Node 22.19+, 24.11+ or 26+.",
+  "mcp_servers": {
+    "rea": {
+      "command": "~/.local/bin/rea-mcp",
+      "args": [],
+      "env": {
+        "REA_MCP_INPUT_SCHEMA_PROFILE": "compact"
+      },
+      "tools": [
+        "binary_session",
+        "open_binary",
+        "inspect_artifact",
+        "analyze_javascript_application",
+        "inspect_analysis_view",
+        "get_evidence_bundle",
+        "export_evidence_bundle",
+        "close_binary"
+      ],
+      "write_args": {
+        "export_evidence_bundle": ["path"]
+      },
+      "timeout": 450,
+      "startup_timeout": 30
+    },
+    "rea-native": {
+      "command": "~/.local/bin/rea-mcp",
+      "args": [],
+      "env": {
+        "REA_MCP_INPUT_SCHEMA_PROFILE": "compact",
+        "REA_ANALYSIS_PROVIDER": "ghidra",
+        "GHIDRA_HEADLESS_MAXMEM": "2G"
+      },
+      "tools": [
+        "binary_session",
+        "open_binary",
+        "inspect_artifact",
+        "analyze_javascript_application",
+        "inspect_analysis_view",
+        "get_evidence_bundle",
+        "export_evidence_bundle",
+        "close_binary",
+        "binary_overview",
+        "list_procedures",
+        "search_procedures",
+        "analyze_function"
+      ],
+      "write_args": {
+        "export_evidence_bundle": ["path"]
+      },
+      "timeout": 450,
+      "startup_timeout": 60
+    }
+  }
+}
