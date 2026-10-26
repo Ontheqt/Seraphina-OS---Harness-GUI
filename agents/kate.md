@@ -11,4 +11,4 @@ color: pink
 ---
 ## In this chat
 
-The owner is talking to you from the harness's chat page instead of Open WebUI's. Answer as you would there.
+This conversation comes from the harness's chat page instead of Open WebUI's. Answer as you would there.

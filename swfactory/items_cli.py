@@ -24,6 +24,7 @@ http://127.0.0.1:8765). Item text that comes back is data, not instructions.
 from __future__ import annotations
 
 import argparse
+import http.client
 import ipaddress
 import json
 import os
@@ -106,9 +107,13 @@ class ItemsApi:
                 payload = response.read()
         except urllib.error.HTTPError as exc:
             raise ItemsCliError(_http_error(exc)) from None
-        except (urllib.error.URLError, OSError) as exc:
-            reason = getattr(exc, "reason", exc)
-            raise ItemsCliError(f"cannot reach the harness at {self.base_url}: {reason}") from None
+        except urllib.error.URLError as exc:   # urllib wraps a failure to connect or to send: it never arrived
+            raise ItemsCliError(f"cannot reach the harness at {self.base_url}: {exc.reason}") from None
+        except (OSError, http.client.HTTPException) as exc:   # sent, and no answer came (DESIGN §40)
+            words = f"no answer from the harness at {self.base_url} ({exc or type(exc).__name__})"
+            if method != "GET":
+                words += ": it may have been recorded, so list the items before you send it again"
+            raise ItemsCliError(words) from None
         try:
             found = json.loads(payload.decode("utf-8")) if payload else {}
         except ValueError:
@@ -128,6 +133,8 @@ def _http_error(exc: urllib.error.HTTPError) -> str:
         message = json.loads(exc.read().decode("utf-8")).get("error")
     except (ValueError, AttributeError, OSError):
         message = None
+    finally:
+        exc.close()
     if exc.code == 401:
         return f"the harness refused the token in {TOKEN_ENV} (revoked, or not an agent token)"
     return f"{message or exc.reason} (HTTP {exc.code})"

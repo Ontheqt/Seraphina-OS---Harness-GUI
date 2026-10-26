@@ -1,0 +1,122 @@
+{
+ "body": null,
+ "headers": {
+  "Connection": "close",
+  "Content-Type": "application/json"
+ },
+ "json": {
+  "block_begin": 0,
+  "block_end": 0,
+  "block_idx": 0,
+  "blocks_count": 0,
+  "blocks_done": 0,
+  "command": "sync",
+  "cpu_usage": 0,
+  "elapsed_seconds": 0,
+  "error_data": 0,
+  "error_io": 0,
+  "error_soft": 0,
+  "eta_seconds": 0,
+  "exit_code": 1,
+  "finished_at": "2026-10-25T15:08:44",
+  "health": "passed",
+  "high_command": "maintenance",
+  "log_file": "/var/log/20261025-150844-sync.log",
+  "messages": [
+   {
+    "level": "info",
+    "text": "Self-test..."
+   },
+   {
+    "level": "info",
+    "text": "Loading state from /var/content/snapraid.content..."
+   },
+   {
+    "level": "info",
+    "text": "Loaded state in 0 seconds"
+   },
+   {
+    "level": "verbose",
+    "text": "364 files"
+   },
+   {
+    "level": "verbose",
+    "text": "0 hardlinks"
+   },
+   {
+    "level": "verbose",
+    "text": "0 symlinks"
+   },
+   {
+    "level": "verbose",
+    "text": "0 empty dirs"
+   },
+   {
+    "level": "info",
+    "text": "Setting sub-second timestamps..."
+   },
+   {
+    "level": "info",
+    "text": ""
+   },
+   {
+    "level": "info",
+    "text": "0 touched files"
+   },
+   {
+    "level": "info",
+    "text": "Scanning..."
+   },
+   {
+    "level": "info",
+    "text": "Scanned d2 in 0 seconds"
+   },
+   {
+    "level": "info",
+    "text": "Scanned d1 in 0 seconds"
+   },
+   {
+    "level": "info",
+    "text": "Applying..."
+   },
+   {
+    "level": "error",
+    "text": "The file '/mnt/d2/music/d2-music-007.bin' has unexpected zero size!",
+    "type": "soft"
+   },
+   {
+    "level": "error",
+    "text": "It's possible that after a kernel crash this file was lost,",
+    "type": "soft"
+   },
+   {
+    "level": "error",
+    "text": "and you can use 'snapraid fix -f /music/d2-music-007.bin' to recover it.",
+    "type": "soft"
+   },
+   {
+    "level": "fatal",
+    "text": "If this an expected condition you can 'sync' anyway using 'snapraid --force-zero sync'",
+    "type": "soft"
+   }
+  ],
+  "number": 38,
+  "progress": 0,
+  "pulse": {
+   "activity": 683,
+   "array": 139,
+   "config": 4,
+   "current_at": "2026-10-25T15:08:43",
+   "disks": 171,
+   "tasks": 610
+  },
+  "scheduled_at": "2026-10-25T15:08:42",
+  "size_done_bytes": 0,
+  "speed_mbs": 0,
+  "started_at": "2026-10-25T15:08:44",
+  "status": "terminated"
+ },
+ "method": "GET",
+ "path": "/snapraid/v1/activity",
+ "status": 200
+}

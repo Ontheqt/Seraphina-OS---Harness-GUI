@@ -1,5 +1,5 @@
 {
-  "description": "All local on the owner's Strata Qwen3.8-Flash-Next (127.0.0.1:18080, 262144 context, one slot). Key from STRATA_API_KEY or /etc/ai-stack/strata.env.",
+  "description": "All local on the owner's Strata Qwen3.8-Flash-Next (127.0.0.1:18080, 262144 context, one slot). Key from STRATA_API_KEY or /etc/ai-stack/strata.env. The address and the key file are placeholders: your own config overrides them.",
   "providers": {
     "strata": {
       "type": "openai",

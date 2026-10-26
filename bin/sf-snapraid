@@ -1,0 +1,2929 @@
+#!/usr/bin/python3 -I
+"""sf-snapraid: the root helper of Seraphina OS Harness's disk protection panel (DESIGN.md section 41;
+docs/seraphina/BACKUPS_SNAPRAID.md section 8): the read-only reader, and the fallback while no SnapRAID Daemon is
+installed. It protects nothing. With the daemon installed only info and disks run, and neither starts a SnapRAID
+command but --version (every other verb answers daemon_runs); while a snapraid process of anyone else runs, the
+verbs that start one wait (waiting). The version policy (section 8.2): 13.x and 12.x are read; a distribution build
+that prints "v0" is 13.0 only when the package database owns that binary at 13.0-*; 14.x is read with care
+(status, smart, probe and disks; guard and list refused); 15.x is read only through the daemon; two binaries of
+different versions are refused, naming both.
+
+The owner installs a copy at /usr/local/libexec/seraphina/sf-snapraid (root, 0755) and one sudoers line lets the
+harness's user run it with no arguments at all. The request is one JSON line on standard input, at most 16 KiB:
+
+    {"v": 1, "verb": "status"}
+
+and the answer one JSON line on standard output: {"ok": true, ...}, or {"ok": false, "error": "<code>",
+"words": "<a plain sentence>"}. Exit 0: it answered; 2: it refused; 1: its own failure. The answer, never the exit
+status, carries SnapRAID's outcome. Two argument modes exist besides no arguments: `explain helper-config` and
+`explain snapraid-config` print, for the owner running his own sudo, what the root-owned .new file he is about to
+move into place allows and changes; `run <job id>` belongs to later phases' job units and is refused here.
+
+The verbs of P1 (allow class "read"): info, status, smart, probe, disks, guard (the checks G1-G11 of the design's
+section 4.2 as a report: "this sync would be held"; it never syncs), list, files, changes, job and log. Each
+SnapRAID command runs as this program's own child, bounded by a timeout, with -c CONF and -l in a run folder
+this program names; status, smart, probe, diff and list write nothing but SnapRAID's own lock. Every later verb
+(sync, scrub, stop, release, drill, check, stat, restore, aside.*, repair.bad, restore.disk) is refused:
+"not_in_this_version".
+
+What it never does: no shell; no binary, config, log or state path from the caller or from any file the harness
+stages (every one is written below); no SnapRAID command line it did not build from its verb table; no SnapRAID
+test or expert option; no config it has not validated (SnapRAID turns a smartctl line into a shell command); never
+writes the SnapRAID config; never writes, renames or deletes anything on the array; never follows a symbolic link
+on the array (the one stat it makes there, for the guard's "replaced by a similar file", walks with O_NOFOLLOW);
+never reads file contents on the array; never sends SIGKILL (a run past its time limit gets SIGINT, then SIGTERM);
+never returns a file name except from files, changes and log, a page at a time.
+
+Standard library only; never imported by the harness at run time (the tests load it by path).
+"""
+
+from __future__ import annotations
+
+import contextlib
+import dataclasses
+import errno
+import fcntl
+import hashlib
+import json
+import os
+import re
+import shlex
+import signal
+import sqlite3
+import stat
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable, Iterable
+
+VERSION = 1                 # the request and answer version (the "v" field)
+PHASE = "P2a"
+MAX_REQUEST = 16 * 1024
+PAGE = 500                  # the most entries one files or changes answer holds
+MAX_LOG_TEXT = 256 * 1024   # the most human output one log answer holds
+KEEP_RUNS = 60              # run folders and job records kept (and none older than KEEP_DAYS)
+KEEP_DAYS = 90
+KEEP_GUARDS = 30
+TIMEOUTS = {"status": 120, "smart": 120, "probe": 120, "diff": 1800, "list": 1800, "version": 15}
+STOP_GRACE = 30             # seconds after SIGINT before SIGTERM, and after SIGTERM before giving up the wait
+
+# ---------------------------------------------------------------- fixed locations (section 3.3)
+HELPER = "/usr/local/libexec/seraphina/sf-snapraid"
+BINARIES = ("/usr/bin/snapraid", "/usr/local/bin/snapraid")   # the first root-owned one that answers 13.x
+CONFS = ("/etc/snapraid.conf", "/usr/local/etc/snapraid.conf")
+HELPER_CONFIG = "/etc/seraphina/snapraid-helper.json"
+STATE = "/var/lib/seraphina-snapraid"
+RUN_DIR = "/run/seraphina-snapraid"
+HOLDS = "/run/seraphina/holds"
+SYSTEM_CONTENT = "/var/snapraid"      # the system folders a content copy may sit in: the manual's example, and a
+SYSTEM_CONTENT_LIB = "/var/lib/snapraid"   # distribution package's
+PLACEHOLDER_ROOT = "/var/lib"         # where a disk being taken out may point (section 8.3 item 2)
+DAEMON_UNITS = ("/etc/systemd/system/snapraidd.service", "/usr/lib/systemd/system/snapraidd.service",
+                "/lib/systemd/system/snapraidd.service")
+DAEMON_CONF = "/etc/snapraidd.conf"
+DAEMON_PORT = 7627
+DPKG = ("dpkg", "dpkg-query")
+DAEMON_VERBS = ("info", "disks")      # what runs while the SnapRAID Daemon is installed (section 8.1)
+WITH_CARE_VERBS = ("info", "status", "smart", "probe", "disks", "files", "changes", "job", "log")   # 14.x
+DOCKGE_STACKS = "/opt/stacks"         # Dockge's default DOCKGE_STACKS_DIR
+FORBIDDEN = ("/etc", "/usr", "/boot", "/run", "/proc", "/sys", "/dev", "/root", "/home", "/var")
+BACKUP_TOOLS = ("restic", "borg", "kopia", "timeshift", "rsnapshot", "duplicati", "rclone")
+RUNNERS = ("snapraid-runner", "snapraid-aio-script")
+# The scheduler inventory: what a command line starts (section 1.4, "directly or in a script it starts")
+PATH_DIRS = ("/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin")
+NOT_PROGRAMS = ("/proc", "/sys", "/dev")
+INTERPRETERS = ("sh", "bash", "dash", "ash", "zsh", "ksh", "busybox", "python", "perl", "ruby", "php", "node")
+SHELLS = ("sh", "bash", "dash", "ash", "zsh", "ksh", "busybox")
+WRAPPERS = ("nice", "ionice", "nohup", "chrt", "taskset", "timeout", "flock", "env", "exec", "command", "setsid",
+            "stdbuf", "chronic", "time", "systemd-inhibit", "systemd-cat", "sudo", "runuser")
+ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C", "LANG": "C"}
+
+ALLOW_CLASSES = ("read", "sync", "scrub", "restore")
+VERBS: dict[str, tuple[str, tuple[str, ...]]] = {   # verb: (allow class, the fields it takes)
+    "info": ("read", ()), "status": ("read", ()), "smart": ("read", ()), "probe": ("read", ()),
+    "disks": ("read", ()), "guard": ("read", ()), "list": ("read", ()),
+    "files": ("read", ("disk", "dir", "q", "offset")),
+    "changes": ("read", ("guard", "disk", "kind", "dir", "q", "offset")),
+    "job": ("read", ("job",)), "log": ("read", ("job", "text", "offset")),
+}
+LATER = ("sync", "scrub", "stop", "release", "drill", "check", "stat", "restore", "aside.trash", "aside.back",
+         "repair.bad", "restore.disk")
+ID_RE = {"job": re.compile(r"^J-[0-9]{1,9}$"), "guard": re.compile(r"^G-[0-9]{1,9}$")}
+CHANGE_KINDS = ("removed", "updated", "added", "moved", "copied", "restored", "replaced")
+SMARTCTL_RE = re.compile(r"^-d (sat|sat,12|sat,16|scsi|ata|nvme|usbjmicron|usbprolific|usbcypress|usbsunplus)"
+                         r"( -T permissive)? %s$")
+UUID_RE = re.compile(r"^[0-9A-Fa-f][0-9A-Fa-f-]{3,63}$")
+DISK_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+LEVELS = {"parity": 1, "1-parity": 1, "2-parity": 2, "q-parity": 2, "3-parity": 3, "r-parity": 3, "z-parity": 3,
+          "4-parity": 4, "5-parity": 5, "6-parity": 6}
+# The name SnapRAID logs a protection disk under (state.c lev_config_name), whichever keyword the config used for it:
+# a "1-parity" or "q-parity" line's SMART and probe lines say "parity" and "2-parity".
+LEVEL_NAMES = {1: "parity", 2: "2-parity", 3: "3-parity", 4: "4-parity", 5: "5-parity", 6: "6-parity"}
+KEYWORDS = ("blocksize", "block_size", "hashsize", "hash_size", "share", "pool", "content", "data", "disk", "extra",
+            "smartctl", "smartignore", "temp_limit", "temp_sleep", "nohidden", "exclude", "include", "autosave",
+            *LEVELS)   # SnapRAID 13.0's config parser (cmdline/state.c): any other keyword is fatal to it
+GUARD_DEFAULTS = {"disk_min_files": 10, "disk_percent": 5, "disk_half_percent": 50, "array_files": 100,
+                  "array_min_files": 10, "array_percent": 2, "content_free_min_mib": 1024, "smart_max_age_hours": 24}
+GUARD_BOUNDS = {"disk_min_files": (1, 1000000), "disk_percent": (1, 100), "disk_half_percent": (1, 100),
+                "array_files": (1, 10000000), "array_min_files": (1, 1000000), "array_percent": (1, 100),
+                "content_free_min_mib": (1, 1048576), "smart_max_age_hours": (1, 720)}
+GUARD_WORDS = {"disk_min_files": "Hold when files would be lost on one disk: at least this many",
+               "disk_percent": "... that are at least this share of the disk's files (%)",
+               "disk_half_percent": "Hold when this share of one disk's files would be lost, whatever the count (%)",
+               "array_files": "Hold when files would be lost across the disks: at least this many in all",
+               "array_min_files": "... or at least this many",
+               "array_percent": "... that are at least this share of all the files (%)",
+               "content_free_min_mib": "Room each copy of the file list needs, at least (MiB, or twice its size)",
+               "smart_max_age_hours": "Read the disks' health again before a run when it is older than (hours)"}
+HELPER_CONFIG_KEYS = ("v", "conf", "allow", "mounts", "guard", "stop_wait_minutes", "prehash", "placeholders", "pid1")
+# Accepted in an older settings file and ignored: the first revision's wait for a safe stop (revision 2 dropped the
+# reader's stop verb; the power-off's own wait must stay under poweroff.target's forced 30 minutes, design section 5.4)
+IGNORED_CONFIG_KEYS = ("stop_wait_minutes",)
+LOG_TAGS = frozenset((
+    "argv", "attr", "autosave", "block", "block_count", "block_noinfo", "blocksize", "collision", "command", "conf",
+    "content", "count_limit", "data", "dereference", "dir_error", "dir_fixed", "dup", "entry", "error", "file",
+    "filter", "fixed", "hardlink_error", "hardlink_fixed", "hash_error", "hash_import", "hash_summary", "hash_unknown",
+    "info_count", "info_time", "last_limit", "memory", "mode", "msg", "outofparity", "parity_error", "parity_fixed",
+    "pool", "probe", "recover_sync", "recover_unsync", "resolve", "run", "scan", "selftest", "share", "sigint", "smart",
+    "smartctl", "split", "statfs", "status", "strategy_error", "summary", "symlink_error", "symlink_fixed", "thermal",
+    "time", "time_limit", "touch", "unixtime", "unrecoverable", "uuid", "version", "zerosubsecond", *LEVELS))
+OUTCOME_WORDS = {"ok": "Done", "changes": "Done: there are changes to protect", "busy": "SnapRAID is busy",
+                 "failed": "Failed", "interrupted": "Stopped safely; it will carry on next time",
+                 "killed": "Stopped without saving", "timeout": "Took too long and was stopped",
+                 "unknown": "Ended in an unexpected way"}
+
+
+class Refused(Exception):
+    """A request the helper will not run: a code and a plain sentence (exit 2)."""
+
+    def __init__(self, code: str, words: str, **extra: Any) -> None:
+        super().__init__(words)
+        self.code = code
+        self.words = words
+        self.extra = extra
+
+
+def _unsafe(problems: list[str]) -> Refused:
+    """unsafe_install naming the first file at fault ("/usr/bin/snapraid can be changed by users other than root.")."""
+    return Refused("unsafe_install", problems[0][:1].upper() + problems[0][1:] + ".",
+                   problems=[{"path": text.split(" ")[0], "why": text} for text in problems[:20]])
+
+
+def now_iso(when: float | None = None) -> str:
+    return datetime.fromtimestamp(time.time() if when is None else when, timezone.utc) \
+        .isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+# ---------------------------------------------------------------- where everything is
+
+
+@dataclasses.dataclass(frozen=True)
+class Paths:
+    """Every location the helper reads or writes. The installed helper uses Paths() (the constants above);
+    the tests build one in a temporary tree (Paths.under), the only other way to make one."""
+
+    helper: str = HELPER
+    binaries: tuple[str, ...] = BINARIES
+    confs: tuple[str, ...] = CONFS
+    helper_config: str = HELPER_CONFIG
+    state: str = STATE
+    run_dir: str = RUN_DIR
+    holds: str = HOLDS
+    system_content: str = SYSTEM_CONTENT
+    system_content_lib: str = SYSTEM_CONTENT_LIB
+    placeholder_root: str = PLACEHOLDER_ROOT
+    daemon_conf: str = DAEMON_CONF
+    root: str = "/"                    # where the scheduler inventory, /proc and /etc/passwd are read
+    dockge_stacks: str = DOCKGE_STACKS
+    forbidden: tuple[str, ...] = FORBIDDEN
+
+    @classmethod
+    def under(cls, root: str | os.PathLike, **changes: Any) -> Paths:
+        """The same layout below root (tests)."""
+        base = str(root).rstrip("/")
+        moved = {field.name: (base + getattr(cls, field.name)) for field in dataclasses.fields(cls)
+                 if isinstance(getattr(cls, field.name, None), str) and field.name != "root"}
+        moved["binaries"] = tuple(base + path for path in BINARIES)
+        moved["confs"] = tuple(base + path for path in CONFS)
+        moved["forbidden"] = tuple(base + path for path in FORBIDDEN)
+        moved["root"] = base + "/"
+        moved.update(changes)
+        return cls(**moved)
+
+    def at(self, path: str) -> str:
+        """A system path (/etc/crontab) below root."""
+        return self.root.rstrip("/") + path
+
+
+# ---------------------------------------------------------------- the machine log (support.c, section 2.3)
+
+
+def unescape(field: str) -> str:
+    """A log field as SnapRAID wrote it before escaping (support.c esc_tag): \\d is a colon, \\n a newline,
+    \\r a carriage return and \\\\ a backslash."""
+    if "\\" not in field:
+        return field
+    out, index = [], 0
+    while index < len(field):
+        char = field[index]
+        if char == "\\" and index + 1 < len(field):
+            following = field[index + 1]
+            out.append({"d": ":", "n": "\n", "r": "\r", "\\": "\\"}.get(following, "\\" + following))
+            index += 2
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
+@dataclasses.dataclass
+class Log:
+    """A parsed machine log: every tagged line as its fields (unescaped), the messages by level, and the
+    tags SnapRAID 13.0 writes, read into typed values by the readers below."""
+
+    lines: list[list[str]] = dataclasses.field(default_factory=list)
+    messages: list[tuple[str, str]] = dataclasses.field(default_factory=list)   # (level, text), joined lines
+    stray: list[str] = dataclasses.field(default_factory=list)                  # lines that are neither
+
+    def tagged(self, tag: str) -> list[list[str]]:
+        return [line for line in self.lines if line[0] == tag]
+
+    def summary(self) -> dict[str, list[str]]:
+        """summary:<key>:<values...> as {key: [values]} (the last one wins)."""
+        return {line[1]: line[2:] for line in self.lines if line[0] == "summary" and len(line) > 1}
+
+    def summary_int(self, key: str, default: int | None = None) -> int | None:
+        values = self.summary().get(key)
+        try:
+            return int(values[0]) if values else default
+        except ValueError:
+            return default
+
+    def text(self, level: str | None = None) -> str:
+        return "\n".join(text for lvl, text in self.messages if level is None or lvl == level)
+
+
+MSG_RE = re.compile(r"^msg:([a-z]+): ?(.*)$", re.DOTALL)
+
+
+def parse_log(data: bytes | str) -> Log:
+    """The whole machine log, read after the process exited (log_tag does not flush every line). A line whose
+    first field is not a tag SnapRAID writes continues the message before it (a multi-line fatal message), and a
+    message's own "msg:<level>: " inside it (two messages written on one line) is dropped."""
+    text = data.decode("utf-8", "surrogateescape") if isinstance(data, bytes) else data
+    log = Log()
+    for raw in text.split("\n"):
+        if raw == "":
+            continue
+        head = raw.split(":", 1)[0]
+        if head == "msg":
+            match = MSG_RE.match(raw)
+            if match:
+                body = re.sub(r"msg:[a-z]+: ?", "", match.group(2))
+                log.messages.append((match.group(1), body.rstrip()))
+                continue
+        if head in LOG_TAGS and ":" in raw:
+            log.lines.append([unescape(part) for part in raw.split(":")])
+            continue
+        if log.messages:
+            level, before = log.messages[-1]
+            log.messages[-1] = (level, (before + "\n" + raw.rstrip()).strip())
+        else:
+            log.stray.append(raw)
+    return log
+
+
+def outcome_of(exit_code: int | None, log: Log, out_text: str = "", *, diff: bool = False,
+               timed_out: bool = False) -> dict:
+    """How a SnapRAID run ended (section 3.6): {outcome, interrupted, words}. "Everything OK" and
+    summary:exit:ok appear after an interrupt too, so they are never read as finished; exit 1 with the lock text is
+    busy; exit 1 with a sigint: tag failed and was interrupted."""
+    interrupted = bool(log.tagged("sigint"))
+    if timed_out:
+        return {"outcome": "timeout", "interrupted": interrupted, "words": OUTCOME_WORDS["timeout"]}
+    if exit_code == 0:
+        name = "ok"
+    elif exit_code == 2 and diff:
+        name = "changes"
+    elif exit_code == 1 and "is already in use" in (log.text() + "\n" + out_text):
+        name = "busy"
+    elif exit_code == 1:
+        name = "failed"
+    elif exit_code == 130:
+        name, interrupted = "interrupted", True
+    elif exit_code in (137, -9):
+        name = "killed"
+    else:
+        name = "unknown"
+    words = OUTCOME_WORDS[name]
+    if name == "failed":
+        first = next((text for level, text in log.messages if level in ("fatal", "error") and text.strip()), "")
+        if first:
+            head = first.split("\n")[0]
+            words = f"Failed: {head[:300]}"
+        if interrupted:
+            words += " (it was also stopped part way)"
+    return {"outcome": name, "interrupted": interrupted, "words": words}
+
+
+# SnapRAID's fatal words when it cannot read the copy of the file list it opened first (state.c state_load,
+# state_read_content, decoding_error): damaged, cut short, unreadable, from a newer SnapRAID, or too few copies.
+# A corrupt first copy stops it with no fallback to another copy (DESIGN.md section 41, G4).
+CONTENT_FATAL_RE = re.compile(r"content file|Error decoding|CRC mismatch|Invalid header|expected CRC|'content' files",
+                              re.IGNORECASE)
+
+
+def content_failure(log: Log) -> str | None:
+    """Why a failed SnapRAID run could not read the file list, in plain words, when its fatal words say so (its own
+    warnings, which start "WARNING!", are not why it stopped); None for any other failure."""
+    for level, text in log.messages:
+        if level != "fatal" or text.startswith("WARNING!") or not CONTENT_FATAL_RE.search(text):
+            continue
+        if "newer version" in text:
+            return "a copy of the file list was written by a newer SnapRAID"
+        if "different disks" in text:
+            return "the copies of the file list sit on too few different disks"
+        return "SnapRAID could not read the copy of the file list it opens first: it is damaged, cut short or unreadable"
+    return None
+
+
+def _int(value: Any, default: int | None = None) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def read_status(log: Log) -> dict:
+    """The facts of a status log (status.c): the array's and each disk's counts, unsynced, unscrubbed and bad
+    blocks, and the scrub histogram (info_time:<unix time>:<blocks>:scrubbed|new)."""
+    summary = log.summary()
+    disks: dict[str, dict] = {}
+    for line in log.tagged("summary"):
+        if len(line) >= 4 and line[1].startswith("disk_"):
+            disks.setdefault(line[2], {})[line[1][5:]] = _int(line[3])
+    bad = summary.get("has_bad") or ["0", "0", "0"]
+    histogram = []
+    for line in log.tagged("info_time"):
+        if len(line) >= 3:
+            histogram.append({"time": _int(line[1]), "blocks": _int(line[2], 0),
+                              "kind": line[3] if len(line) > 3 else "scrubbed"})
+    scrubbed = [row["time"] for row in histogram if row["kind"] == "scrubbed" and row["time"]]
+    times = [row["time"] for row in histogram if row["time"]]
+    parity = {}
+    for key in ("parity_block_total", "parity_block_free"):
+        for line in log.lines:
+            if line[:2] == ["summary", key] and len(line) >= 4:
+                parity.setdefault(line[2], {})[key[13:]] = _int(line[3])
+    empty = any("The array is empty" in text for _, text in log.messages)
+    return {
+        "array_empty": empty, "block_size": log.summary_int("block_size"),
+        "parity_block_free_min": log.summary_int("parity_block_free_min"),
+        "parity": parity, "file_count": log.summary_int("file_count", 0 if empty else None),
+        "disks": {name: {"files": d.get("file_count"), "blocks": d.get("block_count"),
+                         "free_blocks": d.get("block_free"), "file_size": d.get("file_size")}
+                  for name, d in disks.items()},
+        "has_unsynced": log.summary_int("has_unsynced"), "has_unscrubbed": log.summary_int("has_unscrubbed"),
+        "has_bad": {"count": _int(bad[0], 0), "first": _int(bad[1], 0) if len(bad) > 1 else 0,
+                    "last": _int(bad[2], 0) if len(bad) > 2 else 0},
+        "histogram": histogram, "oldest_scrubbed": min(scrubbed) if scrubbed else None,
+        "newest_block": max(times) if times else None,
+        "unscrubbed_blocks": sum(row["blocks"] for row in histogram if row["kind"] == "new"),
+        "blocks": _int((log.tagged("block_count") or [[None, None]])[0][1]),
+    }
+
+
+def read_changes(log: Log) -> list[dict]:
+    """A diff's (or a sync's) scan: lines (scan.c): one entry per file and disk, in log order."""
+    out = []
+    for line in log.tagged("scan"):
+        if len(line) < 4:
+            continue
+        kind, disk = line[1], line[2]
+        if kind == "add":
+            out.append({"disk": disk, "kind": "added", "path": line[3]})
+        elif kind == "remove":
+            out.append({"disk": disk, "kind": "removed", "path": line[3]})
+        elif kind == "update":
+            out.append({"disk": disk, "kind": "updated", "path": line[3]})
+        elif kind == "move" and len(line) >= 5:
+            out.append({"disk": disk, "kind": "moved", "path": line[4], "from": line[3]})
+        elif kind == "copy" and len(line) >= 6:
+            out.append({"disk": line[4], "kind": "copied", "path": line[5], "from_disk": disk, "from": line[3]})
+        elif kind == "restore":
+            out.append({"disk": disk, "kind": "restored", "path": line[3]})
+    return out
+
+
+def read_smart(log: Log) -> dict:
+    """A smart log (device.c): each device's SnapRAID name, serial, model, size, error count, flags and the
+    estimated annual failure rate and probability. A disk without SMART data is "unknown", never healthy; bits 3 and
+    4 of smartctl's status are FAIL and PREFAIL."""
+    unsupported = any("unsupported in this platform" in text for _, text in log.messages)
+    devices: dict[str, dict] = {}
+    for line in log.lines:
+        if line[0] == "smart" and len(line) >= 3:
+            devices.setdefault(line[2], {"device": line[1], "name": line[2]})
+        elif line[0] == "attr" and len(line) >= 5:
+            entry = devices.setdefault(line[2], {"device": line[1], "name": line[2]})
+            key = line[3]
+            if key in ("serial", "vendor", "model"):
+                entry[key] = line[4]
+            elif key in ("size", "error", "rotationrate"):
+                entry[key] = _int(line[4])
+            elif key == "flags":
+                entry["flags"] = _int(line[4], 0)
+            elif key == "afr" and len(line) >= 6:
+                with contextlib.suppress(ValueError):
+                    entry["afr"] = float(line[4])
+                    entry["probability"] = float(line[5])
+    for entry in devices.values():
+        flags = entry.get("flags") or 0
+        if flags & 8:
+            entry["health"] = "fail"
+        elif flags & 16:
+            entry["health"] = "prefail"
+        elif flags & 3 or "serial" not in entry and "model" not in entry:
+            entry["health"] = "unknown"     # smartctl could not open or recognise it: no data is not healthy
+        else:
+            entry["health"] = "ok"
+    array = (log.summary().get("array_failure") or [None, None])
+    return {"unsupported": unsupported, "devices": devices,
+            "array_probability": float(array[1]) if len(array) > 1 and _float_ok(array[1]) else None}
+
+
+def _float_ok(value: Any) -> bool:
+    try:
+        float(value)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def read_probe(log: Log) -> dict:
+    """A probe log (device.c): each device's power state, without waking it (0 standby, 1 active)."""
+    unsupported = any("unsupported in this platform" in text for _, text in log.messages)
+    states = {0: "standby", 1: "active"}
+    devices = {line[2]: {"device": line[1], "power": states.get(_int(line[3]), "unknown")}
+               for line in log.tagged("probe") if len(line) >= 4}
+    return {"unsupported": unsupported, "devices": devices}
+
+
+def read_progress(log: Log) -> dict | None:
+    """The last run:pos line of a -G run (state.c; an internal interface pinned to 13.0):
+    BLOCKPOS:COUNTPOS:BYTES:PERCENT:ETA_S:MB_S:CPU:ELAPSED. A line that does not parse gives elapsed only."""
+    rows = [line for line in log.tagged("run") if len(line) > 1 and line[1] == "pos"]
+    if not rows:
+        return None
+    row = rows[-1][2:]
+    numbers = [_int(value) for value in row]
+    if len(numbers) != 8 or any(value is None for value in numbers):
+        return {"elapsed": numbers[-1] if numbers and numbers[-1] is not None else None}
+    return {"block": numbers[0], "count": numbers[1], "bytes": numbers[2], "percent": numbers[3],
+            "eta_seconds": numbers[4], "mb_per_second": numbers[5], "cpu": numbers[6], "elapsed": numbers[7]}
+
+
+def read_list(log: Log) -> Iterable[tuple[str, str, int, int, int, int]]:
+    """list.c's file:DISK:PATH:SIZE:MTIME_SEC:MTIME_NSEC:INODE lines."""
+    for line in log.tagged("file"):
+        if len(line) >= 7:
+            size, sec, nsec, inode = (_int(value, 0) for value in line[3:7])
+            yield line[1], line[2], size or 0, sec or 0, nsec or 0, inode or 0
+
+
+def read_fix(log: Log) -> dict:
+    """A check or fix log: each file's status line, and the fixed and unrecoverable counts."""
+    files: dict[str, int] = {}
+    for line in log.tagged("status"):
+        if len(line) >= 4:
+            files[line[1]] = files.get(line[1], 0) + 1
+    return {"files": files, "fixed": len(log.tagged("fixed")), "unrecoverable": len(log.tagged("unrecoverable")),
+            "errors": log.summary_int("error"), "exit": (log.summary().get("exit") or [None])[0]}
+
+
+# ---------------------------------------------------------------- the SnapRAID config (state.c, section 3.4 item 7)
+
+
+@dataclasses.dataclass
+class Conf:
+    """The parsed config, with each value's line number."""
+
+    data: list[tuple[str, str, int]] = dataclasses.field(default_factory=list)     # (name, dir, line)
+    parity: list[tuple[str, list[str], int]] = dataclasses.field(default_factory=list)  # (level name, files, line)
+    content: list[tuple[str, int]] = dataclasses.field(default_factory=list)
+    exclude: list[str] = dataclasses.field(default_factory=list)
+    include: list[str] = dataclasses.field(default_factory=list)
+    smartctl: list[tuple[str, str, int]] = dataclasses.field(default_factory=list)
+    smartignore: list[tuple[str, list[str], int]] = dataclasses.field(default_factory=list)
+    extra: list[tuple[str, str, int]] = dataclasses.field(default_factory=list)    # (name, dir, line), 14.0+
+    other: dict[str, str] = dataclasses.field(default_factory=dict)   # blocksize, hashsize, autosave, ...
+    problems: list[dict] = dataclasses.field(default_factory=list)
+
+    def numbers(self) -> dict[str, int]:
+        """Each data disk's number, 1-based in config order: what notices, events and the tracker name."""
+        return {name: index for index, (name, _, _) in enumerate(self.data, 1)}
+
+    def view(self) -> dict:
+        return {"data": [{"name": name, "dir": path, "number": index} for index, (name, path, _)
+                         in enumerate(self.data, 1)],
+                "parity": [{"name": name, "level": LEVELS.get(name), "files": files} for name, files, _ in self.parity],
+                "content": [path for path, _ in self.content], "exclude": list(self.exclude),
+                "include": list(self.include),
+                "smartctl": [{"name": name, "option": option} for name, option, _ in self.smartctl],
+                "smartignore": [{"name": name, "attributes": attrs} for name, attrs, _ in self.smartignore],
+                "settings": dict(self.other)}
+
+
+# A character SnapRAID reads as part of a line but a reader of the text may not: C0 and C1 controls but the tab,
+# DEL, and the Unicode line and paragraph separators. None belongs in a config the reader runs (defence in depth:
+# conf_lines already splits exactly where SnapRAID does).
+CONTROL_RE = re.compile("[\x00-\x08\x0a-\x1f\x7f-\x9f  ]")
+
+
+def conf_lines(text: str) -> list[str]:
+    """The config's lines exactly as SnapRAID 13.0 reads them (stream.c sgettok, sgetline): split at "\\n" only, and
+    one "\\r" just before a "\\n" dropped (Windows line ends). Never str.splitlines(), which also breaks at \\v, \\f, a
+    lone \\r, \\x1c-\\x1e, \\x85, U+2028 and U+2029: a line SnapRAID reads as one, say a smartctl option it hands to
+    popen() as root, would be checked here as two harmless ones."""
+    parts = text.split("\n")
+    return [part[:-1] if part.endswith("\r") and index < len(parts) - 1 else part
+            for index, part in enumerate(parts)]
+
+
+def _token(text: str) -> str:
+    """The first word as SnapRAID's sgettok reads it: up to the first space or tab."""
+    return re.split(r"[ \t]", text, maxsplit=1)[0]
+
+
+def parse_conf(text: str) -> Conf:
+    """Read a SnapRAID config line by line as 13.0's parser does (state.c state_config): the keyword up to the first
+    space or tab, the spaces and tabs after it skipped, then its value (a name and a value, or the rest of the line
+    without its final spaces and tabs). An unknown keyword is a problem, as it is fatal to SnapRAID ("Invalid
+    command ... at line N"); so are a line that starts with a space or a tab (SnapRAID: "Extra data"), a control
+    character anywhere, and a protection level named twice."""
+    conf = Conf()
+    levels: dict[int, str] = {}
+    for number, line in enumerate(conf_lines(text), 1):
+        bad = CONTROL_RE.search(line)
+        if bad:
+            conf.problems.append({"line": number, "words": f"line {number} holds a control character "
+                                                           f"(U+{ord(bad.group(0)):04X}), which SnapRAID reads as "
+                                                           f"part of the line"})
+            continue
+        if not line.strip(" \t"):
+            continue
+        if line[0] in " \t":
+            conf.problems.append({"line": number, "words": f"line {number} starts with a space or a tab, which "
+                                                           f"SnapRAID 13.0 refuses"})
+            continue
+        keyword = _token(line)
+        if keyword.startswith("#"):
+            continue
+        rest = line[len(keyword):].lstrip(" \t")
+        value = rest.rstrip(" \t")
+        if keyword not in KEYWORDS:
+            conf.problems.append({"line": number, "words": f"line {number}: '{keyword[:40]}' is not a setting "
+                                                           f"SnapRAID 13.0 knows"})
+            continue
+        if keyword in ("data", "disk", "smartctl", "extra"):
+            name = _token(rest)
+            second = rest[len(name):].lstrip(" \t").rstrip(" \t")
+            if keyword == "smartctl":
+                conf.smartctl.append((name, second, number))
+            elif keyword == "extra":
+                conf.extra.append((name, second, number))      # 14.0+: a disk SnapRAID reads, never protects
+            else:
+                conf.data.append((name, second, number))
+        elif keyword in LEVELS:
+            level = LEVELS[keyword]
+            if level in levels:
+                conf.problems.append({"line": number, "words": f"line {number}: protection level {level} is named "
+                                                               f"twice ('{levels[level]}' and '{keyword}')"})
+                continue
+            levels[level] = keyword
+            conf.parity.append((keyword, [part for part in value.split(",") if part], number))
+        elif keyword == "content":
+            conf.content.append((value, number))
+        elif keyword == "exclude":
+            conf.exclude.append(value)
+        elif keyword == "include":
+            conf.include.append(value)
+        elif keyword == "smartignore":
+            parts = value.split()
+            conf.smartignore.append((parts[0] if parts else "", parts[1:], number))
+        elif keyword == "nohidden":
+            if value:
+                conf.problems.append({"line": number, "words": f"line {number}: nohidden takes nothing after it"})
+            conf.other["nohidden"] = "yes"
+        else:
+            conf.other[{"block_size": "blocksize", "hash_size": "hashsize"}.get(keyword, keyword)] = value
+    return conf
+
+
+def _components(path: str) -> list[str]:
+    return [part for part in path.split("/") if part]
+
+
+def _plain_path(path: str) -> bool:
+    """An absolute path with no empty, '.' or '..' component (a final slash allowed) and no NUL or newline."""
+    if not path.startswith("/") or any(char in path for char in "\0\n\r"):
+        return False
+    inner = path[1:].rstrip("/")
+    return bool(inner) and all(part not in ("", ".", "..") for part in inner.split("/"))
+
+
+def _under(path: str, folder: str) -> bool:
+    folder = folder.rstrip("/")
+    return path == folder or path.startswith(folder + "/")
+
+
+@dataclasses.dataclass
+class Mount:
+    point: str
+    fstype: str
+    source: str
+    device: str        # major:minor
+    root: str = "/"    # the folder of the filesystem mounted here (mountinfo's fourth field): "/" unless a bind
+
+
+def check_conf(conf: Conf, helper_cfg: dict, mounts: list[Mount], uuid_of: Callable[[Mount], str | None],
+               paths: Paths, lstat: Callable[[str], Any] | None = None) -> list[dict]:
+    """The validation of section 3.4 item 7, on every call: [{line, words}] (empty: the config is one the helper
+    runs). Mount state is G3's: a disk whose recorded filesystem is not mounted now is not a config problem
+    (the guard holds it as disk_missing), but a path that points elsewhere than that filesystem is."""
+    problems = list(conf.problems)
+    recorded = helper_cfg.get("mounts") or {}
+    placeholders = helper_cfg.get("placeholders") or {}
+    systems = (paths.system_content.rstrip("/"), paths.system_content_lib.rstrip("/"))
+
+    def add(line: int, words: str) -> None:
+        problems.append({"line": line, "words": f"line {line}: {words}"})
+
+    def forbidden(path: str) -> str | None:
+        if any(_under(path, folder) for folder in systems):
+            return None
+        return next((folder for folder in paths.forbidden if _under(path, folder)), None)
+
+    names = set()
+    data_dirs: dict[str, str] = {}
+    for name, path, line in conf.data:
+        if not DISK_NAME_RE.fullmatch(name):
+            add(line, f"the disk name {name[:40]!r} is not a plain name")
+            continue
+        if name in names:
+            add(line, f"the disk name {name!r} is used twice")
+        names.add(name)
+        if not _plain_path(path):
+            add(line, f"disk {name}: {path[:80]!r} is not a plain absolute folder")
+            continue
+        if placeholders.get(name) == path.rstrip("/"):
+            why = placeholder_problem(path.rstrip("/"), paths, lstat)
+            if why:
+                add(line, f"disk {name} is being taken out, but its placeholder {why}")
+            continue
+        data_dirs[name] = path.rstrip("/")
+        where = forbidden(path)
+        if where:
+            add(line, f"disk {name} lies under {where}, a system folder")
+            continue
+        if name not in recorded:
+            add(line, f"disk {name} has no filesystem recorded in the reader's settings")
+            continue
+        points = _mount_points(mounts, uuid_of, recorded[name])
+        bind = next((m for m in mounts if m.point == path.rstrip("/") and m.root != "/"), None)
+        if bind is not None:
+            add(line, f"disk {name} points at {path.rstrip('/')}, which is a folder of a filesystem mounted again "
+                      f"there (a bind mount), not its own mount")
+        elif points and path.rstrip("/") not in points:
+            add(line, f"disk {name} points at {path.rstrip('/')}, but its recorded filesystem is mounted at "
+                      f"{' and '.join(points)}")
+    parity_points: list[str] = []
+    for name, files, line in conf.parity:
+        label = f"protection disk {LEVELS[name]} ('{name}')"
+        if name not in recorded:
+            add(line, f"{label} has no filesystem recorded in the reader's settings")
+            continue
+        found = _mounted(mounts, uuid_of, recorded[name])
+        points = _mount_points(mounts, uuid_of, recorded[name])
+        for path in files:
+            if not _plain_path(path) or path.endswith("/"):
+                add(line, f"{label}: {path[:80]!r} is not a plain absolute file path")
+                continue
+            where = forbidden(path)
+            if where:
+                add(line, f"{label} lies under {where}, a system folder")
+                continue
+            holder = _holder(mounts, path)
+            if found is None:
+                continue    # not mounted now: G3 holds it (disk_missing)
+            if holder is None or holder.point not in points:
+                add(line, f"{label} is not on its recorded filesystem (mounted at {' and '.join(points)})")
+            elif holder.point == "/":
+                add(line, f"{label} is on the system disk")
+            else:
+                parity_points.append(holder.point)
+        parity_points += points
+    for path, line in conf.content:
+        if not _plain_path(path) or path.endswith("/"):
+            add(line, f"the copy of the file list {path[:80]!r} is not a plain absolute file path")
+            continue
+        folder = os.path.dirname(path)
+        if folder in systems:
+            unsafe = path_problems(folder, lstat) if lstat is not None else []
+            if unsafe:
+                add(line, f"the copy of the file list {path[:80]!r}: {unsafe[0]}")
+            continue
+        if folder in data_dirs.values() or folder in parity_points:
+            continue        # at the root of a protected or protection disk (the manual's own example)
+        if os.path.basename(folder) != ".snapraid":
+            add(line, f"the copy of the file list {path[:80]!r} is neither at the root of, nor in a .snapraid folder "
+                      f"on, a protected disk, nor in {paths.system_content}/ or {paths.system_content_lib}/")
+            continue
+        disk_root = os.path.dirname(folder)
+        if disk_root not in data_dirs.values() and disk_root not in parity_points:
+            add(line, f"the copy of the file list {path[:80]!r}: its .snapraid folder is not on a protected or "
+                      f"protection disk")
+            continue
+        where = forbidden(path)
+        if where:
+            add(line, f"a copy of the file list lies under {where}, a system folder")
+    for name, option, line in conf.smartctl:
+        if not SMARTCTL_RE.fullmatch(option):
+            add(line, f"smartctl {name[:40]}: only '-d <type> %s' with a type from the reader's list (sat, "
+                      f"sat,12, sat,16, scsi, ata, nvme and the USB bridges), optionally '-T permissive', is "
+                      f"accepted, because SnapRAID runs this line as a command")
+        if name not in names and name not in LEVELS:
+            add(line, f"smartctl names {name[:40]!r}, which is no disk of this config")
+    for _name, attrs, line in conf.smartignore:
+        if not all(re.fullmatch(r"[0-9]{1,3}", attr) for attr in attrs) or not attrs:
+            add(line, "smartignore takes a disk name (or *) and attribute numbers only")
+    for key in ("pool", "share"):
+        value = conf.other.get(key)
+        if value and (not _plain_path(value) or forbidden(value)):
+            problems.append({"line": 0, "words": f"{key}: {value[:80]!r} is not a plain folder outside the system "
+                                                 f"folders"})
+    for key in ("blocksize", "hashsize", "autosave", "temp_limit", "temp_sleep"):
+        value = conf.other.get(key)
+        if value is not None and not re.fullmatch(r"[0-9]{1,10}", value):
+            problems.append({"line": 0, "words": f"{key} must be a whole number"})
+    if not conf.data:
+        problems.append({"line": 0, "words": "the config names no data disk"})
+    if not conf.parity:
+        problems.append({"line": 0, "words": "the config names no protection disk"})
+    if not conf.content:
+        problems.append({"line": 0, "words": "the config names no copy of the file list"})
+    return sorted(problems, key=lambda p: p["line"])
+
+
+def _mount_points(mounts: list[Mount], uuid_of: Callable[[Mount], str | None], uuid: str) -> list[str]:
+    """Every place the filesystem with this UUID is mounted whole (its mountinfo root is "/"): a disk mounted at
+    two sibling places is the same disk at either (section 8.3 item 3); a bind of one of its folders is not."""
+    return [m.point for m in mounts if m.root == "/" and (uuid_of(m) or "").lower() == str(uuid).lower()]
+
+
+def placeholder_problem(path: str, paths: Paths, lstat: Callable[[str], Any] | None) -> str | None:
+    """Why a disk being taken out's placeholder is not one: it must be an empty folder under /var/lib, root-owned
+    and writable by nobody else."""
+    if not _under(path, paths.placeholder_root) or path.rstrip("/") == paths.placeholder_root.rstrip("/"):
+        return f"must be a folder under {paths.placeholder_root}/"
+    if not os.path.isdir(path) or os.path.islink(path):
+        return "is not a folder"
+    unsafe = path_problems(path, lstat) if lstat is not None else []
+    if unsafe:
+        return unsafe[0]
+    try:
+        if os.listdir(path):
+            return "is not empty"
+    except OSError:
+        return "cannot be read"
+    return None
+
+
+def _mounted(mounts: list[Mount], uuid_of: Callable[[Mount], str | None], uuid: str) -> Mount | None:
+    """The mount of the filesystem with this UUID (the last one listed: it is on top), or None."""
+    found = None
+    for mount in mounts:
+        if (uuid_of(mount) or "").lower() == str(uuid).lower():
+            found = mount
+    return found
+
+
+def _holder(mounts: list[Mount], path: str) -> Mount | None:
+    """The mount a path lies on: the longest mount point it is under (the last one listed at that point)."""
+    best = None
+    for mount in mounts:
+        if _under(path, mount.point) or mount.point == "/":
+            if best is None or len(mount.point) >= len(best.point):
+                best = mount
+    return best
+
+
+def check_helper_config(cfg: Any, paths: Paths) -> list[str]:
+    """The helper's own config ({v, conf, allow, mounts, guard, prehash, placeholders?, pid1?}; an older file's
+    stop_wait_minutes is ignored): what is wrong, in plain words (empty: fine)."""
+    if not isinstance(cfg, dict):
+        return ["the reader's settings are not a JSON object"]
+    problems = []
+    unknown = sorted(set(cfg) - set(HELPER_CONFIG_KEYS))
+    if unknown:
+        problems.append(f"the reader's settings have keys it does not know: {', '.join(unknown)}")
+    if cfg.get("v") != 1:
+        problems.append("the reader's settings must say \"v\": 1")
+    if cfg.get("conf") not in paths.confs:
+        problems.append(f"conf must be one of {', '.join(paths.confs)}")
+    allow = cfg.get("allow")
+    if not isinstance(allow, list) or "read" not in allow or not set(allow) <= set(ALLOW_CLASSES):
+        problems.append("allow must be a list holding \"read\" (its other values come with later versions)")
+    mounts = cfg.get("mounts")
+    if not isinstance(mounts, dict) or not all(isinstance(k, str) and isinstance(v, str) and UUID_RE.fullmatch(v)
+                                               for k, v in mounts.items()):
+        problems.append("mounts must map each disk's SnapRAID name to its filesystem UUID")
+    guard = cfg.get("guard", {})
+    if not isinstance(guard, dict):
+        problems.append("guard must be an object of thresholds")
+    else:
+        for key, value in guard.items():
+            low, high = GUARD_BOUNDS.get(key, (None, None))
+            if low is None:
+                problems.append(f"guard.{key} is not a threshold the reader knows")
+            elif not isinstance(value, int) or isinstance(value, bool) or not low <= value <= high:
+                problems.append(f"guard.{key} must be a whole number from {low} to {high}")
+    if not isinstance(cfg.get("prehash", True), bool):
+        problems.append("prehash must be true or false")
+    if not isinstance(cfg.get("pid1", False), bool):
+        problems.append("pid1 must be true or false")
+    holders = cfg.get("placeholders", {})
+    if not isinstance(holders, dict) or not all(isinstance(k, str) and DISK_NAME_RE.fullmatch(k) and
+                                                 isinstance(v, str) and _plain_path(v) for k, v in holders.items()):
+        problems.append("placeholders must map a disk's SnapRAID name to its empty placeholder folder")
+    return problems
+
+
+# ---------------------------------------------------------------- the machine (injectable for tests)
+
+
+class System:
+    """What the helper asks of the machine besides its own files: mounts, filesystem UUIDs, free space, running
+    programs, and running a command. The tests replace parts of it."""
+
+    def __init__(self, paths: Paths) -> None:
+        self.paths = paths
+
+    def mounts(self) -> list[Mount]:
+        """/proc/self/mountinfo (octal escapes decoded), in order."""
+        out = []
+        try:
+            text = Path(self.paths.at("/proc/self/mountinfo")).read_bytes().decode("utf-8", "replace")
+        except OSError:
+            return out
+        for line in text.split("\n"):    # the kernel escapes a newline in a path as \012; other controls stay
+            left, _, right = line.partition(" - ")
+            fields, tail = left.split(), right.split()
+            if len(fields) < 5 or len(tail) < 2:
+                continue
+            point = re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), fields[4])
+            root = re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), fields[3])
+            out.append(Mount(point=point, fstype=tail[0], source=tail[1], device=fields[2], root=root))
+        return out
+
+    def uuid(self, mount: Mount) -> str | None:
+        """A mount's filesystem UUID: /dev/disk/by-uuid when it lists the device, else blkid -p (root)."""
+        cache = getattr(self, "_uuids", None)
+        if cache is None:
+            cache = self._uuids = {}
+        if mount.device in cache:
+            return cache[mount.device]
+        found = None
+        folder = self.paths.at("/dev/disk/by-uuid")
+        with contextlib.suppress(OSError):
+            for name in os.listdir(folder):
+                with contextlib.suppress(OSError):
+                    if _majmin(os.stat(os.path.join(folder, name)).st_rdev) == mount.device:
+                        found = name
+                        break
+        if found is None and mount.source.startswith("/dev/"):
+            result = self.run(["blkid", "-p", "-s", "UUID", "-o", "value", mount.source], 15)
+            value = (result[1] or "").strip()
+            found = value if UUID_RE.fullmatch(value) else None
+        cache[mount.device] = found
+        return found
+
+    def statvfs(self, path: str) -> os.statvfs_result | None:
+        try:
+            return os.statvfs(path)
+        except OSError:
+            return None
+
+    def programs(self) -> list[str]:
+        """The names of the running programs (comm, and argv[0]'s base name)."""
+        names = []
+        proc = self.paths.at("/proc")
+        with contextlib.suppress(OSError):
+            for pid in os.listdir(proc):
+                if not pid.isdigit():
+                    continue
+                with contextlib.suppress(OSError):
+                    names.append(Path(proc, pid, "comm").read_text(encoding="utf-8", errors="replace").strip())
+                with contextlib.suppress(OSError, IndexError):
+                    argv0 = Path(proc, pid, "cmdline").read_bytes().split(b"\0")[0]
+                    names.append(os.path.basename(argv0.decode("utf-8", "replace")))
+        return names
+
+    def port_open(self, port: int) -> bool:
+        """Something accepts connections on 127.0.0.1:port (the SnapRAID Daemon's default)."""
+        import socket
+
+        with contextlib.suppress(OSError):
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                return True
+        return False
+
+    def run(self, argv: list[str], timeout: float, out_path: str | None = None) -> tuple[int | None, str, bool]:
+        """(exit status, captured output, timed out). argv[0] is an absolute path or a tool the PATH of ENV finds;
+        no shell, stdin closed, cwd /, the minimal environment, its own session. Output goes to out_path (0600)
+        when given (SnapRAID's human output, which names files), else is captured. A run past timeout gets SIGINT,
+        then SIGTERM; never SIGKILL."""
+        handle = None
+        if out_path:
+            fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+            handle = os.fdopen(fd, "wb")
+        try:
+            proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=handle or subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, cwd="/", env=dict(ENV), start_new_session=True)
+        except OSError as exc:
+            if handle:
+                handle.close()
+            return None, f"{type(exc).__name__}: {exc}", False
+        timed_out = False
+        output = b""
+        try:
+            output, _ = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            for signum in (signal.SIGINT, signal.SIGTERM):
+                with contextlib.suppress(ProcessLookupError):
+                    proc.send_signal(signum)
+                try:
+                    output, _ = proc.communicate(timeout=STOP_GRACE)
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+        finally:
+            if handle:
+                handle.close()
+        code = proc.poll()
+        return code, (output or b"").decode("utf-8", "replace"), timed_out
+
+
+def _majmin(rdev: int) -> str:
+    return f"{os.major(rdev)}:{os.minor(rdev)}"
+
+
+# ---------------------------------------------------------------- the installation (section 3.4 item 6)
+
+
+def path_problems(path: str, lstat: Callable[[str], Any] = os.lstat) -> list[str]:
+    """Why path is not a safe root-owned file: it, every folder above it, and the same for the path with every
+    link followed, must be owned by root and writable by nobody else (a root folder with the sticky bit, like /tmp,
+    may be writable: no one else can replace a root-owned entry in it)."""
+    problems: list[str] = []
+    seen = set()
+    for candidate in dict.fromkeys((path, os.path.realpath(path))):
+        parts = _components(candidate)
+        for index in range(len(parts), -1, -1):
+            current = "/" + "/".join(parts[:index])
+            if current in seen:
+                continue
+            seen.add(current)
+            try:
+                info = lstat(current)
+            except FileNotFoundError:
+                if current == candidate:
+                    problems.append(f"{current} does not exist")
+                    break
+                continue
+            except OSError as exc:
+                problems.append(f"{current} cannot be checked ({exc.strerror})")
+                continue
+            if info.st_uid != 0:
+                problems.append(f"{current} is not owned by root")
+            elif stat.S_ISLNK(info.st_mode):
+                continue
+            elif info.st_mode & 0o022 and not (stat.S_ISDIR(info.st_mode) and info.st_mode & stat.S_ISVTX):
+                problems.append(f"{current} can be changed by users other than root")
+    return problems
+
+
+# ---------------------------------------------------------------- the helper
+
+
+@dataclasses.dataclass
+class Run:
+    """One SnapRAID run's record (jobs/<id>.json): what ran, when, how it ended."""
+
+    job: str
+    verb: str
+    command: str
+    argv: list[str]
+    started: str
+    ended: str | None = None
+    exit: int | None = None
+    outcome: str | None = None
+    interrupted: bool = False
+    words: str = ""
+    seconds: float | None = None
+
+    def view(self) -> dict:
+        return dataclasses.asdict(self)
+
+
+class Helper:
+    """One request. paths: where everything is (Paths() when installed); system: the machine; lstat: how
+    ownership is read (the tests fake root ownership); clock: time.time."""
+
+    def __init__(self, paths: Paths | None = None, system: System | None = None,
+                 lstat: Callable[[str], Any] = os.lstat, clock: Callable[[], float] = time.time) -> None:
+        self.paths = paths or Paths()
+        self.system = system or System(self.paths)
+        self.lstat = lstat
+        self.clock = clock
+        self._binary: tuple[str, str] | None = None
+        self._binary_note: str | None = None
+        self._lock_fd: int | None = None
+        self._holder: dict = {}
+
+    # -- the request -----------------------------------------------------------------------------------
+
+    def handle(self, line: bytes) -> tuple[int, dict]:
+        """(exit status, answer) for one request line."""
+        try:
+            request = self.parse_request(line)
+            return 0, self.dispatch(request)
+        except Refused as exc:
+            return 2, {"ok": False, "error": exc.code, "words": exc.words, **exc.extra}
+        except Exception as exc:  # noqa: BLE001 - its own failure: one line for the harness, exit 1
+            return 1, {"ok": False, "error": "failed", "words": f"The reader failed: {type(exc).__name__}: "
+                                                                 f"{str(exc)[:300]}"}
+
+    def parse_request(self, line: bytes) -> dict:
+        """Section 3.4 item 2: one line, at most 16 KiB, JSON, version 1, a known verb, only the fields that verb
+        names, each of the right type and shape. Unknown fields are refused, not ignored."""
+        if len(line) > MAX_REQUEST:
+            raise Refused("bad_request", "The request is longer than 16 KiB.")
+        try:
+            text = line.decode("utf-8", "strict") if isinstance(line, bytes) else line
+        except UnicodeDecodeError:
+            raise Refused("bad_request", "The request is not UTF-8 text.") from None
+        if text.count("\n") > 1 or (text.count("\n") == 1 and not text.endswith("\n")):
+            raise Refused("bad_request", "The request must be one line.")
+        try:
+            request = json.loads(text)
+        except ValueError:
+            raise Refused("bad_request", "The request is not JSON.") from None
+        if not isinstance(request, dict):
+            raise Refused("bad_request", "The request must be a JSON object.")
+        version = request.get("v")
+        if not isinstance(version, int) or isinstance(version, bool) or version != VERSION:
+            raise Refused("bad_request", "The request must say \"v\": 1.")
+        verb = request.get("verb")
+        if verb in LATER:
+            raise Refused("not_in_this_version", "This reader only reads (phase P1): protecting, checking and "
+                                                 "restoring come with a later version of it.")
+        if verb not in VERBS:
+            raise Refused("unknown_verb", f"{str(verb)[:40]!r} is not something this reader does.")
+        allowed = set(VERBS[verb][1]) | {"v", "verb"}
+        unknown = sorted(str(key) for key in request if key not in allowed)
+        if unknown:
+            raise Refused("unknown_field", f"{verb} does not take {', '.join(unknown)[:120]}.")
+        for key in VERBS[verb][1]:
+            if key in request:
+                self.check_field(key, request[key])
+        return request
+
+    @staticmethod
+    def check_field(key: str, value: Any) -> None:
+        if key in ID_RE:
+            if not isinstance(value, str) or not ID_RE[key].fullmatch(value):
+                raise Refused("bad_field", f"{key} must look like {'J-12' if key == 'job' else 'G-12'}.")
+        elif key == "offset":
+            if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 10 ** 9:
+                raise Refused("bad_field", "offset must be a whole number from 0.")
+        elif key == "text":
+            if not isinstance(value, bool):
+                raise Refused("bad_field", "text must be true or false.")
+        elif key == "kind":
+            if value not in CHANGE_KINDS:
+                raise Refused("bad_field", f"kind must be one of {', '.join(CHANGE_KINDS)}.")
+        elif key == "disk":
+            if not isinstance(value, str) or not DISK_NAME_RE.fullmatch(value):
+                raise Refused("bad_field", "disk must be a disk's SnapRAID name.")
+        elif key == "q":
+            if not isinstance(value, str) or len(value) > 200 or "\0" in value:
+                raise Refused("bad_field", "q must be at most 200 characters of text.")
+        elif key == "dir":
+            check_rel_path(value)
+
+    def dispatch(self, request: dict) -> dict:
+        verb = request["verb"]
+        cfg, conf, problems = self.setup(verb)
+        allow = cfg.get("allow") if cfg else ["read"]
+        if VERBS[verb][0] not in allow:
+            raise Refused("not_allowed", f"{verb} is not allowed by the reader's settings.")
+        if verb == "info":
+            return self.info(cfg, conf, problems)
+        if cfg is None:
+            raise Refused("not_set_up", "The reader's settings are not installed yet: install them with the copy block "
+                                        "in the cockpit.")
+        if problems:
+            raise Refused("unsafe_conf", "The SnapRAID config has a line the reader will not run: "
+                                         + problems[0]["words"], problems=problems[:20])
+        if self.daemon_installed() and verb not in DAEMON_VERBS:
+            raise Refused("daemon_runs", "The protection service reads the disks now; Seraphina asks it instead.")
+        _, version = self.binary()
+        if version.startswith("14.") and verb not in WITH_CARE_VERBS:
+            raise Refused("not_for_this_version", f"SnapRAID {version} is read with care: this check waits until "
+                                                  f"runs of that version have been recorded.")
+        if verb in ("status", "smart", "probe", "guard", "list") and "snapraid" in self.system.programs():
+            raise Refused("waiting", "SnapRAID is running now; the reader waits until it ends.")
+        handler = getattr(self, "verb_" + verb)
+        return handler(request, cfg, conf)
+
+    def daemon_installed(self) -> bool:
+        """The SnapRAID Daemon is installed: its unit file exists, or something answers on its port on loopback."""
+        if any(os.path.exists(self.paths.at(unit)) for unit in DAEMON_UNITS):
+            return True
+        return self.system.port_open(DAEMON_PORT)
+
+    # -- G1: what is installed --------------------------------------------------------------------------
+
+    def setup(self, verb: str) -> tuple[dict | None, Conf | None, list[dict]]:
+        """G1 on every call: the helper, the SnapRAID binary, CONF and the helper's config are installed safely
+        (else unsafe_install, for every verb), the helper's config is well formed, and CONF's contents are
+        checked (problems: the lines at fault; info reports them, every other verb refuses)."""
+        problems = path_problems(self.paths.helper, self.lstat)
+        cfg = None
+        if os.path.lexists(self.paths.helper_config):
+            problems += path_problems(self.paths.helper_config, self.lstat)
+            cfg = self._read_json(self.paths.helper_config)
+            shape = check_helper_config(cfg, self.paths)
+            if shape and not problems:
+                raise Refused("unsafe_install", "Its settings cannot be used: " + "; ".join(shape),
+                              problems=[{"path": self.paths.helper_config, "why": why} for why in shape])
+        if problems:
+            raise _unsafe(problems)
+        self.check_binaries()
+        if cfg is None:
+            return None, None, []
+        conf_path = cfg["conf"]
+        conf_problems = path_problems(conf_path, self.lstat) if os.path.lexists(conf_path) else []
+        if conf_problems:
+            raise _unsafe(conf_problems)
+        try:
+            text = Path(conf_path).read_bytes().decode("utf-8")   # bytes: text mode would turn a lone \r into \n
+        except FileNotFoundError:
+            return cfg, None, [{"line": 0, "words": f"{conf_path} does not exist yet"}]
+        except (OSError, UnicodeDecodeError) as exc:
+            return cfg, None, [{"line": 0, "words": f"{conf_path} cannot be read ({type(exc).__name__})"}]
+        conf = parse_conf(text)
+        mounts = self.system.mounts()
+        return cfg, conf, check_conf(conf, cfg, mounts, self.system.uuid, self.paths, self.lstat)
+
+    def check_binaries(self) -> None:
+        """G1's part for SnapRAID itself, on every call (DESIGN.md section 41): when a binary sits at one of the
+        fixed places but none of those is root-owned and writable by nobody else, unsafe_install names the first.
+        An unsafe one is never run; a safe one later on the list is used instead (design section 8.8)."""
+        unsafe: list[str] = []
+        for path in self.paths.binaries:
+            if not os.path.lexists(path):
+                continue
+            problems = path_problems(path, self.lstat)
+            if not problems:
+                return
+            unsafe += problems
+        if unsafe:
+            raise _unsafe(unsafe)
+
+    def binary(self) -> tuple[str, str]:
+        """(path, version) of SnapRAID by the version policy of section 8.2, read from the binary itself: the first
+        root-owned, safe one at the fixed places. 13.x and 12.x; "v0" is 13.0 only when the package database owns
+        that very file at 13.0-*; 14.x (read with care); 15.x only while the daemon is installed. Refused
+        two_binaries when the fixed places hold different versions, unsafe_install when only unsafe ones are there,
+        no_snapraid when none answers a version this reader reads."""
+        if self._binary is not None:
+            return self._binary
+        self.check_binaries()
+        found, seen = [], []
+        for path in self.paths.binaries:
+            if not os.path.lexists(path) or path_problems(path, self.lstat):
+                continue
+            code, output, _ = self.system.run([path, "--version"], TIMEOUTS["version"])
+            match = re.search(r"snapraid v(\d+)(?:\.(\d+))?\b", output or "")
+            if code != 0 or not match:
+                seen.append(f"{path} answers {(output or '').strip()[:60]!r}")
+                continue
+            version = f"{match.group(1)}.{match.group(2)}" if match.group(2) is not None else match.group(1)
+            found.append((path, version))
+        if len({version for _, version in found}) > 1:
+            raise Refused("two_binaries", "Two SnapRAID programs of different versions are installed (" +
+                          ", ".join(f"{path} is {version}" for path, version in found) + "): keep exactly one.")
+        for path, version in found:
+            note = None
+            if version == "0":
+                package = self.package_version(path)
+                if not package or not package.startswith("13.0-"):
+                    seen.append(f"{path} prints v0 and the package database does not own it at 13.0")
+                    continue
+                version, note = "13.0", "the system's package, which does not report its own version"
+            major = int(version.split(".")[0])
+            if major in (12, 13, 14) or (major >= 15 and self.daemon_installed()):
+                self._binary = (path, version)
+                self._binary_note = note or ("read with care: some facts may be missing" if major in (12, 14) else
+                                             "read through the SnapRAID Daemon" if major >= 15 else None)
+                return self._binary
+            if major >= 15:
+                seen.append(f"{path} is SnapRAID {version}, which needs the SnapRAID Daemon, and the SnapRAID Daemon "
+                            f"is not installed")
+            else:
+                seen.append(f"{path} is SnapRAID {version}, not a version Seraphina reads")
+        raise Refused("no_snapraid", "No SnapRAID this reader reads is installed where it looks (" +
+                      ", ".join(self.paths.binaries) + ")" + (": " + "; ".join(seen) if seen else "") + ".")
+
+    def package_version(self, path: str) -> str | None:
+        """The version of the package that owns path in the package database (dpkg -S, then dpkg-query), or None:
+        never a version for a file the database does not own."""
+        code, output, _ = self.system.run(["dpkg", "-S", self._real(path)], 15)
+        owner = re.fullmatch(r"([a-z0-9][a-z0-9+.-]*)(?::[a-z0-9]+)?: " + re.escape(self._real(path)),
+                             (output or "").strip().split("\n")[0]) if code == 0 else None
+        if owner is None:
+            return None
+        code, output, _ = self.system.run(["dpkg-query", "-W", "-f", "${Version}", owner.group(1)], 15)
+        value = (output or "").strip()
+        return value if code == 0 and re.fullmatch(r"[0-9A-Za-z.+:~-]{1,64}", value) else None
+
+    def _real(self, path: str) -> str:
+        """path as the machine knows it (below the root of the tests' tree)."""
+        root = self.paths.root.rstrip("/")
+        return path[len(root):] if root and path.startswith(root + "/") else path
+
+    # -- running SnapRAID ------------------------------------------------------------------------------------
+
+    def snapraid(self, verb: str, command: str, conf_path: str, options: Iterable[str] = ()) -> tuple[Run, Log, str]:
+        """Run one SnapRAID command as this program's child: argv from the verb table (binary, -c CONF, -l in a
+        run folder this program makes, the options), its human output to a 0600 file beside the log. Returns the
+        run's record (also saved), the parsed log and the human output (at most 64 KiB, for the busy check)."""
+        binary, _ = self.binary()
+        job = self.new_id("J")
+        self.mark_lock(job=job)
+        folder = Path(self.paths.state, "runs", job)
+        folder.mkdir(mode=0o700, parents=True)
+        log_path = str(folder / "snapraid.log")
+        argv = [binary, "-c", conf_path, "-l", log_path, *options, command]
+        check_argv(argv)
+        record = Run(job=job, verb=verb, command=command, argv=argv, started=now_iso(self.clock()))
+        self.save_run(record)
+        started = time.monotonic()
+        code, _, timed_out = self.system.run(argv, TIMEOUTS.get(command, 120), str(folder / "snapraid.out"))
+        try:
+            log = parse_log(Path(log_path).read_bytes())
+        except OSError:
+            log = Log()
+        try:
+            with open(folder / "snapraid.out", "rb") as handle:
+                out_text = handle.read(65536).decode("utf-8", "replace")
+        except OSError:
+            out_text = ""
+        ended = outcome_of(code, log, out_text, diff=command == "diff", timed_out=timed_out)
+        record.ended, record.exit, record.seconds = now_iso(self.clock()), code, round(time.monotonic() - started, 1)
+        record.outcome, record.interrupted, record.words = ended["outcome"], ended["interrupted"], ended["words"]
+        self.save_run(record)
+        self.prune()
+        return record, log, out_text
+
+    def save_run(self, record: Run) -> None:
+        self._write_json(Path(self.paths.state, "jobs", f"{record.job}.json"), record.view())
+
+    def new_id(self, kind: str) -> str:
+        """The next J-N or G-N, under its own lock (smart and probe run beside a job)."""
+        Path(self.paths.state).mkdir(mode=0o700, parents=True, exist_ok=True)
+        lock = os.open(os.path.join(self.paths.state, "ids.lock"), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            path = Path(self.paths.state, "ids.json")
+            ids = self._read_json(str(path)) or {}
+            number = int(ids.get(kind) or 0) + 1
+            ids[kind] = number
+            self._write_json(path, ids)
+            return f"{kind}-{number}"
+        finally:
+            os.close(lock)
+
+    def prune(self) -> None:
+        """The helper removes only its own records past their retention: the newest KEEP_RUNS runs are kept,
+        none older than KEEP_DAYS; guard records past the newest KEEP_GUARDS."""
+        cutoff = self.clock() - KEEP_DAYS * 86400
+        runs = Path(self.paths.state, "runs")
+        jobs = Path(self.paths.state, "jobs")
+        numbered = sorted((int(p.name[2:]), p) for p in runs.iterdir() if ID_RE["job"].fullmatch(p.name)) \
+            if runs.is_dir() else []
+        for index, (number, folder) in enumerate(reversed(numbered)):
+            with contextlib.suppress(OSError):
+                if index >= KEEP_RUNS or folder.stat().st_mtime < cutoff:
+                    for child in folder.iterdir():
+                        if child.is_file() and not child.is_symlink():
+                            child.unlink()
+                    folder.rmdir()
+                    (jobs / f"J-{number}.json").unlink(missing_ok=True)
+        guards = Path(self.paths.state, "guard")
+        if guards.is_dir():
+            kept = sorted((int(p.stem[2:]), p) for p in guards.glob("G-*.json") if ID_RE["guard"].fullmatch(p.stem))
+            for _, path in kept[:-KEEP_GUARDS]:
+                with contextlib.suppress(OSError):
+                    path.unlink()
+
+    # -- the job lock (section 3.7) ----------------------------------------------------------------------------
+
+    @contextlib.contextmanager
+    def job_lock(self, verb: str, wait: bool = False):
+        """Hold /run/seraphina-snapraid/job.lock while a direct verb that takes SnapRAID's lock runs, its holder
+        written in it ({verb, pid, since}, then the guard's G-n and the SnapRAID run's J-n as they start). A second
+        one is refused busy with what is running and its ids; status is answered from the last result instead."""
+        Path(self.paths.run_dir).mkdir(mode=0o755, parents=True, exist_ok=True)
+        fd = os.open(os.path.join(self.paths.run_dir, "job.lock"), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+            except BlockingIOError:
+                holder = os.pread(fd, 4096, 0).decode("utf-8", "replace").strip()
+                try:
+                    running = json.loads(holder) if holder else {}
+                except ValueError:
+                    running = {}
+                running = running if isinstance(running, dict) else {}
+                ids = [str(running[key]) for key in ("guard", "job") if ID_RE[key].fullmatch(str(running.get(key)))]
+                raise Refused("busy", "Another disk protection read is running" +
+                              (f" ({', '.join(ids)})" if ids else "") + "; try again when it ends.",
+                              running=running.get("verb"), guard=running.get("guard"), job=running.get("job"),
+                              since=running.get("since")) from None
+            self._lock_fd = fd
+            self._holder = {"verb": verb, "pid": os.getpid(), "since": now_iso(self.clock())}
+            self.mark_lock()
+            yield
+            os.ftruncate(fd, 0)
+        finally:
+            self._lock_fd = None
+            os.close(fd)
+
+    def mark_lock(self, **ids: str) -> None:
+        """Name what holds the job lock now (guard=G-n, job=J-n), so a second request is told what runs."""
+        if self._lock_fd is None:
+            return
+        self._holder.update(ids)
+        os.ftruncate(self._lock_fd, 0)
+        os.pwrite(self._lock_fd, json.dumps(self._holder).encode(), 0)
+
+    # -- verbs -----------------------------------------------------------------------------------------------------
+
+    def info(self, cfg: dict | None, conf: Conf | None, problems: list[dict]) -> dict:
+        """Everything the card's setup state and the doctor need, without SnapRAID's lock: the versions, which
+        configs exist, the helper's config, the config's verdict and its parsed form, each path's mount, the other
+        schedulers, running backup tools, power holds, the content fingerprint and the last release lines. Once the
+        SnapRAID Daemon is installed it rewrites the content file at every run and this reader no longer records a
+        mark, so info neither hashes that file nor opens a copy of it on an array disk: the fingerprint is its
+        size and times only, and only the copies on the system disk are checked (section 4.3, no disk woken)."""
+        daemon = self.daemon_installed()
+        try:
+            binary, version = self.binary()
+            major = int(version.split(".")[0])
+            snapraid = {"binary": binary, "version": version, "supported": major in (13, 15) or major > 15,
+                        "read_only": major in (12, 14), "note": self._binary_note,
+                        "warning": f"SnapRAID {version} is read with care: some facts may be missing."
+                        if major in (12, 14) else None}
+        except Refused as exc:
+            snapraid = {"binary": None, "version": None, "supported": False, "warning": exc.words, "code": exc.code}
+        answer: dict[str, Any] = {
+            "ok": True, "verb": "info", "at": now_iso(self.clock()), "phase": PHASE,
+            "helper": {"path": self.paths.helper, "sha256": file_sha256(self.paths.helper)},
+            "snapraid": snapraid,
+            "configs": {path: os.path.isfile(path) for path in self.paths.confs},
+            "set_up": cfg is not None,
+            "helper_config": None if cfg is None else {
+                "conf": cfg.get("conf"), "allow": list(cfg.get("allow") or []), "mounts": dict(cfg.get("mounts") or {}),
+                "guard": {**GUARD_DEFAULTS, **(cfg.get("guard") or {})},
+                "prehash": cfg.get("prehash", True)},
+            "conf_ok": cfg is not None and conf is not None and not problems,
+            "conf_problems": problems[:50],
+            "parsed": conf.view() if conf else None,
+            "schedulers": self.inventory(conf),
+            "backups_running": self.backups_running(),
+            "holds": self.holds(),
+            "fingerprint": self.fingerprint(conf, record=False, digest=not daemon) if conf else None,
+            "releases": self.releases(),
+            "running": self.running(),
+            "daemon": self.daemon_summary(),
+            "snapraid_running": "snapraid" in self.system.programs(),
+        }
+        if conf is not None and cfg is not None:
+            answer["mounts"] = self.mount_report(conf, cfg)
+            answer["content"] = self.content_report(conf, cfg, system_disk_only=daemon)
+        return answer
+
+    def verb_status(self, request: dict, cfg: dict, conf: Conf) -> dict:
+        """snapraid status, read from its log (exit 0 in every non-fatal state, so never read as healthy), with
+        the helper's own mount check (status never touches the data disks) and the content fingerprint."""
+        try:
+            with self.job_lock("status"):
+                return self._status(cfg, conf)
+        except Refused as exc:
+            if exc.code != "busy":
+                raise
+            last = self._read_json(os.path.join(self.paths.state, "last-status.json"))
+            if not last:
+                raise
+            return {**last, "from_last": True, "busy_with": exc.extra.get("running")}
+
+    def _status(self, cfg: dict, conf: Conf) -> dict:
+        record, log, _ = self.snapraid("status", "status", cfg["conf"])
+        failed = log if record.outcome != "ok" else None
+        answer = {"ok": True, "verb": "status", "at": record.ended, "job": record.job, "outcome": record.outcome,
+                  "words": record.words, "exit": record.exit, "facts": read_status(log) if record.outcome == "ok"
+                  else None, "mounts": self.mount_report(conf, cfg), "content": self.content_report(conf, cfg, failed),
+                  "fingerprint": self.fingerprint(conf, record=True), "numbers": conf.numbers()}
+        if record.outcome == "ok":
+            self._write_json(Path(self.paths.state, "last-status.json"), answer)
+        return answer
+
+    def verb_smart(self, request: dict, cfg: dict, conf: Conf) -> dict:
+        """snapraid smart (no SnapRAID lock; runs beside a job), only with a validated config. SMART exit 0 does
+        not prove SMART was read: a disk without data is unknown."""
+        record, log, _ = self.snapraid("smart", "smart", cfg["conf"])
+        facts = read_smart(log)
+        answer = {"ok": True, "verb": "smart", "at": record.ended, "job": record.job, "outcome": record.outcome,
+                  "exit": record.exit, "words": record.words, "numbers": conf.numbers(),
+                  "unsupported": facts["unsupported"], "array_probability": facts["array_probability"],
+                  "disks": self.smart_disks(conf, facts)}
+        self._write_json(Path(self.paths.state, "last-smart.json"), {**answer, "unix": self.clock()})
+        return answer
+
+    @staticmethod
+    def smart_disks(conf: Conf, facts: dict) -> dict:
+        """Each array disk's health from a smart run, under its config name: fail, prefail, ok, or unknown (no SMART
+        data). A protection disk's lines carry SnapRAID's level name, whatever keyword the config used."""
+        out = {}
+        for name in _array_names(conf):
+            entry = facts["devices"].get(_logged_name(name))
+            if entry is None:
+                out[name] = {"health": "unknown", "why": "SMART is not supported on this machine"
+                             if facts["unsupported"] else "SMART gave no data for this disk"}
+                continue
+            out[name] = {"health": entry.get("health", "unknown"), "afr": entry.get("afr"),
+                         "probability": entry.get("probability"), "errors": entry.get("error"),
+                         "flags": entry.get("flags"), "device": entry.get("device"),
+                         "serial": entry.get("serial"), "model": entry.get("model"), "size": entry.get("size")}
+        return out
+
+    def verb_probe(self, request: dict, cfg: dict, conf: Conf) -> dict:
+        """snapraid probe: each disk's power state, without waking it."""
+        record, log, _ = self.snapraid("probe", "probe", cfg["conf"])
+        facts = read_probe(log)
+        return {"ok": True, "verb": "probe", "at": record.ended, "job": record.job, "outcome": record.outcome,
+                "unsupported": facts["unsupported"],
+                "disks": {name: (facts["devices"].get(_logged_name(name)) or {}).get("power", "unknown")
+                          for name in _array_names(conf)}}
+
+    def verb_disks(self, request: dict, cfg: dict, conf: Conf) -> dict:
+        """Each array disk's identity (lsblk -J and blkid -p, as root): its device, filesystem UUID,
+        /dev/disk/by-id name, model and serial, kept in disks.json with the last known record of a disk that has
+        gone, so a dead disk can still be named; and the whole disks that hold no mounted filesystem."""
+        code, output, _ = self.system.run(["lsblk", "-J", "-b", "-o", ("NAME,PATH,PKNAME,TYPE,SIZE,FSTYPE,UUID,"
+                                                                   "MOUNTPOINT,MODEL,SERIAL")], 30)
+        try:
+            tree = json.loads(output).get("blockdevices") or [] if code == 0 else []
+        except (ValueError, AttributeError):
+            tree = []
+        flat: list[dict] = []
+
+        def walk(nodes: list, parent: dict | None) -> None:
+            for node in nodes:
+                if isinstance(node, dict):
+                    flat.append({**node, "_parent": parent})
+                    walk(node.get("children") or [], node)
+        walk(tree, None)
+        by_id = self._by_id()
+        known = self._read_json(os.path.join(self.paths.state, "disks.json")) or {}
+        mounts = self.system.mounts()
+        recorded = cfg.get("mounts") or {}
+        seen_at = now_iso(self.clock())
+        out = []
+        roles = [(name, "data", path) for name, path, _ in conf.data] + \
+            [(name, "parity", None) for name, _, _ in conf.parity]
+        for name, role, _ in roles:
+            found = _mounted(mounts, self.system.uuid, recorded.get(name, "")) if recorded.get(name) else None
+            node = next((n for n in flat if found is not None and n.get("path") == found.source), None)
+            whole = node.get("_parent") if node and node.get("_parent") else node
+            if node is not None:
+                record = {"name": name, "role": role, "mount": found.point if found else None,
+                          "device": node.get("path"), "uuid": node.get("uuid") or recorded.get(name),
+                          "fstype": node.get("fstype"), "by_id": by_id.get(node.get("path")) or
+                          by_id.get((whole or {}).get("path")), "model": (whole or node).get("model"),
+                          "serial": (whole or node).get("serial"), "size": (whole or node).get("size"),
+                          "seen_at": seen_at, "present": True}
+                known[name] = record
+            else:
+                record = {**(known.get(name) or {"name": name, "role": role, "uuid": recorded.get(name)}),
+                          "present": False}
+            out.append(record)
+        mounted = {m.source for m in mounts}
+        spare = []
+        for node in flat:
+            if node.get("type") != "disk" or node.get("_parent") is not None:
+                continue
+            family = [node] + [n for n in flat if n.get("_parent") is node]
+            if any(n.get("path") in mounted for n in family):
+                continue
+            spare.append({"device": node.get("path"), "size": node.get("size"), "model": node.get("model"),
+                          "serial": node.get("serial"), "signature": any(n.get("fstype") for n in family)
+                          or len(family) > 1, "by_id": by_id.get(node.get("path"))})
+        self._write_json(Path(self.paths.state, "disks.json"), known)
+        return {"ok": True, "verb": "disks", "at": seen_at, "disks": out, "spare": spare,
+                "numbers": conf.numbers()}
+
+    def _by_id(self) -> dict[str, str]:
+        folder = self.paths.at("/dev/disk/by-id")
+        out: dict[str, str] = {}
+        with contextlib.suppress(OSError):
+            for name in sorted(os.listdir(folder)):
+                target = os.path.realpath(os.path.join(folder, name))
+                if target not in out or name.startswith(("ata-", "nvme-", "usb-", "scsi-")):
+                    out[target] = "/dev/disk/by-id/" + name
+        return out
+
+    def verb_list(self, request: dict, cfg: dict, conf: Conf) -> dict:
+        """snapraid -q -q -q list, turned into the root-side file index (index/latest.sqlite). Taken while status
+        reports no unfinished sync, it becomes the index of the last good sync (index/good.sqlite), which files
+        pages and G8 compares with. Counts only in the answer."""
+        with self.job_lock("list"):
+            return self._list(cfg, conf)
+
+    def _list(self, cfg: dict, conf: Conf) -> dict:
+        _, status_log, _ = self.snapraid("status", "status", cfg["conf"])
+        facts = read_status(status_log)
+        record, log, _ = self.snapraid("list", "list", cfg["conf"], ("-q", "-q", "-q"))
+        if record.outcome != "ok":
+            return {"ok": True, "verb": "list", "at": record.ended, "job": record.job, "outcome": record.outcome,
+                    "words": record.words, "files": None}
+        good = facts.get("has_unsynced") == 0 and not facts.get("array_empty")
+        counts = self.write_index(log, "latest")
+        if good:
+            self.write_index(log, "good")
+            self._write_json(Path(self.paths.state, "index", "good.json"),
+                             {"at": record.ended, "job": record.job, "files": counts})
+        return {"ok": True, "verb": "list", "at": record.ended, "job": record.job, "outcome": record.outcome,
+                "words": record.words, "files": counts, "good": good}
+
+    def write_index(self, log: Log, name: str) -> dict:
+        """index/<name>.sqlite from a list log (built beside it, then moved into place): one row per file."""
+        folder = Path(self.paths.state, "index")
+        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        tmp = folder / f".{name}.sqlite.tmp"
+        tmp.unlink(missing_ok=True)
+        db = sqlite3.connect(str(tmp))
+        counts: dict[str, int] = {}
+        try:
+            db.execute("CREATE TABLE files (disk TEXT, path TEXT, dir TEXT, raw BLOB, size INTEGER, mtime INTEGER, "
+                       "nsec INTEGER, inode INTEGER, PRIMARY KEY (disk, raw))")
+            rows = []
+            for disk, path, size, sec, nsec, inode in read_list(log):
+                raw = path.encode("utf-8", "surrogateescape")
+                shown = raw.decode("utf-8", "replace")
+                rows.append((disk, shown, os.path.dirname(shown), raw, size, sec, nsec, inode))
+                counts[disk] = counts.get(disk, 0) + 1
+            db.executemany("INSERT OR REPLACE INTO files VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows)
+            db.execute("CREATE INDEX files_dir ON files (disk, dir)")
+            db.commit()
+        finally:
+            db.close()
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, folder / f"{name}.sqlite")
+        return counts
+
+    def index(self, name: str) -> sqlite3.Connection | None:
+        path = Path(self.paths.state, "index", f"{name}.sqlite")
+        if not path.is_file():
+            return None
+        return sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+
+    def verb_files(self, request: dict, cfg: dict, conf: Conf) -> dict:
+        """One page (at most 500) of the last good sync's file index, by disk, folder and search text. One of the
+        three verbs that return file names."""
+        disk = request.get("disk")
+        names = [name for name, _, _ in conf.data]
+        if disk is not None and disk not in names:
+            raise Refused("bad_field", "disk is not a data disk of the config.")
+        db = self.index("good")
+        good = self._read_json(os.path.join(self.paths.state, "index", "good.json")) or {}
+        if db is None:
+            return {"ok": True, "verb": "files", "index": None, "entries": [], "folders": [], "total": 0}
+        offset = int(request.get("offset") or 0)
+        folder = (request.get("dir") or "").strip("/")
+        query = request.get("q")
+        where, args = [], []
+        if disk:
+            where.append("disk = ?")
+            args.append(disk)
+        if query:
+            where.append("path LIKE ? ESCAPE '\\'")
+            args.append("%" + re.sub(r"([\\%_])", r"\\\1", query) + "%")
+        elif request.get("dir") is not None:
+            where.append("dir = ?")
+            args.append(folder)
+        clause = (" WHERE " + " AND ".join(where)) if where else ""
+        try:
+            total = db.execute("SELECT COUNT(*) FROM files" + clause, args).fetchone()[0]
+            rows = db.execute("SELECT disk, path, size, mtime FROM files" + clause +
+                              " ORDER BY disk, path LIMIT ? OFFSET ?", [*args, PAGE, offset]).fetchall()
+            folders = []
+            if request.get("dir") is not None and not query:
+                prefix = (folder + "/") if folder else ""
+                sub = db.execute("SELECT disk, dir, COUNT(*) FROM files WHERE (? = '' OR dir LIKE ? ESCAPE '\\')"
+                                 + (" AND disk = ?" if disk else "") + " GROUP BY disk, dir",
+                                 [folder, re.sub(r"([\\%_])", r"\\\1", prefix) + "%", *([disk] if disk else [])])
+                seen: dict[tuple[str, str], int] = {}
+                for row_disk, row_dir, count in sub.fetchall():
+                    rest = row_dir[len(prefix):] if row_dir.startswith(prefix) else None
+                    if not rest:
+                        continue
+                    key = (row_disk, rest.split("/")[0])
+                    seen[key] = seen.get(key, 0) + count
+                folders = [{"disk": d, "name": n, "files": c} for (d, n), c in sorted(seen.items())][:PAGE]
+        finally:
+            db.close()
+        return {"ok": True, "verb": "files", "index": {"at": good.get("at"), "job": good.get("job")},
+                "total": total, "offset": offset,
+                "entries": [{"disk": d, "path": p, "size": s, "mtime": m} for d, p, s, m in rows], "folders": folders}
+
+    def verb_changes(self, request: dict, cfg: dict, conf: Conf) -> dict:
+        """One page of a guard's change list, by disk, kind, folder and search text. Names as text; the caller
+        shows them as text, never as markup."""
+        record = self.guard_record(request["guard"])
+        entries = record.get("changes") or []
+        if request.get("disk"):
+            entries = [e for e in entries if e.get("disk") == request["disk"]]
+        if request.get("kind"):
+            kind = request["kind"]
+            entries = [e for e in entries if e.get("kind") == kind or (kind == "replaced" and e.get("replaced_by"))]
+        if request.get("dir") is not None:
+            prefix = request["dir"].strip("/") + "/"
+            entries = [e for e in entries if (e.get("path") or "").startswith(prefix)]
+        if request.get("q"):
+            needle = request["q"].lower()
+            entries = [e for e in entries if needle in (e.get("path") or "").lower()]
+        offset = int(request.get("offset") or 0)
+        groups: dict[tuple[str, str, str], int] = {}
+        for entry in entries:
+            folder = "/".join((entry.get("path") or "").split("/")[:-1][:2])
+            key = (entry.get("disk") or "", folder, entry.get("kind") or "")
+            groups[key] = groups.get(key, 0) + 1
+        top = sorted(groups.items(), key=lambda pair: -pair[1])[:20]
+        return {"ok": True, "verb": "changes", "guard": request["guard"], "total": len(entries), "offset": offset,
+                "list_sha256": record.get("list_sha256"), "entries": entries[offset:offset + PAGE],
+                "report": {key: record.get(key) for key in ("guard", "at", "verdict", "reasons", "checks", "counts",
+                                                            "numbers", "first_run", "report_only", "runs")},
+                "groups": [{"disk": d, "folder": f, "kind": k, "count": c} for (d, f, k), c in top]}
+
+    def guard_record(self, guard: str) -> dict:
+        folder = os.path.join(self.paths.state, "guard")
+        record = self._read_in(folder, f"{guard}.json")
+        if record is None:
+            raise Refused("no_record", f"There is no guard record {guard}.")
+        return record
+
+    def verb_job(self, request: dict, cfg: dict, conf: Conf) -> dict:
+        """One run's record (no file names), or the latest runs without a job id."""
+        if "job" not in request:
+            jobs = Path(self.paths.state, "jobs")
+            numbered = sorted((int(p.stem[2:]), p) for p in jobs.glob("J-*.json") if ID_RE["job"].fullmatch(p.stem)) \
+                if jobs.is_dir() else []
+            runs = [self._read_json(str(path)) for _, path in numbered[-20:]]
+            return {"ok": True, "verb": "job", "jobs": [run for run in reversed(runs) if run]}
+        record = self._read_in(os.path.join(self.paths.state, "jobs"), f"{request['job']}.json")
+        if record is None:
+            raise Refused("no_record", f"There is no run {request['job']}.")
+        return {"ok": True, "verb": "job", "job": record}
+
+    def verb_log(self, request: dict, cfg: dict, conf: Conf) -> dict:
+        """With text: true, at most 256 KiB of one run's human output from an offset (it names files: the cockpit
+        shows it to the owner and keeps no copy). Without, the run's record."""
+        if "job" not in request:
+            raise Refused("bad_field", "log needs a job.")
+        folder = os.path.join(self.paths.state, "runs")
+        try:
+            dir_fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except OSError:
+            raise Refused("no_record", f"There is no run {request['job']}.") from None
+        try:
+            try:
+                run_fd = os.open(request["job"], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd)
+            except OSError:
+                raise Refused("no_record", f"There is no run {request['job']}.") from None
+            try:
+                if not request.get("text"):
+                    return {"ok": True, "verb": "log", "job": request["job"]}
+                try:
+                    out_fd = os.open("snapraid.out", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=run_fd)
+                except OSError:
+                    return {"ok": True, "verb": "log", "job": request["job"], "text": "", "offset": 0, "size": 0,
+                            "next_offset": 0, "more": False}
+                with os.fdopen(out_fd, "rb") as handle:
+                    size = os.fstat(handle.fileno()).st_size
+                    offset = int(request.get("offset") or 0)
+                    handle.seek(offset)
+                    data = handle.read(MAX_LOG_TEXT)
+                # next_offset counts the bytes read, not the decoded text: a name that is not UTF-8, or a character
+                # cut at the page's end, decodes to a different length
+                return {"ok": True, "verb": "log", "job": request["job"], "offset": offset, "size": size,
+                        "text": data.decode("utf-8", "replace"), "next_offset": offset + len(data),
+                        "more": offset + len(data) < size}
+            finally:
+                os.close(run_fd)
+        finally:
+            os.close(dir_fd)
+
+    # -- the guard as a report (section 4.2) ------------------------------------------------------------------
+
+    def verb_guard(self, request: dict, cfg: dict, conf: Conf) -> dict:
+        """The checks G1-G11 in order, read-only, as a report: "this sync would be held" (P1 never syncs). The
+        change list stays here (guard/<id>.json); the answer carries counts, reason codes and the list's hash."""
+        with self.job_lock("guard"):
+            return Guard(self, cfg, conf).run()
+
+    def _baseline(self, conf: Conf) -> None:
+        """Each data disk's used space while it matches the last sync (a diff with no changes): G11's baseline."""
+        used = {}
+        for name, path, _ in conf.data:
+            info = self.system.statvfs(path)
+            if info is not None:
+                used[name] = (info.f_blocks - info.f_bfree) * info.f_frsize
+        self._write_json(Path(self.paths.state, "index", "baseline.json"), {"at": now_iso(self.clock()), "used": used})
+
+    def _with_sizes(self, conf: Conf, changes: list[dict]) -> list[dict]:
+        """Sizes and times as the last good sync knew them (the index), and "replaced by a similar file": a removal
+        paired with an addition in the same folder whose size (a no-follow stat on the disk) is within half of it
+        either way. Still counted (encrypted copies look exactly like that)."""
+        good = self.index("good")
+        dirs = dict((name, path) for name, path, _ in conf.data)
+        try:
+            for entry in changes:
+                if good is not None and entry["kind"] in ("removed", "updated"):
+                    row = good.execute("SELECT size, mtime FROM files WHERE disk = ? AND raw = ?",
+                                       (entry["disk"], entry["path"].encode("utf-8", "surrogateescape"))).fetchone()
+                    if row:
+                        entry["size"], entry["mtime"] = row
+        finally:
+            if good is not None:
+                good.close()
+        added: dict[tuple[str, str], list[dict]] = {}
+        for entry in changes:
+            if entry["kind"] == "added":
+                added.setdefault((entry["disk"], os.path.dirname(entry["path"])), []).append(entry)
+        for entry in changes:
+            if entry["kind"] != "removed" or not entry.get("size"):
+                continue
+            for candidate in added.get((entry["disk"], os.path.dirname(entry["path"])), []):
+                if candidate.get("replaces"):
+                    continue    # one addition replaces at most one removal
+                if "size" not in candidate:
+                    info = nofollow_stat(dirs.get(candidate["disk"], ""), candidate["path"])
+                    candidate["size"] = info.st_size if info is not None else None
+                size = candidate.get("size")
+                if size is not None and entry["size"] / 2 <= size <= entry["size"] * 2:
+                    entry["replaced_by"] = candidate["path"]
+                    candidate["replaces"] = entry["path"]
+                    break
+        return changes
+
+    # -- facts beside SnapRAID ----------------------------------------------------------------------------
+
+    def mount_report(self, conf: Conf, cfg: dict) -> dict:
+        """G3's facts for every data and parity disk: {name: {path, mounted, uuid_ok, fstype, role, number}}.
+        A data disk is mounted when its folder is a mount point; parity when its file's folder lies on a mount
+        other than / . uuid_ok: that mount's filesystem is the one recorded at setup."""
+        mounts = self.system.mounts()
+        recorded = cfg.get("mounts") or {}
+        numbers = conf.numbers()
+        out = {}
+        placeholders = cfg.get("placeholders") or {}
+        for name, path, _ in conf.data:
+            point = path.rstrip("/")
+            if placeholders.get(name) == point:
+                out[name] = {"role": "data", "number": numbers.get(name), "path": point, "mounted": True,
+                             "fstype": None, "uuid_ok": True, "placeholder": True,
+                             "empty": placeholder_problem(point, self.paths, self.lstat) is None}
+                continue
+            found = next((m for m in reversed(mounts) if m.point == point and m.root == "/"), None)
+            out[name] = {"role": "data", "number": numbers.get(name), "path": point, "mounted": found is not None,
+                         "fstype": found.fstype if found else None,
+                         "uuid_ok": found is not None and (self.system.uuid(found) or "").lower()
+                         == str(recorded.get(name, "")).lower()}
+        for name, files, _ in conf.parity:
+            folder = os.path.dirname(files[0]) if files else ""
+            holder = _holder(mounts, folder) if folder else None
+            mounted = holder is not None and holder.point != "/" and os.path.isdir(folder)
+            out[name] = {"role": "parity", "number": LEVELS[name], "path": holder.point if mounted else folder,
+                         "mounted": mounted, "fstype": holder.fstype if mounted else None,
+                         "uuid_ok": mounted and (self.system.uuid(holder) or "").lower()
+                         == str(recorded.get(name, "")).lower()}
+        return out
+
+    def content_report(self, conf: Conf, cfg: dict | None = None, failed: Log | None = None,
+                       system_disk_only: bool = False) -> dict:
+        """G4's facts: every content copy exists, opens, has the same size as the others, the copies sit on at
+        least (parity levels + 1) different disks, and each has free space of at least twice its size or the
+        floor of the helper config's guard.content_free_min_mib; and, given the log of a SnapRAID run that failed,
+        whether it failed because it could not read the file list (read_failed: plain words; error: its own first
+        words). system_disk_only (the daemon route): a copy on any other disk is neither opened nor measured, and is
+        listed with checked false. {copies, problem, space_low, other, too_few_disks, read_failed, error,
+        missing_all, unchecked}."""
+        copies = []
+        mounts = self.system.mounts()
+        for path, _ in conf.content:
+            entry: dict[str, Any] = {"path": path, "exists": False}
+            if system_disk_only:
+                holder = _holder(mounts, path)
+                if holder is None or holder.point != "/":
+                    copies.append({**entry, "exists": None, "checked": False})
+                    continue
+            try:
+                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+                info = os.fstat(fd)
+                os.close(fd)
+                holder = _holder(mounts, path)
+                entry.update(exists=True, size=info.st_size, device=holder.device if holder else str(info.st_dev))
+            except OSError as exc:
+                entry["error"] = errno.errorcode.get(exc.errno, "error")
+            space = self.system.statvfs(os.path.dirname(path))
+            entry["free"] = space.f_bavail * space.f_frsize if space else None
+            copies.append(entry)
+        unchecked = sum(1 for c in copies if c.get("checked") is False)
+        checked = [c for c in copies if c.get("checked") is not False]
+        present = [c for c in checked if c["exists"]]
+        problems, space_low = [], False
+        floor = int({**GUARD_DEFAULTS, **((cfg or {}).get("guard") or {})}["content_free_min_mib"]) << 20
+        read_failed = content_failure(failed) if failed is not None else None
+        error = next((text.split("\n")[0][:300] for level, text in failed.messages if level == "fatal"
+                      and not text.startswith("WARNING!")), None) if read_failed and failed is not None else None
+        if read_failed:
+            problems.append(read_failed)
+        if len(present) < len(checked):
+            problems.append(f"{len(checked) - len(present)} of {len(checked)} copies of the file list are missing or "
+                            f"cannot be read")
+        if len({c["size"] for c in present}) > 1:
+            problems.append("the copies of the file list have different sizes")
+        levels = len(conf.parity)
+        too_few = bool(present) and not unchecked and len({c["device"] for c in present}) < levels + 1
+        if too_few:
+            problems.append(f"the copies of the file list sit on fewer than {levels + 1} different disks")
+        for copy in present:
+            if copy["free"] is not None and copy["free"] < max(2 * copy["size"], floor):
+                space_low = True
+        other = bool(problems)
+        if space_low:
+            problems.append("a disk holding a copy of the file list is almost full")
+        for copy in copies:
+            copy.pop("device", None)
+        return {"copies": copies, "problem": ("The protection's file list has a problem: " + "; ".join(problems) + ".")
+                if problems else None, "space_low": space_low, "other": other, "too_few_disks": too_few,
+                "read_failed": read_failed, "error": error, "missing_all": bool(checked) and not present,
+                "unchecked": unchecked}
+
+    def fingerprint(self, conf: Conf, record: bool, digest: bool = True) -> dict | None:
+        """The first content file's fingerprint (section 8.5): its size, modification and change times, and its
+        sha256 computed again only when they differ from content-mark.json. In P1 the helper never writes the
+        content file, so any change is a run outside Seraphina; record keeps the new mark and the change (the last
+        20 changes stay in the mark, so a harness that missed an answer still sees them). digest False (info on the
+        daemon route): the size and times only, never the file's contents."""
+        if not conf.content:
+            return None
+        path = conf.content[0][0]
+        try:
+            info = os.stat(path, follow_symlinks=False)
+        except OSError:
+            return {"path": path, "present": False}
+        mark_path = Path(self.paths.state, "content-mark.json")
+        mark = self._read_json(str(mark_path)) or {}
+        current = {"size": info.st_size, "mtime_ns": info.st_mtime_ns, "ctime_ns": info.st_ctime_ns}
+        outside = list(mark.get("outside") or [])
+        same = all(mark.get(key) == value for key, value in current.items())
+        changed = False
+        if not same and digest:
+            digest = file_sha256(path)
+            changed = bool(mark.get("sha256")) and digest != mark.get("sha256")
+            if record:
+                if changed:
+                    outside.append({"seen_at": now_iso(self.clock()), "modified": now_iso(info.st_mtime)})
+                by = "outside" if changed else ("first look" if not mark else "unchanged")
+                self._write_json(mark_path, {**current, "sha256": digest, "at": now_iso(self.clock()), "by": by,
+                                             "outside": outside[-20:]})
+        return {"path": path, "present": True, "known": bool(mark), "changed_now": changed,
+                "modified": now_iso(info.st_mtime), "outside": outside[-20:]}
+
+    def daemon_summary(self) -> dict:
+        """What /etc/snapraidd.conf says about the settings the daemon's own API does not return (section 8.5), as
+        values or yes and no: never the credential line, never a notify or hook command as text."""
+        installed = self.daemon_installed()
+        text = self._read_text(self.paths.daemon_conf)
+        values: dict[str, str] = {}
+        for line in text.split("\n"):
+            match = re.fullmatch(r"\s*([a-z_]+)\s*=\s*(.*?)\s*", line)
+            if match and not line.lstrip().startswith("#"):
+                values[match.group(1)] = match.group(2)
+        ports = [part.strip() for part in values.get("net_port", "").split(",") if part.strip()]
+        return {"installed": installed, "conf": bool(text), "net_enabled": values.get("net_enabled"),
+                "net_port": [port for port in ports if re.fullmatch(r"[0-9A-Fa-f.:\[\]]{1,64}", port)],
+                "net_acl_set": bool(values.get("net_acl")), "auth_set": bool(values.get("net_auth_credential")),
+                "config_full_access": values.get("net_config_full_access"),
+                "shutdown_on": values.get("sys_shutdown_on"), "check_updates": values.get("check_updates"),
+                "notify_forwarder": values.get("notify_result", "").startswith(
+                    "/usr/local/libexec/seraphina/sf-snapraidd notify result")}
+
+    def backups_running(self) -> list[str]:
+        names = set(self.system.programs())
+        return sorted(tool for tool in BACKUP_TOOLS if tool in names)
+
+    def holds(self) -> list[dict]:
+        """The power hold records in /run/seraphina/holds (v2's shape; P1 writes none)."""
+        out = []
+        with contextlib.suppress(OSError):
+            for name in sorted(os.listdir(self.paths.holds)):
+                if name.endswith(".json"):
+                    data = self._read_json(os.path.join(self.paths.holds, name))
+                    if isinstance(data, dict):
+                        out.append({key: data.get(key) for key in ("id", "holder", "why", "until")})
+        return out
+
+    def releases(self) -> list[dict]:
+        """The last 20 lines of releases.jsonl (P2 writes them; none exist in P1)."""
+        lines = []
+        with contextlib.suppress(OSError):
+            with open(os.path.join(self.paths.state, "releases.jsonl"), encoding="utf-8") as handle:
+                for raw in handle:
+                    with contextlib.suppress(ValueError):
+                        lines.append(json.loads(raw))
+        return lines[-20:]
+
+    def running(self) -> dict | None:
+        """The direct verb holding the job lock now, or None."""
+        path = os.path.join(self.paths.run_dir, "job.lock")
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        except OSError:
+            return None
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                return None
+            except BlockingIOError:
+                with contextlib.suppress(ValueError):
+                    return json.loads(os.pread(fd, 4096, 0).decode("utf-8", "replace") or "{}")
+                return {}
+        finally:
+            os.close(fd)
+
+    # -- the scheduler inventory (section 1.4) -------------------------------------------------------------
+
+    def inventory(self, conf: Conf | None) -> dict:
+        """Every other scheduler of SnapRAID found by contents, not names: a place counts when it mentions snapraid,
+        the config path or a known runner, directly or in a script it starts, one level deep. Returns only the
+        places that matched, how, and their schedule fields; never other contents."""
+        needles = ["snapraid", *RUNNERS, *self.paths.confs]
+        parity_points = []
+        if conf is not None:
+            parity_points = [os.path.dirname(files[0]) for _, files, _ in conf.parity if files]
+        found: list[dict] = []
+        checked = 0
+        at = self.paths.at
+        for path in [at("/etc/crontab"), *self._files(at("/etc/cron.d"))]:
+            checked += 1
+            found += self._cron(path, "cron", needles, system=True)
+        for name in ("hourly", "daily", "weekly", "monthly"):
+            for path in self._files(at(f"/etc/cron.{name}")):
+                checked += 1
+                how = self._mentions(path, needles, deep=True)
+                if how:
+                    found.append({"place": self._shown(path), "kind": "cron-script", "via": how,
+                                  "schedule": [name]})
+        anacron = at("/etc/anacrontab")
+        if os.path.isfile(anacron):
+            checked += 1
+            found += self._anacron(anacron, needles)
+        for path in self._files(at("/var/spool/cron/crontabs")):
+            checked += 1
+            found += self._cron(path, "user-crontab", needles, system=False)
+        unit_dirs = [(at(d), "unit") for d in ("/etc/systemd/system", "/usr/lib/systemd/system", "/run/systemd/system")]
+        unit_dirs += [(at(d), "user-unit") for d in ("/etc/systemd/user", "/usr/lib/systemd/user")]
+        unit_dirs += [(os.path.join(home, ".config/systemd/user"), "user-unit") for home in self._homes()]
+        seen_units: set[str] = set()
+        for folder, kind in unit_dirs:
+            for path in self._files(folder, (".service", ".timer")):
+                real = os.path.realpath(path)
+                if real in seen_units:
+                    continue
+                seen_units.add(real)
+                checked += 1
+                entry = self._unit(path, kind, needles)
+                if entry:
+                    found.append(entry)
+        stacks = self.paths.dockge_stacks
+        with contextlib.suppress(OSError):
+            for stack in sorted(os.listdir(stacks)):
+                for name in ("compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml"):
+                    path = os.path.join(stacks, stack, name)
+                    if not os.path.isfile(path):
+                        continue
+                    checked += 1
+                    text = self._read_text(path)
+                    why = []
+                    if "snapraid" in text.lower():
+                        why.append("names SnapRAID")
+                    if any(point and point in text for point in parity_points):
+                        why.append("mounts the protection disk")
+                    if why:
+                        found.append({"place": self._shown(path), "kind": "compose", "via": ", ".join(why),
+                                      "schedule": []})
+        return {"places_checked": checked, "found": self._with_sha(found)}
+
+    def _with_sha(self, entries: list[dict]) -> list[dict]:
+        """Each found place with its contents' sha256, so the owner's "does not start runs" counts again once the
+        place changes (section 1.4)."""
+        for entry in entries:
+            entry["sha256"] = file_sha256(self.paths.at(entry["place"])) if entry.get("place") else None
+        return entries
+
+    def _shown(self, path: str) -> str:
+        """A place as the machine knows it (below the root of the tests' tree)."""
+        root = self.paths.root.rstrip("/")
+        return path[len(root):] if root and path.startswith(root + "/") else path
+
+    @staticmethod
+    def _files(folder: str, suffixes: tuple[str, ...] | None = None) -> list[str]:
+        try:
+            names = sorted(os.listdir(folder))
+        except OSError:
+            return []
+        return [os.path.join(folder, n) for n in names if not n.startswith(".")
+                and os.path.isfile(os.path.join(folder, n)) and (suffixes is None or n.endswith(suffixes))]
+
+    def _homes(self) -> list[str]:
+        homes = []
+        for line in self._read_text(self.paths.at("/etc/passwd")).split("\n"):
+            parts = line.split(":")
+            if len(parts) >= 7 and parts[5].startswith("/") and parts[5] not in ("/", "/nonexistent"):
+                homes.append(self.paths.at(parts[5]))
+        return sorted(set(homes))
+
+    @staticmethod
+    def _read_text(path: str, limit: int = 1 << 20) -> str:
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except OSError:
+            return ""
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return ""
+            with os.fdopen(os.dup(fd), "rb") as handle:
+                return handle.read(limit).decode("utf-8", "replace")
+        finally:
+            os.close(fd)
+
+    def _mentions(self, path: str, needles: list[str], deep: bool) -> str | None:
+        """"direct" when the file mentions SnapRAID, "script" when a script one of its lines starts does (one level
+        deep)."""
+        text = self._read_text(path)
+        if _mentions_text(text, needles):
+            return "direct"
+        if deep:
+            for line in text.split("\n"):
+                if not line.lstrip().startswith("#") and self._starts_mention(line, needles):
+                    return "script"
+        return None
+
+    def _starts_mention(self, command: str, needles: list[str]) -> bool:
+        """Whether a script this command line starts mentions SnapRAID."""
+        for path, shebang in self._started(command):
+            if shebang and self._read_text(self.paths.at(path), 2) != "#!":
+                continue        # a compiled program: not a script it starts
+            if _mentions_text(self._read_text(self.paths.at(path)), needles):
+                return True
+        return False
+
+    def _started(self, command: str, depth: int = 0) -> list[tuple[str, bool]]:
+        """What a command line starts, as (machine path, read only when it starts with #!): in each simple command,
+        its program (after variable assignments and wrappers such as nice, timeout or flock, with their options and
+        values) and the script it hands an interpreter ("sh /x.sh", "python3 -u /x.py"; for "sh -c '...'", the
+        programs of that command, one level deep). Never another word: an argument such as /etc/fstab or
+        /proc/self/mountinfo is data the program reads, not a script it starts."""
+        out: list[tuple[str, bool]] = []
+        for words in _simple_commands(command):
+            index = 0
+            while index < len(words) and ASSIGNMENT_RE.match(words[index]):
+                index += 1
+            program, after_wrapper = None, False
+            while index < len(words):
+                word = words[index]
+                if os.path.basename(word) in WRAPPERS:
+                    after_wrapper = True
+                elif not (after_wrapper and (word.startswith("-") or ASSIGNMENT_RE.match(word))):
+                    program = self._executable(word)
+                    if program or not after_wrapper:
+                        break       # the program, or a shell builtin or something this machine does not have
+                index += 1          # a wrapper, its option, or its value ("timeout 1h", "flock -n /run/x.lock")
+            if program is None:
+                continue
+            name = re.sub(r"[0-9.]+$", "", os.path.basename(program))
+            if name not in INTERPRETERS:
+                out.append((program, True))
+                continue
+            rest = words[index + 1:]
+            for position, word in enumerate(rest):
+                if name in SHELLS and re.fullmatch(r"-[a-z]*c[a-z]*", word):
+                    if depth == 0 and position + 1 < len(rest):
+                        out += self._started(rest[position + 1], depth + 1)
+                    break
+                if word.startswith("-"):
+                    continue
+                script = self._regular(word)
+                if script:
+                    out.append((script, False))
+                break
+        return out[:8]
+
+    def _executable(self, word: str) -> str | None:
+        """word as a program on this machine: an absolute path, or a bare name in the usual PATH folders, naming an
+        executable regular file outside /proc, /sys and /dev. Its machine path, or None."""
+        if "/" in word and not word.startswith("/"):
+            return None
+        for path in ([word] if word.startswith("/") else [f"{folder}/{word}" for folder in PATH_DIRS]):
+            if any(_under(path, folder) for folder in NOT_PROGRAMS):
+                return None
+            try:
+                info = os.stat(self.paths.at(path))
+            except (OSError, ValueError):
+                continue
+            if stat.S_ISREG(info.st_mode) and info.st_mode & 0o111:
+                return path
+        return None
+
+    def _regular(self, word: str) -> str | None:
+        """word as a script an interpreter is handed: an absolute path to a regular file outside /proc, /sys, /dev."""
+        if not word.startswith("/") or any(_under(word, folder) for folder in NOT_PROGRAMS):
+            return None
+        try:
+            return word if stat.S_ISREG(os.stat(self.paths.at(word)).st_mode) else None
+        except (OSError, ValueError):
+            return None
+
+    def _cron(self, path: str, kind: str, needles: list[str], system: bool) -> list[dict]:
+        out = []
+        for line in self._read_text(path).split("\n"):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or re.match(r"^[A-Za-z_][A-Za-z0-9_]*\s*=", stripped):
+                continue
+            fields = stripped.split()
+            if stripped.startswith("@"):
+                when, command = [fields[0]], fields[1 + system:]
+            else:
+                when, command = fields[:5], fields[5 + system:]
+            text = " ".join(command)
+            how = "direct" if _mentions_text(text, needles) else None
+            if how is None and self._starts_mention(text, needles):
+                how = "script"
+            if how:
+                out.append({"place": self._shown(path), "kind": kind, "via": how, "schedule": when})
+        return out
+
+    def _anacron(self, path: str, needles: list[str]) -> list[dict]:
+        out = []
+        for line in self._read_text(path).split("\n"):
+            fields = line.split()
+            if len(fields) < 4 or line.lstrip().startswith("#") or "=" in fields[0]:
+                continue
+            text = " ".join(fields[3:])
+            how = "direct" if _mentions_text(text, needles) else None
+            if how is None and self._starts_mention(text, needles):
+                how = "script"
+            if how:
+                out.append({"place": self._shown(path), "kind": "anacron", "via": how, "schedule": fields[:2]})
+        return out
+
+    def _unit(self, path: str, kind: str, needles: list[str]) -> dict | None:
+        """A service whose ExecStart (or the script it runs) mentions SnapRAID, or a timer whose unit does."""
+        text = self._read_text(path)
+        if path.endswith(".timer"):
+            unit = next((v.strip() for k, v in _unit_keys(text) if k == "Unit"), None) or \
+                os.path.basename(path)[:-6] + ".service"
+            service = os.path.join(os.path.dirname(path), unit)
+            how = self._unit_mentions(service, needles) if os.path.isfile(service) else None
+            if how:
+                calendar = [v.strip() for k, v in _unit_keys(text) if k in ("OnCalendar", "OnBootSec", "OnActiveSec",
+                                                                            "OnUnitActiveSec")]
+                return {"place": self._shown(path), "kind": kind.replace("unit", "timer"), "via": how,
+                        "schedule": calendar, "unit": unit}
+            return None
+        how = self._unit_mentions(path, needles)
+        if how:
+            return {"place": self._shown(path), "kind": kind, "via": how, "schedule": []}
+        return None
+
+    def _unit_mentions(self, path: str, needles: list[str]) -> str | None:
+        execs = [v for k, v in _unit_keys(self._read_text(path)) if k.startswith("Exec")]
+        if any(_mentions_text(v, needles) for v in execs):
+            return "direct"
+        for value in execs:
+            if self._starts_mention(value.lstrip("-@:+!"), needles):     # systemd's ExecStart= prefixes
+                return "script"
+        return None
+
+    # -- small file helpers --------------------------------------------------------------------------------------
+
+    def _read_json(self, path: str) -> Any:
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        except OSError:
+            return None
+        try:
+            with os.fdopen(os.dup(fd), "rb") as handle:
+                return json.loads(handle.read(64 << 20).decode("utf-8", "surrogateescape"))
+        except ValueError:
+            return None
+        finally:
+            os.close(fd)
+
+    def _read_in(self, folder: str, name: str) -> Any:
+        """A record inside its own folder, opened with dir_fd and O_NOFOLLOW (the id's shape was checked already),
+        so no id can name a file elsewhere."""
+        try:
+            dir_fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except OSError:
+            return None
+        try:
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
+        except OSError:
+            os.close(dir_fd)
+            return None
+        try:
+            with os.fdopen(fd, "rb") as handle:
+                return json.loads(handle.read(64 << 20).decode("utf-8", "surrogateescape"))
+        except ValueError:
+            return None
+        finally:
+            os.close(dir_fd)
+
+    def _write_json(self, path: Path, data: Any) -> None:
+        """Written beside its place (0600, folders 0700), then moved over it."""
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(json.dumps(data, ensure_ascii=False, sort_keys=True).encode("utf-8", "surrogateescape"))
+        os.replace(tmp, path)
+
+
+class Guard:
+    """One guard report (section 4.2): the checks in order, read-only, the diff last. A check that holds needs the
+    owner, one that waits only delays a run, a note holds nothing. G3-G8 all run (so the report names every cause);
+    G9-G11 run only when none of them holds, waits or failed, as the diagram of section 4.2 has it."""
+
+    def __init__(self, helper: Helper, cfg: dict, conf: Conf) -> None:
+        self.helper = helper
+        self.cfg = cfg
+        self.conf = conf
+        self.limits = {**GUARD_DEFAULTS, **(cfg.get("guard") or {})}
+        self.numbers = conf.numbers()
+        self.checks: list[dict] = []
+        self.reasons: list[str] = []
+        self.runs: list[str] = []
+        self.changes: list[dict] = []
+        self.counts: dict | None = None
+        self.facts: dict = {}
+
+    def add(self, check: str, result: str, words: str, reason: str | None = None, **extra: Any) -> None:
+        self.checks.append({"id": check, "result": result, "words": words, **({"reason": reason} if reason else {}),
+                            **extra})
+        if reason and result in ("hold", "wait", "error") and reason not in self.reasons:
+            self.reasons.append(reason)
+
+    def stopped(self) -> bool:
+        return any(c["result"] in ("hold", "wait", "error") for c in self.checks)
+
+    def disks(self, names: Iterable[str]) -> str:
+        return ", ".join(_disk_words(name, self.numbers) for name in dict.fromkeys(names))
+
+    def snapraid(self, command: str, options: Iterable[str] = ()) -> tuple[Run, Log]:
+        record, log, _ = self.helper.snapraid("guard", command, self.cfg["conf"], options)
+        self.runs.append(record.job)
+        return record, log
+
+    def run(self) -> dict:
+        helper = self.helper
+        guard = helper.new_id("G")
+        helper.mark_lock(guard=guard)
+        self.add("G1", "pass", "The reader, SnapRAID and both configs are installed safely, and the config is valid.")
+        self.g2()
+        if not self.stopped():
+            self.g3_to_g8()
+        if not self.stopped():
+            self.g9_to_g11()
+        verdict = "error" if any(c["result"] == "error" for c in self.checks) else \
+            "would_hold" if any(c["result"] == "hold" for c in self.checks) else \
+            "would_wait" if any(c["result"] == "wait" for c in self.checks) else \
+            "nothing_to_do" if any(c.get("nothing_to_do") for c in self.checks) else "would_run"
+        seen = {c["id"] for c in self.checks}
+        for check in ("G2", "G3", "G4", "G5", "G6", "G7", "G8", "G9", "G10", "G11"):
+            if check not in seen:
+                self.checks.append({"id": check, "result": "skipped", "words": "Not reached: an earlier check "
+                                                                                 "stops here."})
+        self.checks.sort(key=lambda c: int(c["id"][1:]))
+        canonical = json.dumps(self.changes, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+        record = {"guard": guard, "at": now_iso(helper.clock()), "report_only": True, "verdict": verdict,
+                  "reasons": self.reasons, "checks": self.checks, "counts": self.counts, "runs": self.runs,
+                  "numbers": self.numbers, "limits": self.limits, "first_run": bool(self.facts.get("array_empty")),
+                  "list_sha256": hashlib.sha256(canonical.encode("utf-8", "surrogateescape")).hexdigest(),
+                  "changes": self.changes}
+        helper._write_json(Path(helper.paths.state, "guard", f"{guard}.json"), record)
+        helper.prune()
+        return {"ok": True, "verb": "guard", **{key: value for key, value in record.items() if key != "changes"}}
+
+    def g2(self) -> None:
+        """No backup running and no power hold (the job lock is held by this guard already); whether a run fits
+        before the nightly power-off is the cockpit's check, from P2."""
+        backups = self.helper.backups_running()
+        holds = [hold for hold in self.helper.holds() if hold.get("holder") != "snapraid"]
+        if backups:
+            self.add("G2", "wait", "A backup program is running: " + ", ".join(backups) + ".", "backup_running")
+        elif holds:
+            self.add("G2", "wait", f"{len(holds)} job(s) are keeping the server on.", "power_hold")
+        else:
+            self.add("G2", "pass", "Nothing else is running. Whether a run fits before the nightly power-off is "
+                                   "the cockpit's check (from phase P2).")
+
+    def g3_to_g8(self) -> None:
+        conf = self.conf
+        mounts = self.helper.mount_report(conf, self.cfg)
+        missing = [name for name, entry in mounts.items() if not entry["mounted"]]
+        changed = [name for name, entry in mounts.items() if entry["mounted"] and not entry["uuid_ok"]]
+        if missing:
+            self.add("G3", "hold", f"Not mounted where it should be: {self.disks(missing)}.", "disk_missing",
+                     disks=missing)
+        if changed:
+            self.add("G3", "hold", f"Mounted with a different filesystem than recorded: {self.disks(changed)}.",
+                     "disk_uuid_changed", disks=changed)
+        if not missing and not changed:
+            self.add("G3", "pass", "Every disk is mounted with the filesystem recorded at setup.")
+        else:
+            # SnapRAID runs on no missing or changed disk: G4 is read from the files alone, G5 to G11 not reached
+            content = self.helper.content_report(conf, self.cfg)
+            if content["problem"]:
+                self.add("G4", "hold", content["problem"],
+                         "content_space_low" if content["space_low"] and not content["other"] else "content_problem")
+            return
+        status, log = self.snapraid("status")
+        if status.outcome == "busy":
+            self.add("G2", "wait", "SnapRAID is busy: it was started outside Seraphina.", "snapraid_busy")
+            return
+        self.facts = facts = read_status(log) if status.outcome == "ok" else {}
+        first = bool(facts.get("array_empty"))
+        content = self.helper.content_report(conf, self.cfg, log if status.outcome != "ok" else None)
+        if content["problem"] and not (first and content["missing_all"]):
+            self.add("G4", "hold", content["problem"],
+                     "content_space_low" if content["space_low"] and not content["other"] else "content_problem")
+        elif first:
+            self.add("G4", "note", "No file list yet: the first run makes every copy.")
+        else:
+            self.add("G4", "pass", f"All {len(conf.content)} copies of the file list are present, the same size, "
+                                   f"on different disks and with room.")
+        if status.outcome != "ok":
+            if not content["read_failed"]:     # G4 holds on a file list SnapRAID cannot read: G5 on is not reached
+                self.add("G5", "error", f"The status could not be read. {status.words}", "status_error")
+            return
+        bad = facts["has_bad"]["count"]
+        if bad:
+            self.add("G5", "hold", f"Hidden damage is recorded in {bad} place(s): repair it first.", "bad_blocks",
+                     count=bad)
+        else:
+            self.add("G5", "pass", "No hidden damage is recorded.")
+        smart = self.smart()
+        failing = [name for name, entry in smart.items() if entry.get("health") in ("fail", "prefail")]
+        unknown = [name for name, entry in smart.items() if entry.get("health") == "unknown"]
+        if failing:
+            self.add("G6", "hold", f"SMART says a disk is failing: {self.disks(failing)}.", "smart_fail",
+                     disks=failing)
+        elif unknown:
+            self.add("G6", "note", f"Health cannot be read for: {self.disks(unknown)}. That is not a pass.",
+                     disks=unknown)
+        else:
+            self.add("G6", "pass", "SMART reports every disk healthy.")
+        self.add("G7", "skipped", "Not checked in this version: whether the folders you mark as live app data are "
+                                  "left out of the protection comes with a later one.")
+        if facts.get("has_unsynced"):
+            self.g8()
+        else:
+            self.add("G8", "pass", "No unfinished run is recorded.")
+
+    def smart(self) -> dict:
+        """The last smart result when younger than smart_max_age_hours, else a fresh run."""
+        helper = self.helper
+        last = helper._read_json(os.path.join(helper.paths.state, "last-smart.json")) or {}
+        if last.get("unix") and helper.clock() - float(last["unix"]) < self.limits["smart_max_age_hours"] * 3600:
+            return last.get("disks") or {}
+        answer = helper.verb_smart({}, self.cfg, self.conf)
+        self.runs.append(answer["job"])
+        return answer["disks"]
+
+    def g8(self) -> None:
+        """An unfinished sync the helper did not run (it runs none in P1): its scan is already in the content
+        file, so the diff cannot see it. A fresh list against the index of the last good sync counts what that run
+        recorded as removed (in the index, gone from the list) or updated (size, time or inode changed)."""
+        good = self.helper.index("good")
+        if good is None:
+            self.add("G8", "note", "An unfinished run was started outside Seraphina, and there is no file list of "
+                                   "a finished run to count it against yet.")
+            return
+        try:
+            record, log = self.snapraid("list", ("-q", "-q", "-q"))
+            if record.outcome != "ok":
+                self.add("G8", "error", f"The file list could not be read. {record.words}", "list_error")
+                return
+            now = {(disk, path.encode("utf-8", "surrogateescape")): (size, sec, inode)
+                   for disk, path, size, sec, _, inode in read_list(log)}
+            lost: dict[str, int] = {}
+            for disk, raw, size, sec, inode in good.execute("SELECT disk, raw, size, mtime, inode FROM files"):
+                if now.get((disk, bytes(raw))) != (size, sec, inode):
+                    lost[disk] = lost.get(disk, 0) + 1
+        finally:
+            good.close()
+        files = {name: (entry.get("files") or 0) for name, entry in self.facts["disks"].items()}
+        total = sum(lost.values())
+        if over_limits(lost, files, self.limits):
+            self.add("G8", "hold", f"A run started outside Seraphina stopped part way after recording {total} "
+                                   f"file(s) as removed or changed.", "unguarded_partial_sync", lost=total)
+        else:
+            self.add("G8", "note", f"A run started outside Seraphina stopped part way; it recorded {total} file(s) "
+                                   f"as removed or changed, under the limits.", lost=total)
+
+    def g9_to_g11(self) -> None:
+        """G9: snapraid diff, last. Exit 1 holds (diff_error); exit 0 with nothing unsynced is nothing to do; exit 2
+        goes on. "are now missing or have been rewritten" holds as disk_looks_empty, "has unexpected zero size"
+        as zero_size. G10: the thresholds. G11: room on the protection disk."""
+        record, log = self.snapraid("diff", ("-q", "-q", "-q"))
+        if record.outcome == "busy":
+            self.add("G9", "wait", "SnapRAID is busy: it was started outside Seraphina.", "snapraid_busy")
+            return
+        if record.outcome not in ("ok", "changes"):
+            self.add("G9", "hold", f"The check for changes failed. {record.words}", "diff_error")
+            return
+        fatal = log.text("fatal")
+        empty = list(dict.fromkeys(re.findall(r"present in disk '([^']*)'.*?are now missing or have been rewritten",
+                                              fatal, re.DOTALL)))
+        zero = "unexpected zero size" in fatal
+        self.changes = self.helper._with_sizes(self.conf, read_changes(log))
+        self.counts = counts = count_changes(self.changes, self.facts.get("disks") or {}, self.conf)
+        unsynced = self.facts.get("has_unsynced") or 0
+        if empty:
+            self.add("G9", "hold", f"All the files on {self.disks(empty)} are gone or rewritten: is it mounted?",
+                     "disk_looks_empty", disks=empty)
+        if zero:
+            self.add("G9", "hold", "A file that had data is now empty.", "zero_size")
+        if not empty and not zero:
+            if record.outcome == "ok" and not unsynced:
+                self.add("G9", "pass", "Nothing changed since the last run: there is nothing to protect.",
+                         nothing_to_do=True)
+                self.helper._baseline(self.conf)
+            elif record.outcome == "ok" or not counts["array"]["changed"]:
+                self.add("G9", "pass", "No new changes; an unfinished run is waiting to carry on.")
+            else:
+                self.add("G9", "pass", f"{counts['array']['changed']} change(s) found.")
+        if self.facts.get("array_empty"):
+            self.add("G10", "note", "The first run: there is nothing to compare against yet.")
+        else:
+            lost = {name: entry["lost"] for name, entry in counts["disks"].items()}
+            files = {name: entry["files"] for name, entry in counts["disks"].items()}
+            held = over_limits(lost, files, self.limits)
+            if held:
+                self.add("G10", "hold", held_words(held, self.numbers), "lost_over",
+                         disks=[entry["disk"] for entry in held if entry["disk"]], held=held)
+            else:
+                self.add("G10", "pass", f"{counts['array']['lost']} file(s) would be lost if protected now: under "
+                                        f"the limits.")
+        self.g11()
+
+    def g11(self) -> None:
+        """Parity has room for the added data: each disk's used space now, minus its used space at the last good
+        sync, fits in parity_block_free_min x block size (an upper bound: the diff's add lines carry no sizes)."""
+        helper = self.helper
+        baseline = helper._read_json(os.path.join(helper.paths.state, "index", "baseline.json")) or {}
+        room = (self.facts.get("parity_block_free_min") or 0) * (self.facts.get("block_size") or 0)
+        if not baseline.get("used") or self.facts.get("array_empty"):
+            self.add("G11", "note", "The room left for new files can be checked once a run has finished with "
+                                    "nothing left to protect.")
+            return
+        short = []
+        for name, path, _ in self.conf.data:
+            info = helper.system.statvfs(path)
+            before = baseline["used"].get(name)
+            if info is not None and before is not None:
+                if (info.f_blocks - info.f_bfree) * info.f_frsize - int(before) > room:
+                    short.append(name)
+        if short:
+            self.add("G11", "hold", f"The protection disk may not have room for what was added on "
+                                    f"{self.disks(short)}.", "parity_full", disks=short)
+        else:
+            self.add("G11", "pass", "The protection disk has room for what was added.")
+
+
+def _disk_words(name: str, numbers: dict[str, int]) -> str:
+    """"disk 2", or "protection disk 2" ("the protection disk" for the first level) in a check's words."""
+    if name in numbers:
+        return f"disk {numbers[name]}"
+    level = LEVELS.get(name, 1)
+    return "the protection disk" if level == 1 else f"protection disk {level}"
+
+
+def _array_names(conf: Conf) -> list[str]:
+    """Every array disk's config name: the data disks, then the protection disks."""
+    return [name for name, _, _ in conf.data] + [name for name, _, _ in conf.parity]
+
+
+def _logged_name(name: str) -> str:
+    """The name SnapRAID's smart and probe lines give a disk: a data disk's own, a protection disk's level name."""
+    return LEVEL_NAMES[LEVELS[name]] if name in LEVELS else name
+
+
+def _mentions_text(text: str, needles: list[str]) -> bool:
+    lowered = text.lower()
+    return any(needle.lower() in lowered for needle in needles)
+
+
+def _simple_commands(text: str) -> list[list[str]]:
+    """A shell command line's simple commands, each as its words with the quotes taken off, cut at ;, &&, ||, |, &,
+    ( and ); a redirection and its target left out. A line the shell could not split either (an open quote) is split
+    at spaces."""
+    try:
+        lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        tokens = text.split()
+    out: list[list[str]] = []
+    words: list[str] = []
+    skip = False
+    for token in tokens:
+        if skip:
+            skip = False
+            continue
+        if token and set(token) <= set("();<>|&"):
+            if "<" in token or ">" in token:
+                skip = True
+                continue
+            if words:
+                out.append(words)
+            words = []
+            continue
+        words.append(token)
+    if words:
+        out.append(words)
+    return out
+
+
+def _unit_keys(text: str) -> list[tuple[str, str]]:
+    out = []
+    for line in text.split("\n"):    # systemd, cron and the kernel break lines at "\n" only
+        if "=" in line and not line.lstrip().startswith(("#", ";", "[")):
+            key, _, value = line.partition("=")
+            out.append((key.strip(), value.strip()))
+    return out
+
+
+def count_changes(changes: list[dict], status_disks: dict, conf: Conf) -> dict:
+    """Counts per disk and across the array (section 4.3): lost if protected now = removed plus updated; files =
+    the disk's file count at the last sync. Moves, copies and restores never count; replaced ones are shown and
+    counted."""
+    disks: dict[str, dict] = {}
+    for name, _, _ in conf.data:
+        files = (status_disks.get(name) or {}).get("files") or 0
+        disks[name] = {"added": 0, "removed": 0, "updated": 0, "moved": 0, "copied": 0, "restored": 0,
+                       "replaced": 0, "lost": 0, "files": files}
+    for entry in changes:
+        row = disks.setdefault(entry["disk"], {"added": 0, "removed": 0, "updated": 0, "moved": 0, "copied": 0,
+                                               "restored": 0, "replaced": 0, "lost": 0, "files": 0})
+        row[entry["kind"]] = row.get(entry["kind"], 0) + 1
+        if entry["kind"] in ("removed", "updated"):
+            row["lost"] += 1
+        if entry.get("replaced_by"):
+            row["replaced"] += 1
+    array = {key: sum(row[key] for row in disks.values()) for key in
+             ("added", "removed", "updated", "moved", "copied", "restored", "replaced", "lost", "files")}
+    array["changed"] = sum(array[key] for key in ("added", "removed", "updated", "moved", "copied", "restored"))
+    return {"disks": disks, "array": array}
+
+
+def over_limits(lost: dict[str, int], files: dict[str, int], limits: dict) -> list[dict]:
+    """The thresholds of section 4.3 on files whose protected version a sync would lose: per disk, at least
+    disk_min_files that are at least disk_percent of the disk's files, or at least disk_half_percent of them; across
+    the array, at least array_files, or at least array_min_files that are at least array_percent of all files.
+    [{disk (None: the array), lost, files, clause}] for each that holds."""
+    held = []
+    for disk, count in lost.items():
+        total = files.get(disk) or 0
+        if not count:
+            continue
+        if count >= limits["disk_min_files"] and total and count * 100 >= limits["disk_percent"] * total:
+            held.append({"disk": disk, "lost": count, "files": total, "clause": "disk_percent"})
+        elif total and count * 100 >= limits["disk_half_percent"] * total:
+            held.append({"disk": disk, "lost": count, "files": total, "clause": "disk_half"})
+    count = sum(lost.values())
+    total = sum(files.values())
+    if count >= limits["array_files"]:
+        held.append({"disk": None, "lost": count, "files": total, "clause": "array_files"})
+    elif count >= limits["array_min_files"] and total and count * 100 >= limits["array_percent"] * total:
+        held.append({"disk": None, "lost": count, "files": total, "clause": "array_percent"})
+    return held
+
+
+def held_words(held: list[dict], numbers: dict[str, int]) -> str:
+    parts = []
+    for entry in held:
+        where = f"disk {numbers.get(entry['disk'], '?')}" if entry["disk"] else "all the disks together"
+        parts.append(f"{entry['lost']} of {entry['files']} files on {where}")
+    return "A run now would lose the protected version of " + "; ".join(parts) + ": over the limits."
+
+
+def check_rel_path(value: Any) -> str:
+    """Section 3.4 item 5: relative to a disk, UTF-8, at most 4096 bytes, no NUL or newline, no empty, '.' or '..'
+    component and no component made only of dots."""
+    if not isinstance(value, str):
+        raise Refused("bad_field", "A path must be text.")
+    if len(value.encode("utf-8", "surrogatepass")) > 4096:
+        raise Refused("bad_field", "A path must be at most 4096 bytes.")
+    if any(char in value for char in "\0\n\r"):
+        raise Refused("bad_field", "A path must not hold NUL or a line break.")
+    inner = value.strip("/")
+    if value.startswith("//") or inner and any(part == "" or set(part) == {"."} for part in inner.split("/")):
+        raise Refused("bad_field", "A path must not hold an empty, '.' or '..' part, or a part made only of dots.")
+    return inner
+
+
+def fix_pattern(rel: str, folder: bool = False) -> str:
+    """The -f pattern for one index path (section 3.4 item 5), built here, never taken from the caller: "/", the
+    path with every backslash, *, ? and [ escaped by a backslash (SnapRAID matches with fnmatch, FNM_PATHNAME and
+    no FNM_NOESCAPE), and a final "/" for a folder. The leading "/" anchors it at the disk's root: a pattern with
+    no slash would match that name at any depth. Used by the restore verbs of P2; the path is checked first."""
+    inner = check_rel_path(rel)
+    if not inner:
+        raise Refused("bad_field", "A path must name a file or folder.")
+    return "/" + re.sub(r"([\\*?\[])", r"\\\1", inner) + ("/" if folder else "")
+
+
+def check_plan(plan: Any) -> dict:
+    """A scrub plan (section 3.4 item 3; the scrub verb comes with P2): {percent: 1-100, older_than_days: 0-3650} or
+    one of the words new, bad, full. SnapRAID refuses 101 and unknown words itself, but the helper checks first."""
+    if plan in ("new", "bad", "full"):
+        return {"word": plan}
+    if not isinstance(plan, dict) or set(plan) - {"percent", "older_than_days"} or "percent" not in plan:
+        raise Refused("bad_field", "A plan is new, bad, full, or {percent, older_than_days}.")
+    percent, days = plan.get("percent"), plan.get("older_than_days", 10)
+    for value, low, high, name in ((percent, 1, 100, "percent"), (days, 0, 3650, "older_than_days")):
+        if not isinstance(value, int) or isinstance(value, bool) or not low <= value <= high:
+            raise Refused("bad_field", f"{name} must be a whole number from {low} to {high}.")
+    return {"percent": percent, "older_than_days": days}
+
+
+def nofollow_stat(root: str, rel: str) -> os.stat_result | None:
+    """stat of root/rel walked one component at a time from root with O_NOFOLLOW relative to the parent's
+    descriptor; None when a component is a link, is missing, or the walk fails. Never reads the file."""
+    parts = [part for part in rel.split("/") if part]
+    if not root or not parts or any(part in (".", "..") for part in parts):
+        return None
+    try:
+        fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        for part in parts[:-1]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        info = os.stat(parts[-1], dir_fd=fd, follow_symlinks=False)
+        return None if stat.S_ISLNK(info.st_mode) else info
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+FORBIDDEN_OPTIONS = ("-R", "--force-realloc", "-F", "--force-full", "-i", "--import", "--gen-conf", "-C",
+                     "--force-device", "--force-nocopy", "-D", "-e", "-f", "-m", "-d", "-U", "--force-uuid",
+                     "--force-empty", "--force-zero", "-h", "-S", "-W", "--force-realloc-tail")
+READ_COMMANDS = ("status", "smart", "probe", "diff", "list")
+
+
+def check_argv(argv: list[str]) -> None:
+    """Every argv this version builds: binary, -c CONF, -l LOG, at most -q -q -q, then one read command. No test,
+    expert or pool option; nothing the verb table does not name (a refusal is the helper's own bug)."""
+    if len(argv) < 6 or argv[1] != "-c" or argv[3] != "-l" or argv[-1] not in READ_COMMANDS:
+        raise RuntimeError("an argv outside the verb table")
+    middle = argv[5:-1]
+    if any(option != "-q" for option in middle) or len(middle) > 3:
+        raise RuntimeError("an option outside the verb table")
+    if any(word.startswith(("--test", "--gui")) or word in FORBIDDEN_OPTIONS for word in argv[1:]):
+        raise RuntimeError("a forbidden SnapRAID option")
+
+
+def file_sha256(path: str) -> str | None:
+    digest = hashlib.sha256()
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    with os.fdopen(fd, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+# ---------------------------------------------------------------- explain (section 3.10)
+
+
+def explain(what: str, paths: Paths, system: System | None = None, lstat: Callable[[str], Any] = os.lstat,
+            out: Callable[[str], None] = print) -> int:
+    """`explain helper-config` and `explain snapraid-config`: read only the fixed root-owned .new file, print in
+    plain words what it allows or protects and every change from the installed one, change nothing. 0 when it is
+    one the helper would run, 2 when not."""
+    system = system or System(paths)
+    if what == "helper-config":
+        return _explain_helper(paths, system, lstat, out)
+    return _explain_snapraid(paths, system, lstat, out)
+
+
+def _allow_words(allow: list[str]) -> str:
+    names = {"read": "reading", "sync": "protecting", "scrub": "checking for damage", "restore": "restoring"}
+    return ", ".join(names.get(item, item) for item in allow) or "nothing"
+
+
+def _explain_helper(paths: Paths, system: System, lstat: Callable[[str], Any], out: Callable[[str], None]) -> int:
+    new = paths.helper_config + ".new"
+    problems = path_problems(new, lstat)
+    if problems:
+        out(f"Refused: {problems[0]}. Install it with sudo install -o root -g root -m 0644 first.")
+        return 2
+    helper = Helper(paths, system, lstat)
+    cfg = helper._read_json(new)
+    shape = check_helper_config(cfg, paths)
+    if shape:
+        out("Refused: the reader's new settings cannot be used:")
+        for line in shape:
+            out(f"  - {line}")
+        return 2
+    old = helper._read_json(paths.helper_config) if os.path.isfile(paths.helper_config) else None
+    old = old if isinstance(old, dict) else {}
+    out(f"The reader's new settings ({new}):")
+    allow = list(cfg.get("allow") or [])
+    line = f"  Allowed: {_allow_words(allow)}"
+    if old.get("allow") is not None and list(old.get("allow")) != allow:
+        line = f"  Allowed: {_allow_words(list(old['allow']))} → {_allow_words(allow)}"
+    out(line)
+    if set(allow) - {"read"}:
+        out("  Note: this version of the reader only reads; protecting, checking and restoring come with a later "
+            "version, so the extra classes change nothing yet.")
+    conf_line = f"  SnapRAID config: {cfg['conf']}"
+    if old.get("conf") and old.get("conf") != cfg["conf"]:
+        conf_line = f"  SnapRAID config: {old['conf']} → {cfg['conf']}"
+    out(conf_line)
+    mounts = system.mounts()
+    for name, uuid in sorted((cfg.get("mounts") or {}).items()):
+        found = _mounted(mounts, system.uuid, uuid)
+        where = f"mounted at {found.point}" if found else "not mounted now"
+        before = (old.get("mounts") or {}).get(name)
+        change = f" (was {before})" if before and before != uuid else (" (new)" if old and before is None else "")
+        out(f"  {name}: the filesystem {uuid} {where}{change}")
+    for name in sorted(set(old.get("mounts") or {}) - set(cfg.get("mounts") or {})):
+        out(f"  {name}: removed (was {old['mounts'][name]})")
+    guard_old = {**GUARD_DEFAULTS, **(old.get("guard") or {})}
+    guard_new = {**GUARD_DEFAULTS, **(cfg.get("guard") or {})}
+    for key in GUARD_DEFAULTS:
+        if guard_old[key] != guard_new[key]:
+            out(f"  {GUARD_WORDS[key]}: {guard_old[key]} → {guard_new[key]}")
+        else:
+            out(f"  {GUARD_WORDS[key]}: {guard_new[key]}")
+    for key in IGNORED_CONFIG_KEYS:
+        if key in cfg:
+            out(f"  {key}: ignored (this reader stops nothing; you can leave it out)")
+    out("It changes nothing until you move it into place. It holds no secret.")
+    return 0
+
+
+def _explain_snapraid(paths: Paths, system: System, lstat: Callable[[str], Any], out: Callable[[str], None]) -> int:
+    helper = Helper(paths, system, lstat)
+    cfg = helper._read_json(paths.helper_config) if os.path.isfile(paths.helper_config) else None
+    conf_path = cfg.get("conf") if isinstance(cfg, dict) and cfg.get("conf") in paths.confs else paths.confs[0]
+    new = conf_path + ".new"
+    problems = path_problems(new, lstat)
+    if problems:
+        out(f"Refused: {problems[0]}. Install it with sudo install -o root -g root -m 0644 first.")
+        return 2
+    try:
+        conf = parse_conf(Path(new).read_bytes().decode("utf-8"))     # strict and untranslated, as every call
+    except (OSError, UnicodeDecodeError) as exc:
+        out(f"Refused (unsafe_conf): {new} cannot be read as UTF-8 text ({type(exc).__name__}).")
+        return 2
+    found = check_conf(conf, cfg if isinstance(cfg, dict) else {}, system.mounts(), system.uuid, paths, lstat)
+    out(f"The new SnapRAID config ({new}):")
+    for index, (name, path, _) in enumerate(conf.data, 1):
+        out(f"  Disk {index} ({name}): protects {path}")
+    for name, files, _ in conf.parity:
+        out(f"  Protection disk {LEVELS[name]} ('{name}'): written to {', '.join(files)}")
+    for path, _ in conf.content:
+        out(f"  A copy of the file list: {path}")
+    for pattern in conf.exclude:
+        out(f"  Not protected: {pattern}")
+    for name, option, _ in conf.smartctl:
+        out(f"  Health of {name} read with: smartctl -a {option}")
+    old_path = conf_path
+    if os.path.isfile(old_path):
+        old = parse_conf(Path(old_path).read_bytes().decode("utf-8", "replace"))
+        before, after = _conf_lines(old), _conf_lines(conf)
+        for line in sorted(before - after):
+            out(f"  Removed: {line}")
+        for line in sorted(after - before):
+            out(f"  Added: {line}")
+    if found:
+        out("Refused (unsafe_conf): the reader would not run this config:")
+        for problem in found:
+            out(f"  - {problem['words']}")
+        return 2
+    out("The reader would run this config. It changes nothing until you move it into place.")
+    return 0
+
+
+def _conf_lines(conf: Conf) -> set[str]:
+    lines = {f"data {n} {p}" for n, p, _ in conf.data} | {f"{n} {','.join(f)}" for n, f, _ in conf.parity}
+    lines |= {f"content {p}" for p, _ in conf.content} | {f"exclude {p}" for p in conf.exclude}
+    lines |= {f"smartctl {n} {o}" for n, o, _ in conf.smartctl}
+    return lines | {f"{k} {v}" for k, v in conf.other.items()}
+
+
+# ---------------------------------------------------------------- main
+
+
+SYSTEMD_RUN = "/usr/bin/systemd-run"
+# Each verb in a transient unit started by PID 1, in the host's mount namespace (section 8.4): a harness unit
+# hardened with ProtectSystem=strict or a TemporaryFileSystem= over the data folders would otherwise hide the array
+# and the reader's own state from the reader, sudo or not. UNVERIFIED on a systemd-booted machine (lab L19).
+PID1_ARGV = (SYSTEMD_RUN, "--wait", "--pipe", "--collect", "--quiet", "--property=NoNewPrivileges=yes",
+             "--property=PrivateTmp=yes", "--property=ProtectHome=read-only")
+
+
+def wants_pid1(paths: Paths, lstat: Callable[[str], Any]) -> bool:
+    """The reader's settings ask for each verb to run through PID 1 ("pid1": true), and they are safe to read."""
+    if path_problems(paths.helper_config, lstat):
+        return False
+    cfg = Helper(paths, None, lstat)._read_json(paths.helper_config)
+    return isinstance(cfg, dict) and cfg.get("pid1") is True and not check_helper_config(cfg, paths)
+
+
+def main(argv: list[str] | None = None, stdin: Any = None, stdout: Any = None, paths: Paths | None = None,
+         system: System | None = None, lstat: Callable[[str], Any] = os.lstat,
+         execv: Callable[[str, list[str]], Any] = os.execv, environ: dict | None = None) -> int:
+    """No arguments: one request from standard input, run here, or (settings "pid1": true) handed to the same
+    program in a transient unit through PID 1 (`inner`, accepted only inside a unit). `explain
+    helper-config|snapraid-config`. Anything else is refused (so a misconfigured sudoers file still opens nothing
+    more)."""
+    argv = sys.argv[1:] if argv is None else argv
+    stdin = stdin or sys.stdin.buffer
+    stdout = stdout or sys.stdout
+    paths = paths or Paths()
+    environ = os.environ if environ is None else environ
+    os.umask(0o077)
+    if argv[:1] == ["explain"] and len(argv) == 2 and argv[1] in ("helper-config", "snapraid-config"):
+        return explain(argv[1], paths, system, lstat, out=lambda text: print(text, file=stdout))
+    if not argv and not environ.get("INVOCATION_ID") and wants_pid1(paths, lstat):
+        stdout.flush()
+        execv(SYSTEMD_RUN, [*PID1_ARGV, paths.helper, "inner"])
+        return 1
+    if argv == ["inner"] and environ.get("INVOCATION_ID"):
+        argv = []
+    if argv:
+        words = "run is for the job units of a later version" if argv[0] == "run" else \
+            "the reader takes no arguments but explain helper-config or explain snapraid-config"
+        stdout.write(json.dumps({"ok": False, "error": "bad_arguments", "words": f"Refused: {words}."}) + "\n")
+        return 2
+    line = stdin.readline(MAX_REQUEST + 2)
+    code, answer = Helper(paths, system, lstat).handle(line)
+    stdout.write(json.dumps(answer, ensure_ascii=True, separators=(",", ":")) + "\n")
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,5 +1,5 @@
 {
-  "description": "gpt-oss-120b on llama.cpp (reasoning high) for spec-writer, security review, approver and scout; DeepSeek V4 Pro builds and leads, V4 Flash reviews in parallel. Needs DEEPSEEK_API_KEY.",
+  "description": "gpt-oss-120b on llama.cpp (reasoning high) for spec-writer, security review, approver and scout; DeepSeek V4 Pro builds and leads, V4 Flash reviews in parallel; the code lens moves to gpt-oss (its independent alternate: V4 Flash is the builder's DeepSeek family), the UX and UI lenses stay on V4 Flash by choice (independent_alternate: false: three lenses on the one llama.cpp slot would review one after another), and their runs say the shared family was accepted. Needs DEEPSEEK_API_KEY.",
   "providers": {
     "llamacpp": {
       "type": "openai",
@@ -108,13 +108,16 @@
       "model": "gpt-oss"
     },
     "reviewer-ux": {
-      "model": "deepseek-flash"
+      "model": "deepseek-flash",
+      "independent_alternate": false
     },
     "reviewer-ui": {
-      "model": "deepseek-flash"
+      "model": "deepseek-flash",
+      "independent_alternate": false
     },
     "reviewer-code": {
-      "model": "deepseek-flash"
+      "model": "deepseek-flash",
+      "independent_alternate": "gpt-oss"
     },
     "lead": {
       "model": "deepseek-pro"

@@ -6,7 +6,7 @@ import unittest
 from typing import Any
 from unittest import mock
 
-from swfactory import settings
+from swfactory import routing, settings
 from swfactory.config import Config
 from tests.helpers import make_repo
 from tests.test_settings import TOKEN, SettingsTestCase
@@ -215,7 +215,9 @@ class PresetFilesTest(SettingsTestCase):
         self.assertEqual(preset["providers"]["nanogpt"]["base_url"], "https://nano-gpt.com/api/v1")
         for tier in ("opus", "sonnet", "haiku"):
             self.assertEqual(preset["models"][tier]["provider"], "nanogpt")
-            self.assertTrue(preset["models"][tier]["model"].startswith("claude-"))
+            # the ids NanoGPT's public model list gives on its OpenAI-format API (read 2026-10-25); the dashed
+            # Anthropic-API form is not on it
+            self.assertEqual(preset["models"][tier]["model"], f"anthropic/claude-{tier}-5.5")
 
     def test_value_presets_copy_the_dated_price_file(self) -> None:
         prices = json.loads(PRICE_FILE.read_text(encoding="utf-8"))
@@ -275,16 +277,13 @@ class PresetFilesTest(SettingsTestCase):
     def test_no_profile_economises_the_gates(self) -> None:
         """DESIGN §23: the spec, approver and lead stay on Opus 5.5 at an effective effort (the profile's
         own effort over the model entry's) of high or more, and the four review lenses come from four
-        model families, the code lens from another family than the builder's own model (its escalation
-        rungs: test_independence_ends_at_an_escalation_rung)."""
+        model families, the code lens from another family than the builder's own model (on the builder's
+        escalation rungs the independence guard takes over: test_the_independence_guard_on_every_preset)."""
         preset = settings.load_preset("local-first")
         models = preset["models"]
 
         def family(key: str) -> str:
-            model_id = models[key]["model"]
-            if models[key]["provider"] in ("tabby", "strata", "llamacpp"):
-                return "gemma" if "gemma" in model_id.lower() else "qwen"
-            return "anthropic" if model_id.startswith("claude-") else model_id.split("/")[0]
+            return routing.entry_family(models[key])
 
         for name, profile in preset["profiles"].items():
             with self.subTest(profile=name):
@@ -302,39 +301,108 @@ class PresetFilesTest(SettingsTestCase):
                     self.assertIn(entry["reason"]["kind"], ("capability", "time", "stage-fit", "cost"), agent)
                     for rung in entry.get("escalate", []):
                         self.assertIn(rung, models)
+                    alternate = entry.get("independent_alternate")
+                    if alternate:
+                        self.assertIn(agent, (*REVIEWERS, "approver"), "only a judge has an alternate")
+                        self.assertNotEqual(family(alternate), family(entry["model"]), f"{agent}: another family")
+                        if agent == "approver":   # the merge gate's alternate is never economised either
+                            self.assertEqual(models[alternate]["extra_body"]["reasoning_effort"], "xhigh")
 
-    def test_independence_ends_at_an_escalation_rung(self) -> None:
-        """DESIGN §23 ("Independence and the escalation ladder"): the judges of the build (the lenses and the
-        approver) that share the model of one of the builder's rungs, or of the builder's own model, per
-        preset and profile. The owner's agreed lists accept these; the docs name each one, so a change
-        here must change them too."""
-        judges = (*REVIEWERS, "approver")
-        sol, opus = "openai/gpt-6.1-sol", "claude-opus-5-5"
+    def guard_snapshot(self, preset: str, profile: str = "") -> dict:
+        from swfactory.events import EventBus
+        from swfactory.orchestrator import Factory
+
+        repo = make_repo(self.tmp, f"app-{preset}-{profile or 'base'}")
+        config = settings.preset_config(self.make_config({"repos": [{"name": "app", "path": str(repo)}]}), preset)
+        return Factory(config, EventBus()).check_routing("app", profile=profile)
+
+    def guard_map(self, preset: str, profile: str = "") -> list[tuple[str, str, dict, dict, dict]]:
+        """routing.independence_map of preset's snapshot under profile ("" none): [(via, builder model,
+        {judge: alternate}, {judge: shared model, reduced}, {judge: shared model, accepted})]."""
+        return [(row["builder"]["via"], row["builder"]["model"], row["alternate"], row["reduced"], row["accepted"])
+                for row in routing.independence_map(self.guard_snapshot(preset, profile))]
+
+    def test_the_independence_guard_on_every_preset(self) -> None:
+        """DESIGN §23 ("The independence guard"): for every model the builder can run on (its own, its
+        overflow, each escalation rung), which judges move to their independent alternate, which run with
+        their independence reduced and which share the builder's family by the routing's choice
+        (independent_alternate: false). The docs name each one, so a change here must change them too."""
+        security = {"reviewer-security": "flash-next"}   # the local security fine-tune: stage fit, accepted
+        code_alt = {"reviewer-code": "muse-spark"}
+        local_first = [("route", "flash-next", {}, {}, security), ("overflow", "mimo", {}, {}, {}),
+                       ("rung 1", "gpt-sol-high", code_alt, {}, {}), ("rung 2", "gpt-sol-xhigh", code_alt, {}, {})]
+        approver = {"approver": "gpt-sol-xhigh"}
         expected = {
-            ("local-first", None): ({sol: ["reviewer-code"]}, ["reviewer-security"]),
-            ("local-first", "local-first"): ({sol: ["reviewer-code"]}, ["reviewer-security"]),
-            ("local-first", "balanced"): ({sol: ["reviewer-code"]}, []),
-            ("local-first", "best"): ({opus: ["approver"]}, []),
-            ("local-first", "fastest"): ({}, []),
-            ("local-first", "thrifty"): ({sol: ["reviewer-code"]}, ["reviewer-security"]),
-            ("nanogpt-value", None): ({sol: ["reviewer-code"]}, []),
+            ("local-first", ""): local_first,
+            ("local-first", "local-first"): local_first,
+            ("local-first", "balanced"): [("route", "flash-next", {"reviewer-security": "muse-spark"}, {}, {}),
+                                          ("overflow", "mimo", {}, {}, {}),
+                                          ("rung 1", "gpt-sol-high", code_alt, {}, {}),
+                                          ("rung 2", "gpt-sol-xhigh", code_alt, {}, {})],
+            ("local-first", "best"): [("route", "claude-fable", approver, {}, {}),
+                                      ("rung 1", "claude-opus", approver, {}, {}),
+                                      ("rung 2", "claude-opus-max", approver, {}, {})],
+            ("local-first", "fastest"): [("route", "gpt-5.6-sol", {}, {}, {}), ("rung 1", "gpt-sol-high", {}, {}, {}),
+                                         ("rung 2", "gpt-sol-xhigh", {}, {}, {})],
+            ("local-first", "thrifty"): [("route", "flash-next", {}, {}, security),
+                                         ("overflow, rung 1 overflow, rung 2", "mimo", {}, {}, {}),
+                                         ("rung 1", "qwen-27b-q8", {}, {}, security),
+                                         ("rung 3", "gpt-sol-high", code_alt, {}, {})],
+            ("nanogpt-value", ""): [("route", "muse-spark", {}, {}, {}),
+                                    ("rung 1", "gpt-sol-high", {"reviewer-code": "mimo"}, {}, {}),
+                                    ("rung 2", "gpt-sol-xhigh", {"reviewer-code": "mimo"}, {}, {})],
+            ("gpt-oss", ""): [("route", "deepseek-pro", {"reviewer-code": "gpt-oss"}, {},
+                               {"reviewer-ui": "deepseek-flash", "reviewer-ux": "deepseek-flash"})],
+            ("hybrid", ""): [("route", "local", {}, {}, {"reviewer-security": "local"})],
+            ("mixed", ""): [("route", "qwen-27b", {}, {}, {})],
         }
-        found = {}
-        for name in ("local-first", "nanogpt-value"):
-            preset = settings.load_preset(name)
-            models = preset["models"]
-            placements = [(None, {k: v for k, v in preset["agents"].items() if k != "*"}),
-                          *((key, profile["agents"]) for key, profile in (preset.get("profiles") or {}).items())]
-            for profile, agents in placements:
-                builder = agents["builder"]
-                on_rungs = {}
-                for model_id in dict.fromkeys(models[rung]["model"] for rung in builder.get("escalate", [])):
-                    same = [agent for agent in judges if models[agents[agent]["model"]]["model"] == model_id]
-                    if same:
-                        on_rungs[model_id] = same
-                own = models[builder["model"]]["model"]
-                found[(name, profile)] = (on_rungs, [a for a in judges if models[agents[a]["model"]]["model"] == own])
-        self.assertEqual(found, expected)
+        for (preset, profile), rows in expected.items():
+            with self.subTest(preset=preset, profile=profile):
+                self.assertEqual(self.guard_map(preset, profile), rows)
+        judges = {"approver": "opus", "reviewer-code": "sonnet", "reviewer-security": "opus", "reviewer-ui": "sonnet",
+                  "reviewer-ux": "sonnet"}
+        for preset in ("anthropic", "deepseek", "nanogpt"):   # one family: nothing to move to
+            with self.subTest(preset=preset):
+                self.assertEqual(self.guard_map(preset), [("route", "opus", {}, judges, {})])
+        for preset in ("ollama", "strata"):
+            with self.subTest(preset=preset):
+                self.assertEqual(self.guard_map(preset), [("route", "local", {}, dict.fromkeys(judges, "local"), {})])
+        covered = {preset for preset, _ in expected} | {"anthropic", "deepseek", "nanogpt", "ollama", "strata"}
+        self.assertEqual(covered, set(PRESETS), "every routing preset is in the table")
+
+    def test_four_lenses_stay_four_families_after_the_guard(self) -> None:
+        """Where the docs promise four review families (local-first and its profiles, nanogpt-value), every model
+        the builder can run on leaves the four lenses on four models of four families once the guard has moved
+        them: an alternate is neither the builder's family nor another lens's model."""
+        cases = [("local-first", profile) for profile in ("", *PROFILES)] + [("nanogpt-value", "")]
+        for preset, profile in cases:
+            snapshot = self.guard_snapshot(preset, profile)
+            lenses = {agent: route for agent, route in snapshot.items() if agent.startswith("reviewer-")}
+            self.assertEqual(len(lenses), 4)
+            for via, placed in routing.builder_placements(snapshot["builder"]):
+                with self.subTest(preset=preset, profile=profile, builder=via):
+                    families = {routing.route_family(placed): str(placed["model"])}
+                    chosen = [routing.judge_choice(route, families)[0] for route in lenses.values()]
+                    self.assertEqual(len({route["model"] for route in chosen}), 4, [r["model"] for r in chosen])
+                    self.assertEqual(len({routing.route_family(route) for route in chosen}), 4)
+
+    def test_every_preset_alternate_resolves_in_its_snapshot(self) -> None:
+        """An alternate is a whole route in the snapshot (another family, the judge's driver, its own
+        provider entry), so a job runs on the alternate it was submitted with."""
+        from swfactory.events import EventBus
+        from swfactory.orchestrator import Factory
+
+        repo = make_repo(self.tmp, "app")
+        config = settings.preset_config(self.make_config({"repos": [{"name": "app", "path": str(repo)}]}),
+                                        "local-first")
+        snapshot = Factory(config, EventBus()).check_routing("app", profile="balanced")
+        code = snapshot["reviewer-code"]
+        alternate = code["independent_alternate"]
+        self.assertEqual((alternate["model"], alternate["model_id"], alternate["family"], alternate["driver"]),
+                         ("muse-spark", "meta/muse-spark-1.3", "meta", code["driver"]))
+        self.assertEqual((code["family"], snapshot["builder"]["family"]), ("openai", "qwen"))
+        self.assertEqual(alternate["provider_entry"]["base_url"], "https://nano-gpt.com/api/v1")
+        self.assertNotIn("independent_alternate", snapshot["reviewer-ux"])
 
     def test_local_first_profiles_route_in_a_snapshot(self) -> None:
         from swfactory.events import EventBus

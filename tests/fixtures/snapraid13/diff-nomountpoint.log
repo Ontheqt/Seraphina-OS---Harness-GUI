@@ -1,0 +1,16 @@
+version:13.0
+unixtime:1792928544
+time:2026-10-25 11:42:24
+command:diff
+argv:0:/usr/local/bin/snapraid
+argv:1:-c
+argv:2:/etc/snapraid.conf
+argv:3:-l
+argv:4:/var/lib/seraphina-snapraid/runs/J-1/snapraid.log
+argv:5:diff
+conf:file:/etc/snapraid.conf
+uuid:by-uuid:7:5: opendir(/dev/disk/by-uuid) failed, No such file or directory
+uuid:blkid:7:5:7e387000-0cc5-4f60-9c08-c27504b3227b: found /dev/loop5
+uuid:by-uuid:7:6: opendir(/dev/disk/by-uuid) failed, No such file or directory
+uuid:blkid:7:6:570f566e-dcf4-4c4a-9b8b-f33ac5c35ecb: found /dev/loop6
+msg:fatal: Error accessing 'disk' '/mnt/disk3/' specification in '/mnt/disk3/' at line 9

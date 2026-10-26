@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
+import tempfile
+import unittest
 from pathlib import Path
 
 
@@ -45,3 +48,22 @@ def clean_env(**extra: str) -> dict[str, str]:
            if not k.endswith(("_API_KEY", "_TOKEN")) and not k.startswith(("ANTHROPIC_", "OPENAI_", "DEEPSEEK_"))}
     env.update(extra)
     return env
+
+
+def outside_tmp(program: Path, case: unittest.TestCase) -> Path:
+    """program itself, or a copy of it outside /tmp when it sits below /tmp (a checkout under /tmp): bwrap gives
+    every sandboxed command a private /tmp, so a program kept there cannot be started inside the sandbox. The copy
+    lives in a folder under /var/tmp or ~/.cache that case removes afterwards; case is skipped when neither works."""
+    program = Path(program).resolve()
+    if Path("/tmp") not in program.parents:
+        return program
+    for base in (Path("/var/tmp"), Path.home() / ".cache"):
+        try:
+            base.mkdir(parents=True, exist_ok=True)
+            folder = Path(tempfile.mkdtemp(prefix="sf-outside-tmp-", dir=base)).resolve()
+        except OSError:
+            continue
+        case.addCleanup(shutil.rmtree, folder, True)
+        return Path(shutil.copy2(program, folder / program.name))
+    case.skipTest("the checkout is under /tmp and no folder outside /tmp is writable for a copy of the test program")
+    raise AssertionError("unreachable")   # skipTest raises

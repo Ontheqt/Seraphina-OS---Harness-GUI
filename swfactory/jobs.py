@@ -19,6 +19,7 @@ import unicodedata
 from pathlib import Path, PurePosixPath
 from typing import Callable, Iterator, TextIO
 
+from . import listeners
 from .events import utc_now
 from .items import empty_summary
 
@@ -43,6 +44,10 @@ SLUG_MAX_CHARS = 40
 MAX_JOB_NUMBER = 999
 BASE_PORT = 5100
 PORT_STRIDE = 10
+JOB_PORTS = 3            # the builder's port, then reviewer-ux's (+1) and reviewer-ui's (+2): orchestrator.PORT_OFFSETS
+OVERFLOW_PORT = 15100    # a job whose block something already listens on moves to 15100 + 10n, or a spare block
+SPARE_PORT = OVERFLOW_PORT + PORT_STRIDE * (MAX_JOB_NUMBER + 1)   # 25100: above every job number's overflow block
+LAST_PORT = 32767        # below Linux's ephemeral range (32768 and up), which outgoing connections draw from
 
 VERDICT_LINE_LIMIT = 4096  # chars; a first non-empty line this long is malformed
 VERDICT_SCAN_LIMIT = 64 * 1024  # chars read at most while looking for that line
@@ -235,13 +240,39 @@ def _parse_backlog(content: str) -> list[dict]:
     return [item for item in items if item is not None]
 
 
+def job_port(number: int, in_use: set[int] | frozenset[int]) -> int:
+    """The first of a job's JOB_PORTS ports: BASE_PORT + PORT_STRIDE * number, the block every job number has; when
+    something on this machine already listens on one of its ports (a server's own web app, say), the same number's
+    block above OVERFLOW_PORT, else the first free spare block from SPARE_PORT up to LAST_PORT. Neither the numbered
+    blocks nor the overflow blocks of other job numbers are ever taken, so a moved job cannot land on another job's
+    ports, even one whose preview server is not listening right now. Two moved jobs can share a spare block only
+    when both their numbered and overflow blocks are taken and the first one's servers were down when the second
+    was made. When nothing is free (or in_use is unknown, empty), the numbered block."""
+    def free(first: int) -> bool:
+        return first + JOB_PORTS - 1 <= LAST_PORT and not any(first + i in in_use for i in range(JOB_PORTS))
+    natural = BASE_PORT + PORT_STRIDE * number
+    if free(natural):
+        return natural
+    overflow = OVERFLOW_PORT + PORT_STRIDE * number
+    if free(overflow):
+        return overflow
+    candidate = SPARE_PORT
+    while candidate + JOB_PORTS - 1 <= LAST_PORT:
+        if free(candidate):
+            return candidate
+        candidate += PORT_STRIDE
+    return natural
+
+
 class JobStore:
     """Job folders under <data_dir>/jobs/<repo>/<job-id>/ and worktree paths under <data_dir>/worktrees/."""
 
-    def __init__(self, data_dir: str | os.PathLike) -> None:
+    def __init__(self, data_dir: str | os.PathLike,
+                 ports_in_use: Callable[[], set[int]] = listeners.ports_in_use) -> None:
         self.data_dir = Path(os.path.abspath(os.path.expanduser(data_dir)))
         self.jobs_root = self.data_dir / "jobs"
         self.worktrees_root = self.data_dir / "worktrees"
+        self.ports_in_use = ports_in_use   # what listens here now (listeners.py), read when a job is made
 
     # -- paths ---------------------------------------------------------------
 
@@ -322,7 +353,7 @@ class JobStore:
             "branch": f"factory/{job_id}",
             "worktree": str(self.worktree_path(repo, job_id)),
             "job_dir": str(job_dir),
-            "port": BASE_PORT + PORT_STRIDE * number,
+            "port": job_port(number, self.ports_in_use()),
             "stage": "queued",
             "detail": "",
             "round": 0,

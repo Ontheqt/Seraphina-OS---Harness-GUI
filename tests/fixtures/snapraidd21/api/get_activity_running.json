@@ -1,0 +1,32 @@
+{
+ "body": null,
+ "headers": {
+  "Connection": "close",
+  "Content-Type": "application/json"
+ },
+ "json": {
+  "command": "sync",
+  "error_data": 0,
+  "error_io": 0,
+  "error_soft": 0,
+  "health": "passed",
+  "high_command": "maintenance",
+  "log_file": "<lab>/run/logs/20261025-143749-sync.log",
+  "messages": [],
+  "number": 4,
+  "pulse": {
+   "activity": 22,
+   "array": 5,
+   "config": 1,
+   "current_at": "2026-10-25T14:37:51",
+   "disks": 1,
+   "tasks": 22
+  },
+  "scheduled_at": "2026-10-25T14:37:48",
+  "started_at": "2026-10-25T14:37:49",
+  "status": "starting"
+ },
+ "method": "GET",
+ "path": "/snapraid/v1/activity",
+ "status": 200
+}

@@ -1,0 +1,31 @@
+Self test...
+Loading state from /var/snapraid/snapraid.content...
+Using 0 MiB of memory for the file-system.
+Initializing...
+Scrub plan: bad. Only blocks previously marked as bad will be checked.
+Using 56 MiB of memory for 128 cached blocks.
+Selecting...
+Scrubbing...
+100%, 0 MB
+100% completed, 1 MB accessed in 0:00
+Saving state to /var/snapraid/snapraid.content...
+Saving state to /mnt/disk1/.snapraid/snapraid.content...
+Saving state to /mnt/disk2/.snapraid/snapraid.content...
+Verifying...
+Verified /var/snapraid/snapraid.content in 0 seconds
+Verified /mnt/disk1/.snapraid/snapraid.content in 0 seconds
+Verified /mnt/disk2/.snapraid/snapraid.content in 0 seconds
+
+       d1 14% | *********
+       d2 14% | *********
+       d3 14% | *********
+   parity  8% | *****
+ 2-parity 14% | *********
+     raid  3% | **
+     hash  3% | **
+    sched 63% | *****************************************
+     misc  0% | 
+              |__________________________________________________________________
+                               wait time (total, less is better)
+
+Everything OK

@@ -8,6 +8,11 @@ Four daemon threads serve each server: a writer that owns its stdin (so no
 caller, and never the stdout reader, blocks on a full pipe), a stdout reader
 that routes responses and answers server requests, a stderr reader, and an
 exit watcher that fails the session as soon as the server process exits.
+
+Outcomes (DESIGN.md section 40): a tool call may change something outside the harness, so a call that was wholly
+sent and got no answer (a timeout, the server died) is reported as outcome unknown, with the words "check before
+you call it again"; only a call that provably never reached the server says the tool did not run. The client never
+calls a tool again by itself.
 """
 
 from __future__ import annotations
@@ -25,7 +30,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
 
 from .. import __version__
-from .sandbox import Sandbox, bwrap_available, scrub_env
+from .sandbox import Sandbox, bwrap_available, scrub_env, without_new_privileges
 
 PROTOCOL_VERSION = "2025-06-18"
 DEFAULT_STARTUP_TIMEOUT = 60.0
@@ -43,14 +48,19 @@ _STDERR_TAIL_LINES = 10            # kept to explain why a server died
 
 # Write states of an outgoing message (guarded by McpClient._lock).
 _QUEUED, _WRITING, _SENT, _DROPPED = "queued", "writing", "sent", "dropped"
+UNKNOWN_WORDS = "so the tool may have run: its outcome is unknown. Check before you call it again."
 
 
 class McpError(Exception):
-    """An MCP server could not start, died, or answered with a JSON-RPC error."""
+    """An MCP server could not start, died, or answered with a JSON-RPC error. sent: the request was wholly
+    written before the failure and no answer came, so what it asked for may have been done (DESIGN §40). partly:
+    the request was being written when the session failed: the rest may still reach the server, so the same."""
 
-    def __init__(self, message: str, code: int | None = None) -> None:
+    def __init__(self, message: str, code: int | None = None, *, sent: bool = False, partly: bool = False) -> None:
         super().__init__(message)
         self.code = code
+        self.sent = sent
+        self.partly = partly
 
 
 class _Timeout(McpError):
@@ -166,11 +176,17 @@ class McpClient:
         try:
             result = self._request("tools/call", {"name": tool, "arguments": arguments or {}}, limit)
         except _Timeout as exc:
-            if exc.sent:
-                self._send({"jsonrpc": "2.0", "method": "notifications/cancelled",
-                            "params": {"requestId": exc.request_id, "reason": f"timed out after {limit:g}s"}})
-            return f"MCP call timed out after {limit:g}s", True
+            if not exc.sent:
+                return f"MCP call timed out after {limit:g}s before the request was sent: the tool did not run.", True
+            self._send({"jsonrpc": "2.0", "method": "notifications/cancelled",
+                        "params": {"requestId": exc.request_id, "reason": f"timed out after {limit:g}s"}})
+            return f"MCP call timed out after {limit:g}s. The request was sent, {UNKNOWN_WORDS}", True
         except McpError as exc:
+            if exc.partly:
+                return (f"{exc}. Part of the request was written and the rest may still reach the server, "
+                        f"{UNKNOWN_WORDS}"), True
+            if exc.sent:
+                return f"{exc}. The request was sent before that, {UNKNOWN_WORDS}", True
             return str(exc), True
         return _format_result(result)
 
@@ -217,6 +233,8 @@ class McpClient:
                 env.pop(str(key), None)
             else:
                 env[str(key)] = str(value)
+        if self._sandbox is None or self._sandbox.mode == "none":   # bwrap sets no-new-privileges itself
+            argv = without_new_privileges(argv, env.get("PATH"), cwd)
         try:
             # A new session lets close() signal wrapper scripts and their children together (bwrap does not
             # start another session, so a sandboxed server and its helpers stay in this group too).
@@ -300,16 +318,18 @@ class McpClient:
                 if stuck:
                     self._fail_all(f"MCP server {self.name} stopped reading its stdin "
                                    f"(a {method} request could not be written within {timeout:g}s)")
-                    raise McpError(self._failure or "")
+                    # this request half in the pipe: the writer may still finish it (outcome unknown, §40);
+                    # one queued behind it never left
+                    raise McpError(self._failure or "", partly=state == _WRITING)
                 raise _Timeout(method, request_id, timeout, sent=state == _SENT)
-        if pending.failure is not None:
-            raise McpError(pending.failure)
+        if pending.failure is not None:   # the session failed while this request waited for its answer
+            raise McpError(pending.failure, sent=outgoing.state == _SENT)
         response = pending.response or {}
         if response.get("error") is not None:
             raise _rpc_error(response["error"])
         result = response.get("result")
-        if not isinstance(result, dict):
-            raise McpError(f"MCP server {self.name} sent an invalid result for {method}")
+        if not isinstance(result, dict):   # an answer, but not one that says what was done
+            raise McpError(f"MCP server {self.name} sent an invalid result for {method}", sent=True)
         return result
 
     def _send(self, message: dict) -> _Outgoing:

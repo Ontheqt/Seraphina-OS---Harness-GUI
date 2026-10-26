@@ -1,0 +1,84 @@
+version:13.0
+unixtime:1792928543
+time:2026-10-25 11:42:23
+command:diff
+argv:0:/usr/local/bin/snapraid
+argv:1:-c
+argv:2:/etc/snapraid.conf
+argv:3:-l
+argv:4:/var/lib/seraphina-snapraid/runs/J-1/snapraid.log
+argv:5:diff
+conf:file:/etc/snapraid.conf
+uuid:by-uuid:7:5: opendir(/dev/disk/by-uuid) failed, No such file or directory
+uuid:blkid:7:5:7e387000-0cc5-4f60-9c08-c27504b3227b: found /dev/loop5
+uuid:by-uuid:7:6: opendir(/dev/disk/by-uuid) failed, No such file or directory
+uuid:blkid:7:6:570f566e-dcf4-4c4a-9b8b-f33ac5c35ecb: found /dev/loop6
+uuid:by-uuid:254:0: opendir(/dev/disk/by-uuid) failed, No such file or directory
+uuid:blkid:254:0: blkid_get_tag_value(UUID,/dev/vda) failed, Operation not permitted
+uuid:notfound:254:0:
+blocksize:65536
+data:d1:/mnt/disk1/
+data:d2:/mnt/disk2/
+data:d3:/mnt/disk3/
+mode:par2
+parity:0:/mnt/parity1/snapraid.parity
+2-parity:0:/mnt/parity2/snapraid.2-parity
+autosave:1000000000
+filter:exclude /lost+found/
+filter:exclude *.unrecoverable
+filter:exclude /seraphina-restored/
+filter:exclude /.seraphina-trash/
+content:/var/snapraid/snapraid.content
+msg:progress: Loading state from /var/snapraid/snapraid.content...
+msg:verbose:       30 files
+msg:verbose:        0 hardlinks
+msg:verbose:        0 symlinks
+msg:verbose:        2 empty dirs
+msg:progress: Comparing...
+statfs:ext2/3/4: /mnt/disk1/ 
+statfs:ext2/3/4: /mnt/disk2/ 
+statfs:ext2/3/4: /mnt/disk3/ 
+msg:verbose: Excluding directory '/mnt/disk1/lost+found' for rule 'exclude /lost+found/'
+msg:verbose: Excluding directory '/mnt/disk2/lost+found' for rule 'exclude /lost+found/'
+msg:verbose: Excluding content '/mnt/disk1/.snapraid/snapraid.content'
+msg:verbose: Excluding content '/mnt/disk2/.snapraid/snapraid.content'
+scan:move:d2:docs/readme.txt:docs/readme-moved.txt
+scan:update:d1:media/big.bin: 2000000 1792928531.602360433 -> 2000100 1792928543.694361152
+scan:add:d2:media/new.bin
+scan:remove:d1:docs/readme.txt
+scan:remove:d1:media/photos/img1.jpg
+scan:remove:d1:media/photos/img2.jpg
+scan:remove:d1:media/photos/img3.jpg
+scan:remove:d1:media/photos/img4.jpg
+scan:remove:d1:media/photos/img5.jpg
+scan:remove:d3:docs/readme.txt
+scan:remove:d3:media/photos/img1.jpg
+scan:remove:d3:media/photos/img2.jpg
+scan:remove:d3:media/photos/img3.jpg
+scan:remove:d3:media/photos/img4.jpg
+scan:remove:d3:media/photos/img5.jpg
+scan:remove:d3:media/big.bin
+scan:remove:d3:media/notes/a\db.txt
+scan:remove:d3:media/notes/back\\slash.txt
+msg:fatal: WARNING! All the files previously present in disk 'd3' at dir '/mnt/disk3/'msg:fatal: 
+are now missing or have been rewritten!
+msg:fatal: This could occur when some disks are not mounted
+msg:fatal: in the expected directory.
+msg:fatal: WARNING! UUID is unsupported for disks: 'd3'msg:fatal: . Not using inodes to detect move operations.
+msg:status: 
+msg:status:       13 equal
+msg:status:        1 added
+msg:status:       15 removed
+msg:status:        1 updated
+msg:status:        1 moved
+msg:status:        0 copied
+msg:status:        0 restored
+summary:equal:13
+summary:added:1
+summary:removed:15
+summary:updated:1
+summary:moved:1
+summary:copied:0
+summary:restored:0
+msg:status: There are differences!
+summary:exit:diff

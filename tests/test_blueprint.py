@@ -272,10 +272,19 @@ def show_blocks(units: list[str]) -> str:
     return "\n".join(blocks)
 
 
+# What `sudo -n` says when it will not run a command: classic sudo wanting a password; sudo-rs (0.2.13, checked on
+# an Ubuntu 26.04 server, where it is /usr/bin/sudo) wanting one; classic sudo under no-new-privileges (its own
+# message, read from 1.9.15p5's binary); sudo-rs naming itself (0.2.2's other prefix, read from its binary).
+SUDO_REFUSALS = {"refuse": "sudo: a password is required\n",
+                 "refuse-rs": "sudo: interactive authentication is required\n",
+                 "refuse-nnp": 'sudo: The "no new privileges" flag is set, which prevents sudo from running as root.\n',
+                 "refuse-rs-named": "sudo-rs: interactive authentication is required\n"}
+
+
 class FakeRunner:
     """The fixture host. Fails the test on a command that is not allow-listed, could change something, or is
-    not in the fixture. sudo: "allow" answers `sudo -n --` like the command itself, "refuse" like a sudo that
-    wants a password."""
+    not in the fixture. sudo: "allow" answers `sudo -n --` like the command itself, "refuse" (and the other
+    SUDO_REFUSALS) like a sudo that will not run it."""
 
     def __init__(self, test: unittest.TestCase, *, missing: set[str] | frozenset = frozenset({"zpool", "zfs"}),
                  sudo: str = "allow", overrides: dict | None = None) -> None:
@@ -295,8 +304,8 @@ class FakeRunner:
         inner = argv_t[3:] if argv_t[:3] == ("sudo", "-n", "--") else argv_t
         self.guard(argv_t, inner)
         self.test.assertGreater(timeout, 0)
-        if inner is not argv_t and self.sudo == "refuse":
-            return Result(1, "", "sudo: a password is required\n", 0.01)
+        if inner is not argv_t and self.sudo in SUDO_REFUSALS:
+            return Result(1, "", SUDO_REFUSALS[self.sudo], 0.01)
         if inner[0] in self.missing:
             self.test.fail(f"a missing command was run: {argv_t}")
         answer = self.answer(inner)
@@ -621,6 +630,39 @@ class SafetyTest(CollectTestCase):
                 check_argv(argv)
 
 
+class CosmosGoneTest(CollectTestCase):
+    """Cosmos's config is read only while Cosmos is installed (a unit, or a container of its own): once it is gone,
+    its folder may keep a stale route table and its private key, which are listed by name and never read, and no
+    route edge is drawn from them. Apps it once managed keep their cosmos-* labels, which do not count."""
+
+    UNIT_FILES = ("systemctl", "list-unit-files", "--no-legend", "--no-pager")
+    PS = ("docker", "ps", "-a", "--no-trunc", "--format", "{{json .}}")
+
+    def without_cosmos(self, containers: str = "") -> dict:
+        units = "".join(f"{name} {spec[0]} enabled\n" for name, spec in UNITS.items() if "Cosmos" not in name)
+        rows = "".join(json.dumps({"ID": IDS[c["Name"][1:]], "Names": c["Name"][1:], "Image": c["Config"]["Image"],
+                                   "State": c["State"]["Status"]}) + "\n" for c in CONTAINERS)
+        return {self.UNIT_FILES: (0, units, ""), self.PS: (0, rows + containers, "")}
+
+    def test_gone_its_stale_files_are_listed_not_read(self) -> None:
+        snapshot, runner = self.capture(sudo=True, overrides=self.without_cosmos())
+        config = snapshot["cosmos"]["config"]
+        self.assertEqual(config["status"], "skipped_by_policy")
+        self.assertIn("Cosmos is not installed (no unit, no container of its own): stale files are left in "
+                      "/var/lib/cosmos", config["error"])
+        self.assertIn("cosmos.config.json", snapshot["cosmos"]["config_dir"]["stdout"], "listed by name")
+        self.assertNotIn(("sudo", "-n", "--", "cat", "/var/lib/cosmos/cosmos.config.json"), runner.calls)
+        self.assertNotIn(("cat", "/var/lib/cosmos/cosmos.config.json"), runner.calls)
+        self.assertFalse([e for e in snapshot["indexes"]["relationships"] if e["from"].startswith("cosmos-route:")])
+        self.assertIn("cosmos-auth-token", json.dumps(snapshot["docker"]), "an app's cosmos-* label is not Cosmos")
+
+    def test_a_cosmos_container_counts_as_installed(self) -> None:
+        cosmos = json.dumps({"ID": "e" * 64, "Names": "cosmos-server", "Image": "azukaar/cosmos-server:latest",
+                             "State": "running"}) + "\n"
+        snapshot, _ = self.capture(sudo=True, overrides=self.without_cosmos(cosmos))
+        self.assertEqual(snapshot["cosmos"]["config"]["status"], "ok")
+
+
 class SudoTest(CollectTestCase):
     def test_root_probes_go_through_sudo_n(self) -> None:
         snapshot, runner = self.capture(sudo=True)
@@ -638,6 +680,18 @@ class SudoTest(CollectTestCase):
         self.assertEqual(first["command"], ["smartctl", "--scan", "-j"])
         self.assertIn("sudo refused (sudo: a password is required); ran without sudo", first["error"])
         self.assertTrue(any(limit.startswith("sudo -n was refused") for limit in snapshot["scope_limits"]))
+
+    def test_every_sudo_refusal_falls_back_once(self) -> None:
+        """sudo-rs and classic sudo word a refusal differently (Ubuntu 25.10 and later ship both); the capture's
+        limits say so neutrally, whatever the reason."""
+        for mode, words in SUDO_REFUSALS.items():
+            with self.subTest(mode=mode):
+                snapshot, runner = self.capture(sudo=True, sudo_mode=mode)
+                self.assertEqual(len([call for call in runner.calls if call[0] == "sudo"]), 1)
+                self.assertIn(f"sudo refused ({words.strip()}); ran without sudo",
+                              snapshot["storage"]["smart_scan"]["error"])
+                limit = next(text for text in snapshot["scope_limits"] if text.startswith("sudo -n was refused"))
+                self.assertNotIn("password", limit, "the reason is sudo's own words in each probe, not a guess")
 
     def test_without_sudo_installed_root_probes_run_without_it(self) -> None:
         snapshot, runner = self.capture(sudo=True, missing={"sudo", "zpool", "zfs"})

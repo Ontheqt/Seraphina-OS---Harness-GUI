@@ -1,0 +1,108 @@
+{
+ "body": null,
+ "headers": {
+  "Connection": "close",
+  "Content-Type": "application/json"
+ },
+ "json": {
+  "command": "diff",
+  "exit_code": 0,
+  "finished_at": "2026-10-25T15:09:14",
+  "health": "passed",
+  "log_file": "/var/log/20261025-150914-diff.log",
+  "messages": [
+   {
+    "level": "info",
+    "text": "Loading state from /var/content/snapraid.content..."
+   },
+   {
+    "level": "info",
+    "text": "Loaded state in 0 seconds"
+   },
+   {
+    "level": "verbose",
+    "text": "364 files"
+   },
+   {
+    "level": "verbose",
+    "text": "0 hardlinks"
+   },
+   {
+    "level": "verbose",
+    "text": "0 symlinks"
+   },
+   {
+    "level": "verbose",
+    "text": "0 empty dirs"
+   },
+   {
+    "level": "info",
+    "text": "Comparing..."
+   },
+   {
+    "level": "info",
+    "text": "Applying..."
+   },
+   {
+    "level": "error",
+    "text": "WARNING! UUID is unsupported for disks: 'd1'msg:error: , 'd2'msg:error: . Not using inodes to detect move operations.",
+    "type": "soft"
+   },
+   {
+    "level": "info",
+    "text": ""
+   },
+   {
+    "level": "info",
+    "text": "364 equal"
+   },
+   {
+    "level": "info",
+    "text": "0 added"
+   },
+   {
+    "level": "info",
+    "text": "0 removed"
+   },
+   {
+    "level": "info",
+    "text": "0 updated"
+   },
+   {
+    "level": "info",
+    "text": "0 moved"
+   },
+   {
+    "level": "info",
+    "text": "0 copied"
+   },
+   {
+    "level": "info",
+    "text": "0 relocated"
+   },
+   {
+    "level": "info",
+    "text": "0 restored"
+   },
+   {
+    "level": "info",
+    "text": "No differences"
+   }
+  ],
+  "number": 47,
+  "pulse": {
+   "activity": 784,
+   "array": 160,
+   "config": 4,
+   "current_at": "2026-10-25T15:09:13",
+   "disks": 214,
+   "tasks": 708
+  },
+  "scheduled_at": "2026-10-25T15:09:12",
+  "started_at": "2026-10-25T15:09:14",
+  "status": "terminated"
+ },
+ "method": "GET",
+ "path": "/snapraid/v1/activity",
+ "status": 200
+}

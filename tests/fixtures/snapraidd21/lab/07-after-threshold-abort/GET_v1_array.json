@@ -1,0 +1,342 @@
+{
+ "body": null,
+ "headers": {
+  "Connection": "close",
+  "Content-Type": "application/json"
+ },
+ "json": {
+  "block_size_bytes": 262144,
+  "blocks_bad": 0,
+  "blocks_count": 500,
+  "blocks_rehash": 0,
+  "blocks_unscrubbed": 450,
+  "blocks_unsynced": 0,
+  "daemon_conf": "/etc/snapraidd.conf",
+  "daemon_version": "2.1",
+  "data_disks_count": 2,
+  "diff_added": 0,
+  "diff_copied": 0,
+  "diff_equal": 339,
+  "diff_moved": 0,
+  "diff_relocated": 0,
+  "diff_removed": 25,
+  "diff_restored": 0,
+  "diff_updated": 0,
+  "diffs": [
+   {
+    "change": "removed",
+    "disk": "d1",
+    "path": "docs/d1-docs-000.bin"
+   },
+   {
+    "change": "removed",
+    "disk": "d1",
+    "path": "docs/d1-docs-001.bin"
+   },
+   {
+    "change": "removed",
+    "disk": "d1",
+    "path": "docs/d1-docs-002.bin"
+   },
+   {
+    "change": "removed",
+    "disk": "d1",
+    "path": "docs/d1-docs-003.bin"
+   },
+   {
+    "change": "removed",
+    "disk": "d1",
+    "path": "docs/d1-docs-004.bin"
+   },
+   {
+    "change": "removed",
+    "disk": "d1",
+    "path": "docs/d1-docs-005.bin"
+   },
+   {
+    "change": "removed",
+    "disk": "d1",
+    "path": "docs/d1-docs-006.bin"
+   },
+   {
+    "change": "removed",
+    "disk": "d1",
+    "path": "docs/d1-docs-007.bin"
+   },
+   {
+    "change": "removed",
+    "disk": "d1",
+    "path": "docs/d1-docs-008.bin"
+   },
+   {
+    "change": "removed",
+    "disk": "d1",
+    "path": "docs/d1-docs-009.bin"
+   },
+   {
+    "change": "removed",
+    "disk": "d1",
+    "path": "docs/d1-docs-010.bin"
+   },
+   {
+    "change": "removed",
+    "disk": "d1",
+    "path": "docs/d1-docs-011.bin"
+   },
+   {
+    "change": "removed",
+    "disk": "d1",
+    "path": "docs/d1-docs-012.bin"
+   },
+   {
+    "change": "removed",
+    "disk": "d1",
+    "path": "docs/d1-docs-013.bin"
+   },
+   {
+    "change": "removed",
+    "disk": "d1",
+    "path": "docs/d1-docs-014.bin"
+   },
+   {
+    "change": "removed",
+    "disk": "d1",
+    "path": "docs/d1-docs-015.bin"
+   },
+   {
+    "change": "removed",
+    "disk": "d1",
+    "path": "docs/d1-docs-016.bin"
+   },
+   {
+    "change": "removed",
+    "disk": "d1",
+    "path": "docs/d1-docs-017.bin"
+   },
+   {
+    "change": "removed",
+    "disk": "d1",
+    "path": "docs/d1-docs-018.bin"
+   },
+   {
+    "change": "removed",
+    "disk": "d1",
+    "path": "docs/d1-docs-019.bin"
+   },
+   {
+    "change": "removed",
+    "disk": "d1",
+    "path": "docs/d1-docs-020.bin"
+   },
+   {
+    "change": "removed",
+    "disk": "d1",
+    "path": "docs/d1-docs-021.bin"
+   },
+   {
+    "change": "removed",
+    "disk": "d1",
+    "path": "docs/d1-docs-022.bin"
+   },
+   {
+    "change": "removed",
+    "disk": "d1",
+    "path": "docs/d1-docs-023.bin"
+   },
+   {
+    "change": "removed",
+    "disk": "d1",
+    "path": "docs/d1-docs-024.bin"
+   }
+  ],
+  "engine_conf": "/etc/snapraid.conf",
+  "engine_content": "/var/content/snapraid.content",
+  "engine_version": "15.1",
+  "extra_disks_count": 0,
+  "files_count": 364,
+  "fix_recovered": 0,
+  "fix_unrecoverable": 0,
+  "fixes": [],
+  "free_space_bytes": 295174144,
+  "health": "pending",
+  "hold_off": false,
+  "instance": "lab",
+  "last_command": "sync",
+  "last_command_at": "2026-10-25T15:02:12",
+  "last_diff_at": "2026-10-25T15:02:01",
+  "last_scrub_at": "2026-10-25T15:02:02",
+  "last_sync_at": "2026-10-25T15:02:01",
+  "parity_disks_count": 1,
+  "pulse": {
+   "activity": 356,
+   "array": 73,
+   "config": 1,
+   "current_at": "2026-10-25T15:02:13",
+   "disks": 104,
+   "tasks": 335
+  },
+  "scrub_history": {
+   "points": [
+    {
+     "ago": 0,
+     "new": 58,
+     "scrubbed": 0
+    },
+    {
+     "ago": 0,
+     "new": 0,
+     "scrubbed": 0
+    },
+    {
+     "ago": 0,
+     "new": 0,
+     "scrubbed": 0
+    },
+    {
+     "ago": 0,
+     "new": 0,
+     "scrubbed": 0
+    },
+    {
+     "ago": 0,
+     "new": 0,
+     "scrubbed": 0
+    },
+    {
+     "ago": 0,
+     "new": 0,
+     "scrubbed": 0
+    },
+    {
+     "ago": 0,
+     "new": 0,
+     "scrubbed": 0
+    },
+    {
+     "ago": 0,
+     "new": 0,
+     "scrubbed": 5
+    },
+    {
+     "ago": 0,
+     "new": 0,
+     "scrubbed": 0
+    },
+    {
+     "ago": 0,
+     "new": 0,
+     "scrubbed": 0
+    },
+    {
+     "ago": 0,
+     "new": 0,
+     "scrubbed": 0
+    },
+    {
+     "ago": 0,
+     "new": 0,
+     "scrubbed": 0
+    },
+    {
+     "ago": 0,
+     "new": 0,
+     "scrubbed": 0
+    },
+    {
+     "ago": 0,
+     "new": 0,
+     "scrubbed": 0
+    },
+    {
+     "ago": 0,
+     "new": 19.4,
+     "scrubbed": 0
+    },
+    {
+     "ago": 0,
+     "new": 0,
+     "scrubbed": 0
+    },
+    {
+     "ago": 0,
+     "new": 0,
+     "scrubbed": 0
+    },
+    {
+     "ago": 0,
+     "new": 0,
+     "scrubbed": 0
+    },
+    {
+     "ago": 0,
+     "new": 0,
+     "scrubbed": 0
+    },
+    {
+     "ago": 0,
+     "new": 0,
+     "scrubbed": 0
+    },
+    {
+     "ago": 0,
+     "new": 0,
+     "scrubbed": 0
+    },
+    {
+     "ago": 0,
+     "new": 0,
+     "scrubbed": 0
+    },
+    {
+     "ago": 0,
+     "new": 0,
+     "scrubbed": 0
+    },
+    {
+     "ago": 0,
+     "new": 0,
+     "scrubbed": 0
+    },
+    {
+     "ago": 0,
+     "new": 0,
+     "scrubbed": 0
+    },
+    {
+     "ago": 0,
+     "new": 0,
+     "scrubbed": 0
+    },
+    {
+     "ago": 0,
+     "new": 0,
+     "scrubbed": 0
+    },
+    {
+     "ago": 0,
+     "new": 0,
+     "scrubbed": 0
+    },
+    {
+     "ago": 0,
+     "new": 0,
+     "scrubbed": 0
+    },
+    {
+     "ago": 0,
+     "new": 12.6,
+     "scrubbed": 5
+    }
+   ],
+   "x_axis_high": 0,
+   "x_axis_low": 0,
+   "x_axis_median": 0,
+   "y_axis_high": 58,
+   "y_axis_low": 0
+  },
+  "total_space_bytes": 465043456
+ },
+ "method": "GET",
+ "path": "/snapraid/v1/array",
+ "status": 200
+}

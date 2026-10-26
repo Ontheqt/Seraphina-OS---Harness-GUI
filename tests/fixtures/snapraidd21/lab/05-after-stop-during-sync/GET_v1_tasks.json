@@ -1,0 +1,831 @@
+{
+ "body": null,
+ "headers": {
+  "Connection": "close",
+  "Content-Type": "application/json"
+ },
+ "json": {
+  "active": [],
+  "history": [
+   {
+    "command": "report",
+    "exit_code": 0,
+    "finished_at": "2026-10-25T15:01:42",
+    "health": "passed",
+    "high_command": "maintenance",
+    "messages": [],
+    "number": 12,
+    "report_output": "INSTANCE: lab\nHOSTNAME: <host>\nHEALTH:  [pending]\nSTATUS: Pending\nBAD BLOCKS: 0\n\nDATA DISKS\nd1 [??]     -\nd2 [??]     -\n\nPARITY DISKS\nparity [??]     -\n\nSTART NOTIFICATION: Completed successfully\nDuration: 0s\n\nSYNC: FAILED (1)\n!! WARNING! UUID is unsupported for disks: 'd1'msg:error: , 'd2'msg:error: . Not using inodes to detect move operations.\nDuration: 7s\nI/O Errs: 0\nData Errs: 0\nSoft Errors: 0\n\nERRORS:\n- WARNING! UUID is unsupported for disks: 'd1'msg:error: , 'd2'msg:error: . Not using inodes to detect move operations.\n- Stop requested\n- Stop requested\n- Stopping for interruption at block 276\n\nSCRUB: CANCELED\n!! The preceding sync operation was canceled\nDuration: 0s\n\n",
+    "scheduled_at": "2026-10-25T15:01:33",
+    "started_at": "2026-10-25T15:01:42",
+    "status": "terminated"
+   },
+   {
+    "command": "scrub",
+    "error_data": 0,
+    "error_io": 0,
+    "error_soft": 0,
+    "exit_msg": "The preceding sync operation was canceled",
+    "finished_at": "2026-10-25T15:01:42",
+    "health": "passed",
+    "high_command": "maintenance",
+    "messages": [
+     {
+      "level": "error",
+      "text": "The preceding sync operation was canceled",
+      "type": "soft"
+     }
+    ],
+    "number": 11,
+    "scheduled_at": "2026-10-25T15:01:33",
+    "started_at": "2026-10-25T15:01:42",
+    "status": "canceled"
+   },
+   {
+    "block_begin": 0,
+    "block_end": 500,
+    "block_idx": 276,
+    "blocks_count": 160,
+    "blocks_done": 89,
+    "command": "sync",
+    "cpu_usage": 0,
+    "elapsed_seconds": 4,
+    "error_data": 0,
+    "error_io": 0,
+    "error_soft": 0,
+    "eta_seconds": 0,
+    "exit_code": 1,
+    "finished_at": "2026-10-25T15:01:42",
+    "health": "passed",
+    "high_command": "maintenance",
+    "log_file": "/var/log/20261025-150135-sync.log",
+    "messages": [
+     {
+      "level": "info",
+      "text": "Self-test..."
+     },
+     {
+      "level": "info",
+      "text": "Loading state from /var/content/snapraid.content..."
+     },
+     {
+      "level": "info",
+      "text": "Loaded state in 0 seconds"
+     },
+     {
+      "level": "verbose",
+      "text": "364 files"
+     },
+     {
+      "level": "verbose",
+      "text": "0 hardlinks"
+     },
+     {
+      "level": "verbose",
+      "text": "0 symlinks"
+     },
+     {
+      "level": "verbose",
+      "text": "0 empty dirs"
+     },
+     {
+      "level": "info",
+      "text": "Setting sub-second timestamps..."
+     },
+     {
+      "level": "info",
+      "text": ""
+     },
+     {
+      "level": "info",
+      "text": "0 touched files"
+     },
+     {
+      "level": "info",
+      "text": "Scanning..."
+     },
+     {
+      "level": "info",
+      "text": "Scanned d2 in 0 seconds"
+     },
+     {
+      "level": "info",
+      "text": "Scanned d1 in 0 seconds"
+     },
+     {
+      "level": "info",
+      "text": "Applying..."
+     },
+     {
+      "level": "error",
+      "text": "WARNING! UUID is unsupported for disks: 'd1'msg:error: , 'd2'msg:error: . Not using inodes to detect move operations.",
+      "type": "soft"
+     },
+     {
+      "level": "verbose",
+      "text": "362 equal"
+     },
+     {
+      "level": "verbose",
+      "text": "0 added"
+     },
+     {
+      "level": "verbose",
+      "text": "0 removed"
+     },
+     {
+      "level": "verbose",
+      "text": "2 updated"
+     },
+     {
+      "level": "verbose",
+      "text": "0 moved"
+     },
+     {
+      "level": "verbose",
+      "text": "0 copied"
+     },
+     {
+      "level": "verbose",
+      "text": "0 relocated"
+     },
+     {
+      "level": "verbose",
+      "text": "0 restored"
+     },
+     {
+      "level": "info",
+      "text": "Using 0 MiB of memory for the file-system."
+     },
+     {
+      "level": "info",
+      "text": "Initializing..."
+     },
+     {
+      "level": "info",
+      "text": "Resizing..."
+     },
+     {
+      "level": "info",
+      "text": "Saving state to /var/content/snapraid.content..."
+     },
+     {
+      "level": "info",
+      "text": "Saving state to /mnt/d1/snapraid.content..."
+     },
+     {
+      "level": "info",
+      "text": "Saving state to /mnt/d2/snapraid.content..."
+     },
+     {
+      "level": "info",
+      "text": "Saved state in 0 seconds"
+     },
+     {
+      "level": "info",
+      "text": "Verifying..."
+     },
+     {
+      "level": "info",
+      "text": "Verified /var/content/snapraid.content in 0 seconds"
+     },
+     {
+      "level": "info",
+      "text": "Verified /mnt/d1/snapraid.content in 0 seconds"
+     },
+     {
+      "level": "info",
+      "text": "Verified /mnt/d2/snapraid.content in 0 seconds"
+     },
+     {
+      "level": "verbose",
+      "text": "364 files"
+     },
+     {
+      "level": "verbose",
+      "text": "0 hardlinks"
+     },
+     {
+      "level": "verbose",
+      "text": "0 symlinks"
+     },
+     {
+      "level": "verbose",
+      "text": "0 empty dirs"
+     },
+     {
+      "level": "info",
+      "text": "Using 48 MiB of memory for 64 cached blocks."
+     },
+     {
+      "level": "info",
+      "text": "Selecting..."
+     },
+     {
+      "level": "info",
+      "text": "Syncing..."
+     },
+     {
+      "level": "error",
+      "text": "Stop requested",
+      "type": "soft"
+     },
+     {
+      "level": "error",
+      "text": "Stop requested",
+      "type": "soft"
+     },
+     {
+      "level": "error",
+      "text": "Stopping for interruption at block 276",
+      "type": "soft"
+     },
+     {
+      "level": "info",
+      "text": "Saving state to /var/content/snapraid.content..."
+     },
+     {
+      "level": "info",
+      "text": "Saving state to /mnt/d1/snapraid.content..."
+     },
+     {
+      "level": "info",
+      "text": "Saving state to /mnt/d2/snapraid.content..."
+     },
+     {
+      "level": "info",
+      "text": "Saved state in 0 seconds"
+     },
+     {
+      "level": "info",
+      "text": "Verifying..."
+     },
+     {
+      "level": "info",
+      "text": "Verified /var/content/snapraid.content in 0 seconds"
+     },
+     {
+      "level": "info",
+      "text": "Verified /mnt/d1/snapraid.content in 0 seconds"
+     },
+     {
+      "level": "info",
+      "text": "Verified /mnt/d2/snapraid.content in 0 seconds"
+     },
+     {
+      "level": "verbose",
+      "text": "364 files"
+     },
+     {
+      "level": "verbose",
+      "text": "0 hardlinks"
+     },
+     {
+      "level": "verbose",
+      "text": "0 symlinks"
+     },
+     {
+      "level": "verbose",
+      "text": "0 empty dirs"
+     }
+    ],
+    "number": 10,
+    "progress": 55,
+    "scheduled_at": "2026-10-25T15:01:33",
+    "size_done_bytes": 46661632,
+    "speed_mbs": 0,
+    "started_at": "2026-10-25T15:01:35",
+    "status": "terminated"
+   },
+   {
+    "command": "up",
+    "exit_code": 0,
+    "finished_at": "2026-10-25T15:01:34",
+    "health": "passed",
+    "high_command": "maintenance",
+    "log_file": "/var/log/20261025-150134-up.log",
+    "messages": [
+     {
+      "level": "info",
+      "text": "Spinup..."
+     },
+     {
+      "level": "info",
+      "text": "Spunup device '/dev/loop10' for disk 'd1' in 0 ms."
+     },
+     {
+      "level": "info",
+      "text": "Spunup device '/dev/loop11' for disk 'd2' in 0 ms."
+     },
+     {
+      "level": "info",
+      "text": "Spunup device '/dev/loop12' for disk 'parity' in 1 ms."
+     }
+    ],
+    "number": 9,
+    "scheduled_at": "2026-10-25T15:01:33",
+    "started_at": "2026-10-25T15:01:34",
+    "status": "terminated"
+   },
+   {
+    "command": "start",
+    "exit_code": 0,
+    "finished_at": "2026-10-25T15:01:33",
+    "health": "passed",
+    "high_command": "maintenance",
+    "messages": [],
+    "number": 8,
+    "scheduled_at": "2026-10-25T15:01:33",
+    "started_at": "2026-10-25T15:01:33",
+    "status": "terminated"
+   },
+   {
+    "command": "report",
+    "exit_code": 0,
+    "finished_at": "2026-10-25T15:01:14",
+    "health": "passed",
+    "high_command": "maintenance",
+    "messages": [],
+    "number": 7,
+    "report_output": "INSTANCE: lab\nHOSTNAME: <host>\nHEALTH:  [pending]\nSTATUS: Pending\nBAD BLOCKS: 0\n\nDATA DISKS\nd1 [??]     -\nd2 [??]     -\n\nPARITY DISKS\nparity [??]     -\n\nSTART NOTIFICATION: Completed successfully\nDuration: 0s\n\nSYNC: Completed with non-fatal ERRORS\nDuration: 14s\nI/O Errs: 0\nData Errs: 0\nSoft Errors: 0\n\nERRORS:\n- WARNING! Content file '/var/content/snapraid.content' not found, attempting with another copy...\n- WARNING! Content file '/mnt/d1/snapraid.content' not found, attempting with another copy...\n- WARNING! UUID is unsupported for disks: 'd1'msg:error: , 'd2'msg:error: . Not using inodes to detect move operations.\n\nSCRUB: Completed successfully\nDuration: 0s\nI/O Errs: 0\nData Errs: 0\nSoft Errors: 0\n\nDIFFERENCES:\n- equal:             0\n- added:           364\n- removed:           0\n- updated:           0\n- moved:             0\n- copied:            0\n- relocated:         0\n- restored:          0\n\n- added\nd1:big/d1-big-0.bin\nd1:big/d1-big-1.bin\nd1:docs/d1-docs-000.bin\nd1:docs/d1-docs-001.bin\nd1:docs/d1-docs-002.bin\nd1:docs/d1-docs-003.bin\nd1:docs/d1-docs-004.bin\nd1:docs/d1-docs-005.bin\nd1:docs/d1-docs-006.bin\nd1:docs/d1-docs-007.bin\nd1:docs/d1-docs-008.bin\nd1:docs/d1-docs-009.bin\nd1:docs/d1-docs-010.bin\nd1:docs/d1-docs-011.bin\nd1:docs/d1-docs-012.bin\nd1:docs/d1-docs-013.bin\nd1:docs/d1-docs-014.bin\nd1:docs/d1-docs-015.bin\nd1:docs/d1-docs-016.bin\nd1:docs/d1-docs-017.bin\nd1:docs/d1-docs-018.bin\nd1:docs/d1-docs-019.bin\nd1:docs/d1-docs-020.bin\nd1:docs/d1-docs-021.bin\nd1:docs/d1-docs-022.bin\nd1:docs/d1-docs-023.bin\nd1:docs/d1-docs-024.bin\nd1:docs/d1-docs-025.bin\nd1:docs/d1-docs-026.bin\nd1:docs/d1-docs-027.bin\nd1:docs/d1-docs-028.bin\nd1:docs/d1-docs-029.bin\nd1:docs/d1-docs-030.bin\nd1:docs/d1-docs-031.bin\nd1:docs/d1-docs-032.bin\nd1:docs/d1-docs-033.bin\nd1:docs/d1-docs-034.bin\nd1:docs/d1-docs-035.bin\nd1:docs/d1-docs-036.bin\nd1:docs/d1-docs-037.bin\nd1:docs/d1-docs-038.bin\nd1:docs/d1-docs-039.bin\nd1:docs/d1-docs-040.bin\nd1:docs/d1-docs-041.bin\nd1:docs/d1-docs-042.bin\nd1:docs/d1-docs-043.bin\nd1:docs/d1-docs-044.bin\nd1:docs/d1-docs-045.bin\nd1:docs/d1-docs-046.bin\nd1:docs/d1-docs-047.bin\nd1:docs/d1-docs-048.bin\nd1:docs/d1-docs-049.bin\nd1:docs/d1-docs-050.bin\nd1:docs/d1-docs-051.bin\nd1:docs/d1-docs-052.bin\nd1:docs/d1-docs-053.bin\nd1:docs/d1-docs-054.bin\nd1:docs/d1-docs-055.bin\nd1:docs/d1-docs-056.bin\nd1:docs/d1-docs-057.bin\nd1:docs/d1-docs-058.bin\nd1:docs/d1-docs-059.bin\nd1:music/d1-music-000.bin\nd1:music/d1-music-001.bin\nd1:music/d1-music-002.bin\nd1:music/d1-music-003.bin\nd1:music/d1-music-004.bin\nd1:music/d1-music-005.bin\nd1:music/d1-music-006.bin\nd1:music/d1-music-007.bin\nd1:music/d1-music-008.bin\nd1:music/d1-music-009.bin\nd1:music/d1-music-010.bin\nd1:music/d1-music-011.bin\nd1:music/d1-music-012.bin\nd1:music/d1-music-013.bin\nd1:music/d1-music-014.bin\nd1:music/d1-music-015.bin\nd1:music/d1-music-016.bin\nd1:music/d1-music-017.bin\nd1:music/d1-music-018.bin\nd1:music/d1-music-019.bin\nd1:music/d1-music-020.bin\nd1:music/d1-music-021.bin\nd1:music/d1-music-022.bin\nd1:music/d1-music-023.bin\nd1:music/d1-music-024.bin\nd1:music/d1-music-025.bin\nd1:music/d1-music-026.bin\nd1:music/d1-music-027.bin\nd1:music/d1-music-028.bin\nd1:music/d1-music-029.bin\nd1:music/d1-music-030.bin\nd1:music/d1-music-031.bin\nd1:music/d1-music-032.bin\nd1:music/d1-music-033.bin\nd1:music/d1-music-034.bin\nd1:music/d1-music-035.bin\nd1:music/d1-music-036.bin\nd1:music/d1-music-037.bin\nd1:music/d1-music-038.bin\nd1:music/d1-music-039.bin\nd1:music/d1-music-040.bin\nd1:music/d1-music-041.bin\nd1:music/d1-music-042.bin\nd1:music/d1-music-043.bin\nd1:music/d1-music-044.bin\nd1:music/d1-music-045.bin\nd1:music/d1-music-046.bin\nd1:music/d1-music-047.bin\nd1:music/d1-music-048.bin\nd1:music/d1-music-049.bin\nd1:music/d1-music-050.bin\nd1:music/d1-music-051.bin\nd1:music/d1-music-052.bin\nd1:music/d1-music-053.bin\nd1:music/d1-music-054.bin\nd1:music/d1-music-055.bin\nd1:music/d1-music-056.bin\nd1:music/d1-music-057.bin\nd1:music/d1-music-058.bin\nd1:music/d1-music-059.bin\nd1:photos/d1-photos-000.bin\nd1:photos/d1-photos-001.bin\nd1:photos/d1-photos-002.bin\nd1:photos/d1-photos-003.bin\nd1:photos/d1-photos-004.bin\nd1:photos/d1-photos-005.bin\nd1:photos/d1-photos-006.bin\nd1:photos/d1-photos-007.bin\nd1:photos/d1-photos-008.bin\nd1:photos/d1-photos-009.bin\nd1:photos/d1-photos-010.bin\nd1:photos/d1-photos-011.bin\nd1:photos/d1-photos-012.bin\nd1:photos/d1-photos-013.bin\nd1:photos/d1-photos-014.bin\nd1:photos/d1-photos-015.bin\nd1:photos/d1-photos-016.bin\nd1:photos/d1-photos-017.bin\nd1:photos/d1-photos-018.bin\nd1:photos/d1-photos-019.bin\nd1:photos/d1-photos-020.bin\nd1:photos/d1-photos-021.bin\nd1:photos/d1-photos-022.bin\nd1:photos/d1-photos-023.bin\nd1:photos/d1-photos-024.bin\nd1:photos/d1-photos-025.bin\nd1:photos/d1-photos-026.bin\nd1:photos/d1-photos-027.bin\nd1:photos/d1-photos-028.bin\nd1:photos/d1-photos-029.bin\nd1:photos/d1-photos-030.bin\nd1:photos/d1-photos-031.bin\nd1:photos/d1-photos-032.bin\nd1:photos/d1-photos-033.bin\nd1:photos/d1-photos-034.bin\nd1:photos/d1-photos-035.bin\nd1:photos/d1-photos-036.bin\nd1:photos/d1-photos-037.bin\nd1:photos/d1-photos-038.bin\nd1:photos/d1-photos-039.bin\nd1:photos/d1-photos-040.bin\nd1:photos/d1-photos-041.bin\nd1:photos/d1-photos-042.bin\nd1:photos/d1-photos-043.bin\nd1:photos/d1-photos-044.bin\nd1:photos/d1-photos-045.bin\nd1:photos/d1-photos-046.bin\nd1:photos/d1-photos-047.bin\nd1:photos/d1-photos-048.bin\nd1:photos/d1-photos-049.bin\nd1:photos/d1-photos-050.bin\nd1:photos/d1-photos-051.bin\nd1:photos/d1-photos-052.bin\nd1:photos/d1-photos-053.bin\nd1:photos/d1-photos-054.bin\nd1:photos/d1-photos-055.bin\nd1:photos/d1-photos-056.bin\nd1:photos/d1-photos-057.bin\nd1:photos/d1-photos-058.bin\nd1:photos/d1-photos-059.bin\nd2:big/d2-big-0.bin\nd2:big/d2-big-1.bin\nd2:docs/d2-docs-000.bin\nd2:docs/d2-docs-001.bin\nd2:docs/d2-docs-002.bin\nd2:docs/d2-docs-003.bin\nd2:docs/d2-docs-004.bin\nd2:docs/d2-docs-005.bin\nd2:docs/d2-docs-006.bin\nd2:docs/d2-docs-007.bin\nd2:docs/d2-docs-008.bin\nd2:docs/d2-docs-009.bin\nd2:docs/d2-docs-010.bin\nd2:docs/d2-docs-011.bin\nd2:docs/d2-docs-012.bin\nd2:docs/d2-docs-013.bin\nd2:docs/d2-docs-014.bin\nd2:docs/d2-docs-015.bin\nd2:docs/d2-docs-016.bin\nd2:docs/d2-docs-017.bin\nd2:docs/d2-docs-018.bin\nd2:docs/d2-docs-019.bin\nd2:docs/d2-docs-020.bin\nd2:docs/d2-docs-021.bin\nd2:docs/d2-docs-022.bin\nd2:docs/d2-docs-023.bin\nd2:docs/d2-docs-024.bin\nd2:docs/d2-docs-025.bin\nd2:docs/d2-docs-026.bin\nd2:docs/d2-docs-027.bin\nd2:docs/d2-docs-028.bin\nd2:docs/d2-docs-029.bin\nd2:docs/d2-docs-030.bin\nd2:docs/d2-docs-031.bin\nd2:docs/d2-docs-032.bin\nd2:docs/d2-docs-033.bin\nd2:docs/d2-docs-034.bin\nd2:docs/d2-docs-035.bin\nd2:docs/d2-docs-036.bin\nd2:docs/d2-docs-037.bin\nd2:docs/d2-docs-038.bin\nd2:docs/d2-docs-039.bin\nd2:docs/d2-docs-040.bin\nd2:docs/d2-docs-041.bin\nd2:docs/d2-docs-042.bin\nd2:docs/d2-docs-043.bin\nd2:docs/d2-docs-044.bin\nd2:docs/d2-docs-045.bin\nd2:docs/d2-docs-046.bin\nd2:docs/d2-docs-047.bin\nd2:docs/d2-docs-048.bin\nd2:docs/d2-docs-049.bin\nd2:docs/d2-docs-050.bin\nd2:docs/d2-docs-051.bin\nd2:docs/d2-docs-052.bin\nd2:docs/d2-docs-053.bin\nd2:docs/d2-docs-054.bin\nd2:docs/d2-docs-055.bin\nd2:docs/d2-docs-056.bin\nd2:docs/d2-docs-057.bin\nd2:docs/d2-docs-058.bin\nd2:docs/d2-docs-059.bin\nd2:music/d2-music-000.bin\nd2:music/d2-music-001.bin\nd2:music/d2-music-002.bin\nd2:music/d2-music-003.bin\nd2:music/d2-music-004.bin\nd2:music/d2-music-005.bin\nd2:music/d2-music-006.bin\nd2:music/d2-music-007.bin\nd2:music/d2-music-008.bin\nd2:music/d2-music-009.bin\nd2:music/d2-music-010.bin\nd2:music/d2-music-011.bin\nd2:music/d2-music-012.bin\nd2:music/d2-music-013.bin\nd2:music/d2-music-014.bin\nd2:music/d2-music-015.bin\nd2:music/d2-music-016.bin\nd2:music/d2-music-017.bin\nd2:music/d2-music-018.bin\nd2:music/d2-music-019.bin\nd2:music/d2-music-020.bin\nd2:music/d2-music-021.bin\nd2:music/d2-music-022.bin\nd2:music/d2-music-023.bin\nd2:music/d2-music-024.bin\nd2:music/d2-music-025.bin\nd2:music/d2-music-026.bin\nd2:music/d2-music-027.bin\nd2:music/d2-music-028.bin\nd2:music/d2-music-029.bin\nd2:music/d2-music-030.bin\nd2:music/d2-music-031.bin\nd2:music/d2-music-032.bin\nd2:music/d2-music-033.bin\nd2:music/d2-music-034.bin\nd2:music/d2-music-035.bin\nd2:music/d2-music-036.bin\nd2:music/d2-music-037.bin\nd2:music/d2-music-038.bin\nd2:music/d2-music-039.bin\nd2:music/d2-music-040.bin\nd2:music/d2-music-041.bin\nd2:music/d2-music-042.bin\nd2:music/d2-music-043.bin\nd2:music/d2-music-044.bin\nd2:music/d2-music-045.bin\nd2:music/d2-music-046.bin\nd2:music/d2-music-047.bin\nd2:music/d2-music-048.bin\nd2:music/d2-music-049.bin\nd2:music/d2-music-050.bin\nd2:music/d2-music-051.bin\nd2:music/d2-music-052.bin\nd2:music/d2-music-053.bin\nd2:music/d2-music-054.bin\nd2:music/d2-music-055.bin\nd2:music/d2-music-056.bin\nd2:music/d2-music-057.bin\nd2:music/d2-music-058.bin\nd2:music/d2-music-059.bin\nd2:photos/d2-photos-000.bin\nd2:photos/d2-photos-001.bin\nd2:photos/d2-photos-002.bin\nd2:photos/d2-photos-003.bin\nd2:photos/d2-photos-004.bin\nd2:photos/d2-photos-005.bin\nd2:photos/d2-photos-006.bin\nd2:photos/d2-photos-007.bin\nd2:photos/d2-photos-008.bin\nd2:photos/d2-photos-009.bin\nd2:photos/d2-photos-010.bin\nd2:photos/d2-photos-011.bin\nd2:photos/d2-photos-012.bin\nd2:photos/d2-photos-013.bin\nd2:photos/d2-photos-014.bin\nd2:photos/d2-photos-015.bin\nd2:photos/d2-photos-016.bin\nd2:photos/d2-photos-017.bin\nd2:photos/d2-photos-018.bin\nd2:photos/d2-photos-019.bin\nd2:photos/d2-photos-020.bin\nd2:photos/d2-photos-021.bin\nd2:photos/d2-photos-022.bin\nd2:photos/d2-photos-023.bin\nd2:photos/d2-photos-024.bin\nd2:photos/d2-photos-025.bin\nd2:photos/d2-photos-026.bin\nd2:photos/d2-photos-027.bin\nd2:photos/d2-photos-028.bin\nd2:photos/d2-photos-029.bin\nd2:photos/d2-photos-030.bin\nd2:photos/d2-photos-031.bin\nd2:photos/d2-photos-032.bin\nd2:photos/d2-photos-033.bin\nd2:photos/d2-photos-034.bin\nd2:photos/d2-photos-035.bin\nd2:photos/d2-photos-036.bin\nd2:photos/d2-photos-037.bin\nd2:photos/d2-photos-038.bin\nd2:photos/d2-photos-039.bin\nd2:photos/d2-photos-040.bin\nd2:photos/d2-photos-041.bin\nd2:photos/d2-photos-042.bin\nd2:photos/d2-photos-043.bin\nd2:photos/d2-photos-044.bin\nd2:photos/d2-photos-045.bin\nd2:photos/d2-photos-046.bin\nd2:photos/d2-photos-047.bin\nd2:photos/d2-photos-048.bin\nd2:photos/d2-photos-049.bin\nd2:photos/d2-photos-050.bin\nd2:photos/d2-photos-051.bin\nd2:photos/d2-photos-052.bin\nd2:photos/d2-photos-053.bin\nd2:photos/d2-photos-054.bin\nd2:photos/d2-photos-055.bin\nd2:photos/d2-photos-056.bin\nd2:photos/d2-photos-057.bin\nd2:photos/d2-photos-058.bin\nd2:photos/d2-photos-059.bin\n\n\n",
+    "scheduled_at": "2026-10-25T15:00:57",
+    "started_at": "2026-10-25T15:01:14",
+    "status": "terminated"
+   },
+   {
+    "block_begin": 0,
+    "block_end": 500,
+    "block_idx": 0,
+    "blocks_count": 25,
+    "blocks_done": 1,
+    "command": "scrub",
+    "cpu_usage": 0,
+    "elapsed_seconds": 0,
+    "error_data": 0,
+    "error_io": 0,
+    "error_soft": 0,
+    "eta_seconds": 0,
+    "exit_code": 0,
+    "finished_at": "2026-10-25T15:01:13",
+    "health": "passed",
+    "high_command": "maintenance",
+    "log_file": "/var/log/20261025-150113-scrub.log",
+    "messages": [
+     {
+      "level": "info",
+      "text": "Self-test..."
+     },
+     {
+      "level": "info",
+      "text": "Loading state from /var/content/snapraid.content..."
+     },
+     {
+      "level": "info",
+      "text": "Loaded state in 0 seconds"
+     },
+     {
+      "level": "verbose",
+      "text": "364 files"
+     },
+     {
+      "level": "verbose",
+      "text": "0 hardlinks"
+     },
+     {
+      "level": "verbose",
+      "text": "0 symlinks"
+     },
+     {
+      "level": "verbose",
+      "text": "0 empty dirs"
+     },
+     {
+      "level": "info",
+      "text": "Using 0 MiB of memory for the file-system."
+     },
+     {
+      "level": "info",
+      "text": "Initializing..."
+     },
+     {
+      "level": "info",
+      "text": "Scrub plan: auto. 5.0% of the array, older than 0 days, will be checked."
+     },
+     {
+      "level": "info",
+      "text": "Using 64 MiB of memory for 64 cached blocks."
+     },
+     {
+      "level": "info",
+      "text": "Scrubbing..."
+     },
+     {
+      "level": "info",
+      "text": "Saving state to /var/content/snapraid.content..."
+     },
+     {
+      "level": "info",
+      "text": "Saving state to /mnt/d1/snapraid.content..."
+     },
+     {
+      "level": "info",
+      "text": "Saving state to /mnt/d2/snapraid.content..."
+     },
+     {
+      "level": "info",
+      "text": "Saved state in 0 seconds"
+     },
+     {
+      "level": "info",
+      "text": "Verifying..."
+     },
+     {
+      "level": "info",
+      "text": "Verified /var/content/snapraid.content in 0 seconds"
+     },
+     {
+      "level": "info",
+      "text": "Verified /mnt/d1/snapraid.content in 0 seconds"
+     },
+     {
+      "level": "info",
+      "text": "Verified /mnt/d2/snapraid.content in 0 seconds"
+     },
+     {
+      "level": "verbose",
+      "text": "364 files"
+     },
+     {
+      "level": "verbose",
+      "text": "0 hardlinks"
+     },
+     {
+      "level": "verbose",
+      "text": "0 symlinks"
+     },
+     {
+      "level": "verbose",
+      "text": "0 empty dirs"
+     },
+     {
+      "level": "info",
+      "text": "Everything OK"
+     }
+    ],
+    "number": 6,
+    "progress": 100,
+    "scheduled_at": "2026-10-25T15:00:57",
+    "size_done_bytes": 9543,
+    "speed_mbs": 0,
+    "started_at": "2026-10-25T15:01:13",
+    "status": "terminated"
+   },
+   {
+    "block_begin": 0,
+    "block_end": 500,
+    "block_idx": 488,
+    "blocks_count": 500,
+    "blocks_done": 489,
+    "command": "sync",
+    "cpu_usage": 0,
+    "elapsed_seconds": 14,
+    "error_data": 0,
+    "error_io": 0,
+    "error_soft": 0,
+    "eta_seconds": 0,
+    "exit_code": 0,
+    "finished_at": "2026-10-25T15:01:13",
+    "health": "passed",
+    "high_command": "maintenance",
+    "log_file": "/var/log/20261025-150059-sync.log",
+    "messages": [
+     {
+      "level": "info",
+      "text": "Self-test..."
+     },
+     {
+      "level": "info",
+      "text": "Loading state from /var/content/snapraid.content..."
+     },
+     {
+      "level": "error",
+      "text": "WARNING! Content file '/var/content/snapraid.content' not found, attempting with another copy...",
+      "type": "soft"
+     },
+     {
+      "level": "info",
+      "text": "Loading state from /mnt/d1/snapraid.content..."
+     },
+     {
+      "level": "error",
+      "text": "WARNING! Content file '/mnt/d1/snapraid.content' not found, attempting with another copy...",
+      "type": "soft"
+     },
+     {
+      "level": "info",
+      "text": "Loading state from /mnt/d2/snapraid.content..."
+     },
+     {
+      "level": "info",
+      "text": "No content file found. Assuming empty."
+     },
+     {
+      "level": "info",
+      "text": "Scanning..."
+     },
+     {
+      "level": "info",
+      "text": "Scanned d1 in 0 seconds"
+     },
+     {
+      "level": "info",
+      "text": "Scanned d2 in 0 seconds"
+     },
+     {
+      "level": "info",
+      "text": "Applying..."
+     },
+     {
+      "level": "error",
+      "text": "WARNING! UUID is unsupported for disks: 'd1'msg:error: , 'd2'msg:error: . Not using inodes to detect move operations.",
+      "type": "soft"
+     },
+     {
+      "level": "verbose",
+      "text": "0 equal"
+     },
+     {
+      "level": "verbose",
+      "text": "364 added"
+     },
+     {
+      "level": "verbose",
+      "text": "0 removed"
+     },
+     {
+      "level": "verbose",
+      "text": "0 updated"
+     },
+     {
+      "level": "verbose",
+      "text": "0 moved"
+     },
+     {
+      "level": "verbose",
+      "text": "0 copied"
+     },
+     {
+      "level": "verbose",
+      "text": "0 relocated"
+     },
+     {
+      "level": "verbose",
+      "text": "0 restored"
+     },
+     {
+      "level": "info",
+      "text": "Using 0 MiB of memory for the file-system."
+     },
+     {
+      "level": "info",
+      "text": "Initializing..."
+     },
+     {
+      "level": "info",
+      "text": "Resizing..."
+     },
+     {
+      "level": "info",
+      "text": "Saving state to /var/content/snapraid.content..."
+     },
+     {
+      "level": "info",
+      "text": "Saving state to /mnt/d1/snapraid.content..."
+     },
+     {
+      "level": "info",
+      "text": "Saving state to /mnt/d2/snapraid.content..."
+     },
+     {
+      "level": "info",
+      "text": "Saved state in 0 seconds"
+     },
+     {
+      "level": "info",
+      "text": "Verifying..."
+     },
+     {
+      "level": "info",
+      "text": "Verified /var/content/snapraid.content in 0 seconds"
+     },
+     {
+      "level": "info",
+      "text": "Verified /mnt/d1/snapraid.content in 0 seconds"
+     },
+     {
+      "level": "info",
+      "text": "Verified /mnt/d2/snapraid.content in 0 seconds"
+     },
+     {
+      "level": "verbose",
+      "text": "364 files"
+     },
+     {
+      "level": "verbose",
+      "text": "0 hardlinks"
+     },
+     {
+      "level": "verbose",
+      "text": "0 symlinks"
+     },
+     {
+      "level": "verbose",
+      "text": "0 empty dirs"
+     },
+     {
+      "level": "info",
+      "text": "Using 48 MiB of memory for 64 cached blocks."
+     },
+     {
+      "level": "info",
+      "text": "Selecting..."
+     },
+     {
+      "level": "info",
+      "text": "Syncing..."
+     },
+     {
+      "level": "info",
+      "text": "Saving state to /var/content/snapraid.content..."
+     },
+     {
+      "level": "info",
+      "text": "Saving state to /mnt/d1/snapraid.content..."
+     },
+     {
+      "level": "info",
+      "text": "Saving state to /mnt/d2/snapraid.content..."
+     },
+     {
+      "level": "info",
+      "text": "Saved state in 0 seconds"
+     },
+     {
+      "level": "info",
+      "text": "Verifying..."
+     },
+     {
+      "level": "info",
+      "text": "Verified /var/content/snapraid.content in 0 seconds"
+     },
+     {
+      "level": "info",
+      "text": "Verified /mnt/d1/snapraid.content in 0 seconds"
+     },
+     {
+      "level": "info",
+      "text": "Verified /mnt/d2/snapraid.content in 0 seconds"
+     },
+     {
+      "level": "verbose",
+      "text": "364 files"
+     },
+     {
+      "level": "verbose",
+      "text": "0 hardlinks"
+     },
+     {
+      "level": "verbose",
+      "text": "0 symlinks"
+     },
+     {
+      "level": "verbose",
+      "text": "0 empty dirs"
+     },
+     {
+      "level": "info",
+      "text": "Everything OK"
+     }
+    ],
+    "number": 5,
+    "progress": 100,
+    "scheduled_at": "2026-10-25T15:00:57",
+    "size_done_bytes": 163311216,
+    "speed_mbs": 0,
+    "started_at": "2026-10-25T15:00:59",
+    "status": "terminated"
+   },
+   {
+    "command": "up",
+    "exit_code": 0,
+    "finished_at": "2026-10-25T15:00:58",
+    "health": "passed",
+    "high_command": "maintenance",
+    "log_file": "/var/log/20261025-150058-up.log",
+    "messages": [
+     {
+      "level": "info",
+      "text": "Spinup..."
+     },
+     {
+      "level": "info",
+      "text": "Spunup device '/dev/loop10' for disk 'd1' in 0 ms."
+     },
+     {
+      "level": "info",
+      "text": "Spunup device '/dev/loop11' for disk 'd2' in 0 ms."
+     },
+     {
+      "level": "info",
+      "text": "Spunup device '/dev/loop12' for disk 'parity' in 1 ms."
+     }
+    ],
+    "number": 4,
+    "scheduled_at": "2026-10-25T15:00:57",
+    "started_at": "2026-10-25T15:00:58",
+    "status": "terminated"
+   },
+   {
+    "command": "start",
+    "exit_code": 0,
+    "finished_at": "2026-10-25T15:00:57",
+    "health": "passed",
+    "high_command": "maintenance",
+    "messages": [],
+    "number": 3,
+    "scheduled_at": "2026-10-25T15:00:57",
+    "started_at": "2026-10-25T15:00:57",
+    "status": "terminated"
+   },
+   {
+    "command": "read",
+    "exit_code": 0,
+    "finished_at": "2026-10-25T15:00:41",
+    "health": "passed",
+    "high_command": "startup",
+    "log_file": "/var/log/20261025-150041-read.log",
+    "messages": [
+     {
+      "level": "info",
+      "text": "Loading state from /var/content/snapraid.content..."
+     },
+     {
+      "level": "error",
+      "text": "WARNING! Content file '/var/content/snapraid.content' not found, attempting with another copy...",
+      "type": "soft"
+     },
+     {
+      "level": "info",
+      "text": "Loading state from /mnt/d1/snapraid.content..."
+     },
+     {
+      "level": "error",
+      "text": "WARNING! Content file '/mnt/d1/snapraid.content' not found, attempting with another copy...",
+      "type": "soft"
+     },
+     {
+      "level": "info",
+      "text": "Loading state from /mnt/d2/snapraid.content..."
+     },
+     {
+      "level": "info",
+      "text": "No content file found. Assuming empty."
+     },
+     {
+      "level": "info",
+      "text": "Using 0 MiB of memory for the file-system."
+     }
+    ],
+    "number": 2,
+    "scheduled_at": "2026-10-25T15:00:40",
+    "started_at": "2026-10-25T15:00:41",
+    "status": "terminated"
+   },
+   {
+    "command": "probe",
+    "exit_code": 0,
+    "finished_at": "2026-10-25T15:00:40",
+    "health": "passed",
+    "high_command": "startup",
+    "log_file": "/var/log/20261025-150040-probe.log",
+    "messages": [],
+    "number": 1,
+    "scheduled_at": "2026-10-25T15:00:40",
+    "started_at": "2026-10-25T15:00:40",
+    "status": "terminated"
+   }
+  ],
+  "pending": [],
+  "pulse": {
+   "activity": 214,
+   "array": 51,
+   "config": 1,
+   "current_at": "2026-10-25T15:01:43",
+   "disks": 72,
+   "tasks": 194
+  }
+ },
+ "method": "GET",
+ "path": "/snapraid/v1/tasks",
+ "status": 200
+}

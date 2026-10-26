@@ -1,4 +1,4 @@
-/* Software Factory flows (DESIGN §25): the Welcome, Setup and Start flows as plain data, the working
+/* Seraphina OS Harness flows (DESIGN §25): the Welcome, Setup and Start flows as plain data, the working
  * procedures of the Grid Card, and the small pure helpers the wizard, the maps and the Grid share.
  *
  * A flow is a list of steps. A step has an id, a title, a numbered procedure written as
@@ -30,7 +30,8 @@
     { id: 'strata', title: 'Strata', provider: 'strata', port: 18080, keyEnv: 'STRATA_API_KEY', keyFile: '/etc/ai-stack/strata.env', model: 'strata', context: 262144, slots: 1,
       does: 'Serves Qwen3.8-Flash-Next behind Bearer auth, one generation at a time.',
       when: 'Your server runs the Strata stack.', badges: [B.local],
-      tip: 'The key can also come from /etc/ai-stack/strata.env; leave the field empty to use that file.' },
+      tip: 'The key can also come from /etc/ai-stack/strata.env; leave the field empty to use that file.',
+      tipNoFile: 'Paste the key here, or put STRATA_API_KEY=… in the server’s env file.' },
     { id: 'llamacpp', title: 'llama.cpp', provider: 'llamacpp', port: 8080, model: '', context: 131072, slots: 1,
       does: 'llama-server runs GGUF models on the GPU, the CPU or both.',
       when: 'You run GGUF quants and can start llama-server with --jinja.', badges: [B.local, B.setup],
@@ -56,7 +57,7 @@
     { id: 'deepseek', title: 'DeepSeek', provider: 'deepseek', keyEnv: 'DEEPSEEK_API_KEY', model: 'deepseek-v4-flash',
       does: 'DeepSeek V4 Pro and Flash: capable and inexpensive.',
       when: 'You want low-cost API models for any step.', badges: [B.api, B.key] },
-    { id: 'nanogpt', title: 'NanoGPT', provider: 'nanogpt', keyEnv: 'NANOGPT_API_KEY', model: 'claude-sonnet-5-5',
+    { id: 'nanogpt', title: 'NanoGPT', provider: 'nanogpt', keyEnv: 'NANOGPT_API_KEY', model: 'anthropic/claude-sonnet-5.5',
       does: 'One key for Claude, GPT, Gemini, Qwen and DeepSeek.',
       when: 'You want many vendors on one bill.', badges: [B.api, B.key] },
     { id: 'openrouter', title: 'OpenRouter', provider: 'openrouter', keyEnv: 'OPENROUTER_API_KEY', model: '',
@@ -97,7 +98,7 @@
       does: 'The Claude only split through NanoGPT’s API: one key for many vendors.',
       when: 'You pay for Claude through NanoGPT rather than Anthropic.',
       providers: { nanogpt: 'NANOGPT_API_KEY' },
-      models: { opus: 'nanogpt/claude-opus-5-5', sonnet: 'nanogpt/claude-sonnet-5-5', haiku: 'nanogpt/claude-haiku-5-5' },
+      models: { opus: 'nanogpt/anthropic/claude-opus-5.5', sonnet: 'nanogpt/anthropic/claude-sonnet-5.5', haiku: 'nanogpt/anthropic/claude-haiku-5.5' },
       agents: { 'spec-writer': 'opus', builder: 'opus', approver: 'opus', 'reviewer-security': 'opus', 'reviewer-ux': 'sonnet', 'reviewer-ui': 'sonnet', 'reviewer-code': 'sonnet',
         lead: 'opus', coder: 'opus', 'repo-scout': 'sonnet' } },
     ollama: { title: 'All local (Ollama)', kind: 'local',
@@ -130,6 +131,30 @@
         sonnet: 'deepseek/deepseek-v4-flash', haiku: 'deepseek/deepseek-v4-flash' },
       agents: { 'spec-writer': 'gpt-oss', builder: 'deepseek-pro', approver: 'gpt-oss', 'reviewer-security': 'gpt-oss', 'reviewer-ux': 'deepseek-flash', 'reviewer-ui': 'deepseek-flash',
         'reviewer-code': 'deepseek-flash', lead: 'deepseek-pro', coder: 'deepseek-pro', 'repo-scout': 'gpt-oss' } },
+    'local-first': { title: 'Local first', kind: 'both',
+      does: 'The local Flash-Next builds, codes, scouts and reviews security; Claude Opus writes the spec, approves and leads; GPT-6.1 Sol, Claude Sonnet and Gemini review code, UX and UI.',
+      when: 'You run Flash-Next on TabbyAPI or Strata and pay for API models through one NanoGPT key.',
+      providers: { tabby: 'TABBY_API_KEY', strata: 'STRATA_API_KEY', llamacpp: null, nanogpt: 'NANOGPT_API_KEY', 'nanogpt-anthropic': 'NANOGPT_API_KEY' },
+      models: { 'flash-next': 'tabby/Qwen3.8-Flash-Next-Uncensored-EXL3-2.05bpw', 'swift-27b': 'tabby/Swift-1.5-Qwen3.8-27B-EXL3-5bpw',
+        'thinkingcap-27b': 'tabby/ThinkingCap-Qwen3.8-27B-EXL3-5bpw', 'qwen-27b-q8': 'llamacpp/qwen3.8-27b-q8_0', 'gemma-4-31b': 'llamacpp/gemma-4-31b-q8_0',
+        'claude-opus': 'nanogpt-anthropic/claude-opus-5-5', 'claude-sonnet': 'nanogpt-anthropic/claude-sonnet-5-5', 'claude-haiku': 'nanogpt-anthropic/claude-haiku-5-5',
+        'gpt-sol-high': 'nanogpt/openai/gpt-6.1-sol', 'gpt-sol-xhigh': 'nanogpt/openai/gpt-6.1-sol', 'muse-spark': 'nanogpt/meta/muse-spark-1.3',
+        'gemini-argon': 'nanogpt/google/gemini-4-argon', 'qwen-max': 'nanogpt/qwen/qwen3.8-max', mimo: 'nanogpt/xiaomi/mimo-v2.6-pro',
+        'claude-opus-max': 'nanogpt-anthropic/claude-opus-5-5', 'claude-fable': 'nanogpt-anthropic/claude-fable-5-1', 'gpt-5.6-sol': 'nanogpt/openai/gpt-5.6-sol',
+        'deepseek-flash': 'nanogpt/deepseek/deepseek-v4.1-flash-1017:thinking', opus: 'nanogpt-anthropic/claude-opus-5-5', sonnet: 'nanogpt-anthropic/claude-sonnet-5-5',
+        haiku: 'nanogpt-anthropic/claude-haiku-5-5' },
+      agents: { 'spec-writer': 'claude-opus', builder: 'flash-next', coder: 'flash-next', 'repo-scout': 'flash-next', 'reviewer-security': 'flash-next',
+        'reviewer-code': 'gpt-sol-high', 'reviewer-ux': 'claude-sonnet', 'reviewer-ui': 'gemini-argon', approver: 'claude-opus', lead: 'claude-opus' } },
+    'nanogpt-value': { title: 'NanoGPT value (all API)', kind: 'api',
+      does: 'Muse Spark builds and codes; four model families review; Claude Opus writes the spec, approves and leads, all through one NanoGPT key.',
+      when: 'You have no local GPU and want strong, low-cost API models on every step.',
+      providers: { nanogpt: 'NANOGPT_API_KEY', 'nanogpt-anthropic': 'NANOGPT_API_KEY' },
+      models: { 'claude-opus': 'nanogpt-anthropic/claude-opus-5-5', 'claude-sonnet': 'nanogpt-anthropic/claude-sonnet-5-5', 'claude-haiku': 'nanogpt-anthropic/claude-haiku-5-5',
+        'gpt-sol-high': 'nanogpt/openai/gpt-6.1-sol', 'gpt-sol-xhigh': 'nanogpt/openai/gpt-6.1-sol', 'muse-spark': 'nanogpt/meta/muse-spark-1.3',
+        'gemini-argon': 'nanogpt/google/gemini-4-argon', 'qwen-max': 'nanogpt/qwen/qwen3.8-max', mimo: 'nanogpt/xiaomi/mimo-v2.6-pro',
+        opus: 'nanogpt-anthropic/claude-opus-5-5', sonnet: 'nanogpt-anthropic/claude-sonnet-5-5', haiku: 'nanogpt-anthropic/claude-haiku-5-5' },
+      agents: { 'spec-writer': 'claude-opus', builder: 'muse-spark', coder: 'muse-spark', 'repo-scout': 'mimo', 'reviewer-security': 'qwen-max',
+        'reviewer-code': 'gpt-sol-high', 'reviewer-ux': 'claude-sonnet', 'reviewer-ui': 'gemini-argon', approver: 'claude-opus', lead: 'claude-opus' } },
   };
   /** One line per preset for servers that list presets by name only (older servers). */
   const PRESET_TEXT = Object.fromEntries(Object.keys(PRESETS).map((k) => [k, PRESETS[k].does]));
@@ -256,6 +281,46 @@
     return out;
   }
   const routingPresets = (ctx) => normalizePresets(cfgOf(ctx).presets).filter((p) => p.routing);
+  /** The routing profiles a run can name (DESIGN §23): the saved ones and the default; under a routing preset also the
+   *  preset's, with the preset's default (or none), as the server merges a preset. {names, def}. */
+  function profileChoices(ctx, preset) {
+    const cfg = cfgOf(ctx);
+    const names = new Set(isObj(cfg.profiles) ? Object.keys(cfg.profiles).filter((k) => isObj(cfg.profiles[k])) : []);
+    let def = typeof cfg.default_profile === 'string' && cfg.default_profile ? cfg.default_profile : null;
+    const raw = preset && Array.isArray(cfg.presets) ? cfg.presets.find((p) => isObj(p) && p.name === preset) : null;
+    if (raw && isObj(raw.replaces) && Array.isArray(raw.replaces.agents) && raw.replaces.agents.length) {
+      for (const n of Array.isArray(raw.replaces.profiles) ? raw.replaces.profiles : []) names.add(String(n));
+      def = typeof raw.default_profile === 'string' && raw.default_profile ? raw.default_profile : null;
+    }
+    return { names: Array.from(names).sort(), def };
+  }
+  /** The preset the Start draft routes with, if any. */
+  const startPreset = (draft) => { const r = choiceOf(draft, 'routing') || 'default'; return typeof r === 'string' && r.indexOf('preset:') === 0 ? r.slice(7) : null; };
+  /** The Routing step's profile field: [value, label] options ('' the default, 'none', 'profile:<name>'), none when
+   *  there is no profile to pick. */
+  function profileFieldOptions(draft, ctx, chat) {
+    const c = profileChoices(ctx, chat ? null : startPreset(draft));
+    if (!c.names.length) return [];
+    const cfg = cfgOf(ctx);
+    const desc = (n) => (isObj(cfg.profiles) && isObj(cfg.profiles[n]) && typeof cfg.profiles[n].description === 'string' ? cfg.profiles[n].description : '');
+    const out = [['', c.def ? 'The default: ' + c.def : 'No profile (the default)']];
+    for (const n of c.names) if (n !== c.def) out.push(['profile:' + n, n + (desc(n) ? ' — ' + firstSentence(desc(n), 70) : '')]);
+    if (c.def) out.push(['none', 'No profile (the routing as saved)']);
+    return out;
+  }
+  /** The profile a Start draft sends: undefined (the default), "" (none) or a name it can name with its routing. */
+  function startProfile(draft, ctx, chat) {
+    const v = String(valueOf(draft, chat ? 'describe' : 'routing', 'profile', '') || '');
+    const opts = profileFieldOptions(draft, ctx, chat).map((o) => o[0]);
+    if (!v || opts.indexOf(v) < 0) return undefined;
+    return v === 'none' ? '' : v.slice(8);
+  }
+  /** A chat's profile field (New chat takes one too: it places the chat's agent, a model you pick goes over it). */
+  function chatProfileField(draft, ctx) {
+    const options = profileFieldOptions(draft, ctx, true);
+    return options.length ? [{ id: 'profile', label: 'Routing profile', type: 'select', options, default: '', optional: true,
+      hint: 'Places the chat’s agent on a model, with its reason. A model you pick above goes over it.' }] : [];
+  }
   const reaPresets = (ctx) => normalizePresets(cfgOf(ctx).presets).filter((p) => /^rea\b|rea-/.test(p.name) && !p.routing);
   const kindBadge = (kind) => (kind === 'local' ? B.local : kind === 'both' ? B.both : B.api);
   /** A key's state for badges: set on the server, typed in this setup (not saved yet), or missing. */
@@ -339,7 +404,7 @@
       const url = String(g('url', cur.base_url || 'http://127.0.0.1:' + s.port + '/v1')).trim();
       const prov = { type: 'openai', base_url: url, api_key_env: s.keyEnv || null, max_concurrency: Number(g('slots', s.slots)) || 1, concurrency_scope: 'run', timeout: 1800 };
       if (s.auth) prov.auth = s.auth;
-      if (s.keyFile && cur.api_key_file === undefined) prov.api_key_file = s.keyFile;
+      if (keyFileOf(ctx, s) && cur.api_key_file === undefined) prov.api_key_file = s.keyFile;
       providers[s.provider] = prov;
       const key = localKey(i, s);
       models[key] = { provider: s.provider, model: String(g('model', s.model)).trim(), max_tokens: 16384, context_tokens: Number(g('context', s.context)) || s.context, stream: true };
@@ -404,6 +469,47 @@
   // ================================================================ flows
   const SETUP_GROUPS = { models: 'Models', providers: 'Providers', routing: 'Routing', tools: 'Tools', safety: 'Safety', repos: 'Repository', output: 'Output', review: 'Review' };
   const localPicked = (draft) => listOf(choiceOf(draft, 'local-servers')).map((id) => LOCAL_SERVERS.find((s) => s.id === id)).filter(Boolean);
+  /** What GET /api/setup says about this machine (doctor.setup_status's host): {key_dirs: {folder: exists},
+   *  listening: [ports on 127.0.0.1 or every address]}, and only after the owner pressed "Look for model servers"
+   *  (POST /api/setup/look-around) model_servers: [{url, port, status, ids}] (those that answered /v1/models like a
+   *  model server) with model_servers_at (when), or model_servers_error instead of model_servers when that look
+   *  broke; neither when it was not asked. Nothing here looks by itself. */
+  const hostOf = (ctx) => (ctx && isObj(ctx.setup) && isObj(ctx.setup.host) ? ctx.setup.host : null);
+  /** A local server's key file, unless this machine says its folder is not there (a preset's placeholder). */
+  function keyFileOf(ctx, s) {
+    if (!s.keyFile) return null;
+    const dirs = (hostOf(ctx) || {}).key_dirs;
+    return isObj(dirs) && dirs[s.keyFile.replace(/\/[^/]*$/, '')] === false ? null : s.keyFile;
+  }
+  /** Whether something listens on a local server's usual port here: true, false, or null (not asked). */
+  function listensOn(ctx, port) {
+    const ports = (hostOf(ctx) || {}).listening;
+    return Array.isArray(ports) ? ports.indexOf(port) >= 0 : null;
+  }
+  /** A model id or address a listener gave, as shown: the program chooses it, so a long one is cut at 60 characters. */
+  const idText = (v) => { const t = String(v); return t.length > 60 ? t.slice(0, 59) + '…' : t; };
+  /** "lists a, b, c, …" for a model server's first three model ids. */
+  const listsText = (ids) => 'lists ' + ids.slice(0, 3).map(idText).join(', ') + (ids.length > 3 ? ', …' : '');
+  /** The Address field's hint when nothing listens on the preset's port: the model servers the owner's look found
+   *  here (their address to use instead: the presets' ports are only the usual ones), else the ports in use, and
+   *  how to tell which of them is a model server (the look-around button above the servers). A look that broke
+   *  (model_servers_error) found nothing, so the hint does not say that nothing answered. */
+  function listenHint(ctx, s) {
+    if (listensOn(ctx, s.port) !== false) return '';
+    const host = hostOf(ctx);
+    const looked = Array.isArray(host.model_servers);
+    const found = (looked ? host.model_servers : []).filter((m) => isObj(m) && m.url && m.port !== s.port).slice(0, 4);
+    if (found.length) {
+      return 'Nothing listens on 127.0.0.1:' + s.port + ' now. Model servers answer here: ' + found.map((m) => idText(m.url) +
+        (Array.isArray(m.ids) && m.ids.length ? ' (' + listsText(m.ids) + ')' : m.status === 200 ? '' : ' (wants a key)')).join('; ') +
+        '. If one of them is ' + s.title + ', use its address.';
+    }
+    const ports = (host.listening || []).filter((p) => p !== s.port).slice(0, 8);
+    return 'Nothing listens on 127.0.0.1:' + s.port + ' now.' + (ports.length ? ' Ports in use here: ' + ports.join(', ') + '.' +
+      (looked ? ' None of them answered like a model server when you looked.'
+        : host.model_servers_error ? ' The last look for model servers did not work: press “Look for model servers” above to try again.'
+          : ' Press “Look for model servers” above to see which of them is a model server.') : '');
+  }
   const apiPicked = (draft) => listOf(choiceOf(draft, 'api-providers')).map((id) => API_PROVIDERS.find((p) => p.id === id)).filter(Boolean);
   // Unanswered, the question projects its recommended answer (Hybrid), like every other choice on the path.
   const where = (draft) => choiceOf(draft, 'where') || 'hybrid';
@@ -416,7 +522,7 @@
     steps: [{
       id: 'what', title: 'What would you like to do?', short: 'Start', kind: 'choice', group: 'welcome',
       procedure: [
-        ['Pick the work, not the tool.', 'Each card says what happens next and what it needs. The logo brings you back here.'],
+        ['Pick the work, not the tool.', 'Each card says what happens next and what it needs. Home links back here.'],
         ['Set up once.', 'Setup connects your model servers or API keys, decides who does what, and registers a repository. Cards that need it say so and take you there first.'],
         ['Watch it happen.', 'Everything you start appears on the board, in Plans or in Chat, with every agent’s work as it runs.'],
       ],
@@ -446,6 +552,9 @@
           { id: 'board', title: 'Open the board', icon: 'factory', go: '#/factory',
             does: 'See every job on the factory line, what each agent is doing and what waits for you.',
             when: 'Work is already running, or you want to look around first.', badges: [] },
+          { id: 'home', title: 'Open Home', icon: 'home', go: '#/home',
+            does: 'Every section of the harness on one card, with what needs you first and how each section is doing.',
+            when: 'You want the whole picture: the tracker, personas, messages and what is planned.', badges: [] },
         ];
       },
     }],
@@ -480,29 +589,35 @@
           ['Start servers with tool calling.', 'Agents call tools: start llama.cpp with --jinja and give vLLM a tool-call parser. Test checks it.'],
           ['One slot, one agent.', 'A one-slot server runs one agent at a time and keeps its cache warm; raise slots only if the server runs more.'],
         ],
-        options: LOCAL_SERVERS.map((s) => ({ id: s.id, title: s.title, icon: 'server', does: s.does, when: s.when, badges: s.badges.slice(), sub: '127.0.0.1:' + s.port })) },
+        options: (draft, ctx) => LOCAL_SERVERS.map((s) => {
+          const here = listensOn(ctx, s.port);
+          return { id: s.id, title: s.title, icon: 'server', does: s.does, when: s.when, badges: s.badges.slice(),
+            sub: '127.0.0.1:' + s.port + (here === true ? ' · something listens there' : here === false ? ' · nothing listens there now' : '') };
+        }) },
       { id: 'local-details', title: 'Addresses, context and slots', short: 'Server details', kind: 'form', group: 'models',
         // Not a choice made here: the answer to "Where do your models run?" decides. The maps draw it as a check.
         next: (draft) => (where(draft) === 'hybrid' ? 'api-providers' : 'roles'),
         ask: 'Hosted APIs too?', branches: [{ to: 'api-providers', label: 'Hybrid' }, { to: 'roles', label: 'Local only' }],
         procedure: [
-          ['Point at the server.', 'Use the address it listens on, normally 127.0.0.1 with its port and /v1.'],
+          ['Point at the server.', 'Use the address it listens on, normally 127.0.0.1 with its port and /v1. Not sure which port? Press “Look for model servers” below.'],
           ['Match the context.', 'Set Context to what the server was started with; agents budget their reading from it.'],
           ['Test before you rely on it.', 'Test sends a short reply and a tool call and reports tokens per second. A failed Test keeps your entries; fix the server and test again.'],
         ],
-        groups: (draft, ctx) => localPicked(draft).map((s, i) => {
+        // The look for model servers comes first, and only when the owner presses its button (app.js lookAroundWidget).
+        groups: (draft, ctx) => [{ id: 'look-around', title: 'Model servers on this machine', widget: 'look-around', fields: [] }].concat(localPicked(draft).map((s, i) => {
           const prov = sect(ctx, 'providers')[s.provider];
           const url = isObj(prov) && prov.base_url ? String(prov.base_url) : 'http://127.0.0.1:' + s.port + '/v1';
           const fields = [
-            { id: s.id + '.url', label: 'Address', type: 'text', mono: true, default: url, required: true, check: urlOk },
+            { id: s.id + '.url', label: 'Address', type: 'text', mono: true, default: url, required: true, check: urlOk, hint: listenHint(ctx, s) || undefined },
             { id: s.id + '.model', label: 'Model id', type: 'text', mono: true, default: s.model, required: true, placeholder: 'e.g. qwen3.8-27b', hint: 'The name the server lists under /v1/models.' },
             { id: s.id + '.context', label: 'Context (tokens)', type: 'number', default: s.context, required: true, check: intOk(1024) },
             { id: s.id + '.slots', label: 'Slots', type: 'number', default: s.slots, required: true, check: intOk(1), hint: 'Requests it runs at once.' },
           ];
-          if (s.keyEnv) fields.push({ id: s.id + '.key', label: s.keyEnv, type: 'password', secret: s.keyEnv, optional: true, hint: s.keyFile ? 'Empty: keep the key that is set, or the file ' + s.keyFile + '.' : 'Empty keeps the key that is set.' });
-          return { id: s.id, title: s.title, sub: 'Saved as model `' + localKey(i, s) + '` (provider `' + s.provider + '`)', tip: s.tip, fields,
+          const file = keyFileOf(ctx, s);
+          if (s.keyEnv) fields.push({ id: s.id + '.key', label: s.keyEnv, type: 'password', secret: s.keyEnv, optional: true, hint: file ? 'Empty: keep the key that is set, or the file ' + file + '.' : 'Empty keeps the key that is set.' });
+          return { id: s.id, title: s.title, sub: 'Saved as model `' + localKey(i, s) + '` (provider `' + s.provider + '`)', tip: s.keyFile && !file ? s.tipNoFile : s.tip, fields,
             test: { kind: 'local', server: s.id, provider: s.provider, key: localKey(i, s), keyEnv: s.keyEnv || null } };
-        }) },
+        })) },
       { id: 'api-providers', title: 'Which API providers?', short: 'API providers', kind: 'choice', multi: true, min: 1, group: 'providers', next: 'api-keys',
         procedure: [
           ['Pick the providers you have keys for.', 'Each needs one key; NanoGPT and OpenRouter reach many vendors with one.'],
@@ -766,13 +881,14 @@
             { id: 'agent', label: 'Agent', type: 'select', options: chatAgents, default: 'coder' },
             { id: 'mode', label: 'Where it works', type: 'radio', default: 'worktree', options: [['worktree', 'Its own branch and worktree (can hand off)'], ['repo', 'Directly in the repo checkout']] },
             { id: 'model', label: 'Model', type: 'select', options: models, default: '', optional: true },
+          ].concat(chatProfileField(draft, ctx), [
             { id: 'text', label: 'First message (optional)', type: 'textarea', rows: 5, optional: true, placeholder: 'Ask it to explain, change or test something.' },
-          ] }];
+          ]) }];
           return [{ id: 'a', fields: [
             { id: 'binary', label: 'Binary', type: 'text', mono: true, required: true, placeholder: 'path inside the repository, e.g. vendor/libfoo.so' },
             { id: 'text', label: 'Question', type: 'textarea', rows: 5, required: true, placeholder: 'What do you need to know? e.g. Which functions parse the config file, and what format do they expect?' },
             { id: 'model', label: 'Model', type: 'select', options: models, default: '', optional: true },
-          ] }];
+          ].concat(chatProfileField(draft, ctx)) }];
         } },
       { id: 'routing', title: 'Which models run it?', short: 'Routing', kind: 'choice', group: 'routing', next: 'output', edgeLabels: { output: 'Default / a preset', 'routing-custom': 'Custom per step' },
         procedure: [
@@ -785,6 +901,12 @@
             details: p.description && p.description !== p.does ? p.description : null, detailsLabel: 'examples/' + p.name + '.json',
             badges: [kindBadge(p.kind)].concat(keyBadges(ctx, p.known ? presetKeys(p, emptyDraft(), ctx) : p.keys)) })))
           .concat([{ id: 'custom', title: 'Custom per step', icon: 'settings', next: 'routing-custom', does: 'Pick a model and driver for single steps, for this run only.', when: 'One step needs a different model.', badges: [] }]),
+        // The routing profile (DESIGN §23): which model each step runs on and why, over the routing above.
+        extra: (draft, ctx) => {
+          const options = profileFieldOptions(draft, ctx);
+          return options.length ? [{ id: 'profile', title: 'Routing profile', fields: [{ id: 'profile', label: 'Routing profile', type: 'select', options, default: '', optional: true,
+            hint: 'Places steps on models over the routing above, each with its reason. Steps it does not name keep their route.' }] }] : [];
+        },
         default: 'default' },
       { id: 'routing-custom', title: 'Pick models per step', short: 'Per step', kind: 'form', group: 'routing', next: 'output',
         procedure: [
@@ -1219,18 +1341,27 @@
       const out = choiceOf(draft, 'output') || deliveryDefault(ctx);
       body.delivery = out;
       summary.push(['Routing', body.routing === undefined ? 'saved routing' : typeof body.routing === 'string' ? 'preset ' + body.routing : 'custom: ' + Object.keys(body.routing).join(', ')]);
+      // The routing profile: left out for the default, so the server applies it (DESIGN §23).
+      const prof = startProfile(draft, ctx);
+      if (prof !== undefined) body.profile = prof;
+      const pc = profileChoices(ctx, typeof body.routing === 'string' ? body.routing : null);
+      if (pc.names.length || pc.def) summary.push(['Profile', body.profile === undefined ? (pc.def ? pc.def + ' (default)' : 'none') : body.profile || 'none']);
       summary.push(['Output', out + (out === deliveryDefault(ctx) ? ' (default)' : '')]);
       return { kind: what === 'feature' ? 'job' : 'plan', requests: [{ method: 'POST', path: what === 'feature' ? '/api/jobs' : '/api/plans', body }], summary };
     }
     const model = String(valueOf(draft, 'describe', 'model', '')).trim();
     const body = { repo, mode: what === 'analyse' ? 'worktree' : String(valueOf(draft, 'describe', 'mode', 'worktree')), agent: what === 'analyse' ? 'analyst' : String(valueOf(draft, 'describe', 'agent', 'coder')) };
     if (model) body.model = model;
+    const prof = startProfile(draft, ctx, true);   // left out for the default (DESIGN §23)
+    if (prof !== undefined) body.profile = prof;
     let message = text;
     if (what === 'analyse') {
       const bin = String(valueOf(draft, 'describe', 'binary', '')).trim();
       message = 'Analyse ' + bin + '.\n\n' + text;
     }
     summary.push(['Agent', body.agent], ['Mode', body.mode], ['Model', model || 'agent default']);
+    const pc = profileChoices(ctx, null);
+    if (pc.names.length || pc.def) summary.push(['Profile', body.profile === undefined ? (pc.def ? pc.def + ' (default)' : 'none') : body.profile || 'none']);
     return { kind: 'chat', requests: [{ method: 'POST', path: '/api/chats', body }], message: message || null, summary };
   }
   function hashFor(kind, resp) {
@@ -1521,13 +1652,18 @@
       ['Inspect once.', 'Manifests, scripts, CI steps and docs show the stack and its commands.'],
       ['Write only what has evidence.', 'Every command in the draft comes from the repository itself.'],
       ['Draft AGENTS.md.', 'You review the draft and save it as AGENTS.md in the repository.']] },
+    tracker: { title: 'Housekeeping Tracker', summary: 'Everything the agents promised, found or were asked to do, kept until it is proven done.', procedure: [
+      ['Collect every promise.', 'Acceptance criteria, review findings, product decisions and what an agent says it will do later become items of their job, chat or plan.'],
+      ['Close only with proof.', 'An item is proven by someone other than its owner; a claimed command is never re-run, and only a person answers a product decision.'],
+      ['Carry what is left.', 'When a job, chat or plan ends, its open items move to the repository’s follow-ups; Make a job turns a follow-up into a new job.']] },
     queue: { title: 'Queue', summary: 'Jobs wait here for a free worker.', procedure: [
       ['Wait for a slot.', 'Up to the parallel-job limit run at once; the rest wait in order.'],
       ['Snapshot the routing.', 'Each job keeps the routing it was submitted with, whatever changes later.']] },
   };
   /** The harness on one page. Lanes left → right: Set up, the factory line, Plans, Chat; rows top → bottom. */
   const GRID = {
-    lanes: [{ id: 'setup', title: 'Set up' }, { id: 'line', title: 'Factory line' }, { id: 'plans', title: 'Plans' }, { id: 'chat', title: 'Chat' }],
+    lanes: [{ id: 'setup', title: 'Set up' }, { id: 'line', title: 'Factory line' }, { id: 'plans', title: 'Plans' }, { id: 'chat', title: 'Chat' },
+      { id: 'housekeeping', title: 'Housekeeping' }],   // drawn under Chat, beside the line's outputs
     nodes: [
       { id: 'welcome', label: 'Welcome', lane: 'setup', row: 0, shape: 'pill', open: '#/welcome', proc: { flow: 'welcome', step: 'what' } },
       { id: 'providers', label: 'Providers', lane: 'setup', row: 1, status: 'providers', configure: 'api-providers', proc: { flow: 'setup', step: 'api-keys' } },
@@ -1556,6 +1692,8 @@
       { id: 'plan-done', label: 'Done', lane: 'plans', row: 7, shape: 'pill', plans: ['done'], open: '#/plans', proc: { agent: 'lead' } },
       { id: 'chat-agent', label: 'coder · analyst', lane: 'chat', row: 3, chats: true, open: '#/chat', proc: { agent: 'coder' } },
       { id: 'handoff', label: 'Hand off', lane: 'chat', row: 4, open: '#/chat', proc: { agent: 'handoff' } },
+      // A view module's node (views/tracker.js): drawn only while that view is registered; its status is the view's badge.
+      { id: 'tracker', label: 'Housekeeping Tracker', lane: 'housekeeping', row: 9, view: 'tracker', open: '#/housekeeping', proc: { agent: 'tracker' } },
     ],
     edges: [
       { from: 'welcome', to: 'providers', label: 'first run' },
@@ -1579,6 +1717,8 @@
       { from: 'plan-jobs', to: 'final', label: 'all merged' }, { from: 'final', to: 'plan-done', label: 'PASS' },
       { from: 'chat-agent', to: 'handoff', label: 'branch ready' },
       { from: 'handoff', to: 'queue', label: 'branch as round 1', route: 'into-queue-high' },
+      { from: 'out-folder', to: 'tracker', label: 'open items when a job ends' },
+      { from: 'tracker', to: 'queue', label: 'make a job', route: 'into-queue-high' },
     ],
   };
 
@@ -1588,8 +1728,8 @@
     emptyDraft, normDraft, choiceOf, valueOf, setValue, listOf, linesOf,
     flowOf, stepOf, titleOf, optionsOf, currentOf, groupsOf, fieldsOf, visibleFields, fieldValue, defaultChoice, nextOf, pathOf, edgesOf, branching,
     pruneDraft, validateStep, patchChanges, fmtValue, deepMerge, setupPlan, addMcp, startRequest, hashFor,
-    normalizePresets, routingPresets, routingOutcome, routingSummary, keyBadges, keyState, firstSentence, modelText, providerTitle,
-    deliveryDefault, keySet, reviewersOf, textWithoutSteps,
+    normalizePresets, routingPresets, routingOutcome, routingSummary, keyBadges, keyState, firstSentence, modelText, providerTitle, profileChoices,
+    deliveryDefault, keySet, reviewersOf, textWithoutSteps, idText, listsText,
     parseProcedure, parseMermaid, normalizeDocs, factoryMap, planMap, flowMap, stable,
   });
 })(typeof window !== 'undefined' ? window : globalThis);

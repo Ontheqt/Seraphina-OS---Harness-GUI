@@ -12,6 +12,14 @@ Every call returns a Completion whose ``message`` is the provider-native
 assistant message, to be appended to the history verbatim (DeepSeek and gpt-oss
 need their reasoning back under the key the server used; Anthropic needs thinking
 blocks and signatures back).
+
+GPU custody (DESIGN.md section 37): a call to a provider that needs a request lease
+goes out only while its config carries a valid one (custody.lease_problem, checked
+before every attempt), and a lost connection during such a call (no answer, or a
+stream cut off before the model finished) is outcome unknown: residency is read
+again and the request is never replayed. Error capture (section
+38): on_error receives every failed attempt's full status, response body, request
+ids and exact timestamps (capture.error_record).
 """
 
 from __future__ import annotations
@@ -22,6 +30,7 @@ import functools
 import http.client
 import ipaddress
 import json
+import socket
 import ssl
 import threading
 import time
@@ -33,7 +42,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator
 
-from .. import __version__
+from .. import __version__, custody
+from .. import outcomes as rule
+from ..capture import CAPTURE_BODY_CHARS, error_record
 
 if TYPE_CHECKING:
     from ..config import ModelConfig, ProviderConfig
@@ -43,6 +54,7 @@ USER_AGENT = f"software-factory/{__version__}"
 RETRYABLE_STATUSES = frozenset({408, 409, 425, 429, 500, 502, 503, 504, 529})
 RETRYABLE_STREAM_ERRORS = frozenset({"overloaded_error", "api_error", "rate_limit_error", "timeout_error"})
 MAX_ATTEMPTS = 6
+OPENWEBUI_KIND = "openwebui"   # providers.<name>.kind of an Open WebUI server (DESIGN §33)
 BACKOFF_SECONDS = (2, 4, 8, 16, 32)
 MAX_RETRY_AFTER = 120.0
 SLICE_SECONDS = 0.5
@@ -88,6 +100,27 @@ class ProviderError(Exception):
         self.body = body
         self.retryable = retryable
         self.retry_after = retry_after
+        # Error capture (DESIGN §39): the whole body as read (up to CAPTURE_BODY_CHARS; body is clipped for the
+        # message), the answer's headers and HTTP status (http_status: the answer's own, which an error payload
+        # inside a 200 answer does not change; status is the payload's code then), when the attempt started and
+        # failed (epoch seconds), and whether the connection failed before the answer was whole (no answer, or one
+        # cut off mid-way: with a lease held, the outcome is unknown and the call is never replayed).
+        self.full_body = body
+        self.headers: Any = None
+        self.http_status: int | None = None
+        self.started: float | None = None
+        self.failed: float | None = None
+        self.connection = False
+        # False only when the request was never wholly written (urllib's URLError from connecting or sending):
+        # nothing reached the server, so nothing happened there (DESIGN §40)
+        self.sent = True
+
+    def may_have_acted(self) -> bool:
+        """Whether the request went out and nothing confirmed or refused it (DESIGN §40): sent, and then the
+        connection was lost (no answer, or one cut off) or the server answered 500 or more (it failed while
+        handling the call, which says nothing about what it did). A refusal below 500 (408, 409, 425, 429) did
+        not act."""
+        return self.sent and (self.connection or (self.status is not None and self.status >= 500))
 
     def __str__(self) -> str:
         return f"HTTP {self.status}: {self.body}" if self.status is not None else self.body
@@ -96,6 +129,7 @@ class ProviderError(Exception):
         """Replace secret with *** in the body and in args (so str() and repr() are both clean)."""
         if secret:
             self.body = self.body.replace(secret, "***")
+            self.full_body = self.full_body.replace(secret, "***")
             self.args = (self.status, self.body)
 
 
@@ -106,12 +140,17 @@ class ProviderSlots:
 
     A thread that already holds a slot (a runner holding one for a whole agent run)
     acquires again at once without taking a second slot, so it cannot deadlock itself.
+    Callers blocked waiting for a slot are counted (waiting_count), so a background
+    caller (a wake turn, a chat check-in) can take a slot only when nobody waits for one
+    (try_acquire_background) and give it back as soon as somebody does.
     """
 
     def __init__(self, size: int) -> None:
         self.size = size
         self._semaphore = threading.BoundedSemaphore(size)
         self._local = threading.local()
+        self._waiting = 0
+        self._waiting_lock = threading.Lock()
 
     def held(self) -> bool:
         """Whether the current thread holds a slot."""
@@ -134,6 +173,25 @@ class ProviderSlots:
         if depth == 1:
             self._semaphore.release()
 
+    def waiting_count(self) -> int:
+        """How many callers are blocked waiting for a slot now (foreground callers: a job, a chat, a person)."""
+        with self._waiting_lock:
+            return self._waiting
+
+    def _add_waiter(self, delta: int) -> None:
+        with self._waiting_lock:
+            self._waiting = max(0, self._waiting + delta)
+
+    def try_acquire_background(self) -> bool:
+        """A background caller's acquire (Wake & Messages §5.11): true at once if this thread holds a slot, false
+        if anyone is waiting for one (people first), otherwise a non-blocking acquire."""
+        if self.held():
+            self._local.depth += 1
+            return True
+        if self.waiting_count():
+            return False
+        return self.acquire(blocking=False)
+
     def __enter__(self) -> "ProviderSlots":
         self.acquire()
         return self
@@ -155,6 +213,20 @@ def provider_semaphore(name: str, size: int | None) -> ProviderSlots | None:
         if slots is None or slots.size != int(size):
             slots = _SLOTS[name] = ProviderSlots(int(size))
         return slots
+
+
+_WAKE_SLOTS: dict[str, ProviderSlots] = {}
+
+
+def background_slots(name: str, size: int | None) -> ProviderSlots:
+    """The slots a background caller (a wake turn, a chat check-in) takes on provider name: the provider's own
+    when it has max_concurrency, else a wake-only ProviderSlots(1), so wakes run one at a time without
+    serialising the factory's own use of a multi-slot server (Wake & Messages §2.5)."""
+    slots = provider_semaphore(name, size)
+    if slots is not None:
+        return slots
+    with _SLOTS_LOCK:
+        return _WAKE_SLOTS.setdefault(name, ProviderSlots(1))
 
 
 @contextlib.contextmanager
@@ -195,12 +267,146 @@ def _concurrency_slot(cfg: Any, cancel: threading.Event | None,
     if not slots.acquire(blocking=False):
         if on_wait:
             on_wait()
-        while not slots.acquire(timeout=SLICE_SECONDS):
-            _raise_if_cancelled(cancel)
+        slots._add_waiter(1)   # a background caller sees this waiter and yields (try_acquire_background)
+        try:
+            while not slots.acquire(timeout=SLICE_SECONDS):
+                _raise_if_cancelled(cancel)
+        finally:
+            slots._add_waiter(-1)
     try:
         yield
     finally:
         slots.release()
+
+
+_ACTIVE_RUNS: dict[str, int] = {}
+_ACTIVE_LOCK = threading.Lock()
+
+
+def run_started(name: str) -> None:
+    """A harness run on provider name began (run_agent, a chat turn, a wake turn): the people-first signal of Wake &
+    Messages §2.5 counts it, also between model calls when the run holds no slot."""
+    with _ACTIVE_LOCK:
+        _ACTIVE_RUNS[name] = _ACTIVE_RUNS.get(name, 0) + 1
+
+
+def run_ended(name: str) -> None:
+    """The run that run_started counted ended."""
+    with _ACTIVE_LOCK:
+        left = _ACTIVE_RUNS.get(name, 0) - 1
+        if left > 0:
+            _ACTIVE_RUNS[name] = left
+        else:
+            _ACTIVE_RUNS.pop(name, None)
+
+
+def active_runs(name: str) -> int:
+    """How many harness runs are on provider name now."""
+    with _ACTIVE_LOCK:
+        return _ACTIVE_RUNS.get(name, 0)
+
+
+@contextlib.contextmanager
+def active_run(name: str) -> Iterator[None]:
+    """run_started for the block, run_ended after it."""
+    run_started(name)
+    try:
+        yield
+    finally:
+        run_ended(name)
+
+
+class AbortHandle:
+    """Ends a model call that is blocked reading (a server prefilling a prompt sends nothing, and cancel is only
+    looked at between lines): fire() shuts the open response's socket down, so the blocked read returns at once
+    and the provider, finding cancel set, raises "cancelled" without retrying (Wake & Messages §2.5, S43).
+
+    The socket is found through response.fp.raw._sock, a CPython detail of http.client that a test pins."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._response: Any = None
+        self._socket: socket.socket | None = None
+        self.fired = False
+
+    def register(self, response: Any) -> None:
+        with self._lock:
+            self._response = response
+            fired = self.fired
+        if fired:
+            _shutdown(response)
+
+    def register_socket(self, sock: Any) -> None:
+        """The connection's socket, as soon as it connects: a server prefilling a prompt may not even have sent
+        its headers yet, so the read that blocks is the wait for the response itself."""
+        with self._lock:
+            self._socket = sock if isinstance(sock, socket.socket) else None
+            fired = self.fired
+        if fired and self._socket is not None:
+            _shutdown_socket(self._socket)
+
+    def unregister(self, response: Any) -> None:
+        with self._lock:
+            if self._response is response:
+                self._response = None
+            self._socket = None
+
+    def fire(self) -> bool:
+        """Shut the open connection down; True when there was one."""
+        with self._lock:
+            self.fired = True
+            response, sock = self._response, self._socket
+        done = _shutdown(response) if response is not None else False
+        if sock is not None:
+            done = _shutdown_socket(sock) or done
+        return done
+
+
+def response_socket(response: Any) -> socket.socket | None:
+    """The socket under an http.client response (None when it cannot be found)."""
+    raw = getattr(getattr(response, "fp", None), "raw", None)
+    sock = getattr(raw, "_sock", None)
+    return sock if isinstance(sock, socket.socket) else None
+
+
+def _shutdown(response: Any) -> bool:
+    sock = response_socket(response)
+    return _shutdown_socket(sock) if sock is not None else False
+
+
+def _shutdown_socket(sock: socket.socket) -> bool:
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        return False
+    return True
+
+
+def _abortable_opener(base_url: str, abort: AbortHandle) -> urllib.request.OpenerDirector:
+    """An opener whose connections give their socket to abort as soon as they connect (AbortHandle)."""
+
+    class _Conn(http.client.HTTPConnection):
+        def connect(self) -> None:
+            super().connect()
+            abort.register_socket(self.sock)
+
+    class _SecureConn(http.client.HTTPSConnection):
+        def connect(self) -> None:
+            super().connect()
+            abort.register_socket(self.sock)
+
+    class _Handler(urllib.request.HTTPHandler):
+        def http_open(self, req: Any) -> Any:
+            return self.do_open(_Conn, req)
+
+    class _SecureHandler(urllib.request.HTTPSHandler):
+        def https_open(self, req: Any) -> Any:
+            return self.do_open(_SecureConn, req, context=_ssl_context())
+
+    handlers: list[urllib.request.BaseHandler] = [_Handler(), _SecureHandler(context=_ssl_context())]
+    if _is_loopback(urllib.parse.urlsplit(base_url).hostname or ""):
+        handlers.append(urllib.request.ProxyHandler({}))
+    return urllib.request.build_opener(*handlers)
 
 
 # ---------------------------------------------------------------- base provider
@@ -220,32 +426,78 @@ class Provider:
     def complete(self, model: "ModelConfig", system: str, messages: list[dict], tools: list[dict],
                  on_delta: OnDelta | None = None,
                  cancel: threading.Event | None = None,
-                 on_wait: Callable[[], None] | None = None) -> Completion:
+                 on_wait: Callable[[], None] | None = None,
+                 abort: AbortHandle | None = None,
+                 on_error: Callable[[dict], None] | None = None) -> Completion:
         """One model call (with retries). Raises ProviderError; cancel raises ProviderError(None, "cancelled").
 
         on_wait() is called when an attempt has to queue for one of the provider's max_concurrency
         slots (once per wait, before it blocks); a thread that holds the slot for its whole run
-        (concurrency_scope "run") never waits here.
+        (concurrency_scope "run") never waits here. abort: each open response is registered with it, so
+        abort.fire() ends a read blocked before the first byte (set cancel too: the call then raises
+        "cancelled" and is not retried). on_error(record) is called for every failed attempt, retried or
+        not (capture.error_record: status, the response body, request ids, exact times; never for a cancel).
+        A provider under GPU custody that needs a lease is called only with a valid one (DESIGN §37). Under a
+        lease, and for a provider of kind "openwebui" (its filters and tools run on every try, and they may write),
+        a call that may have acted (ProviderError.may_have_acted: a lost connection after sending, an answer of 500
+        or more) ends without a retry: its outcome is unknown, so it is never replayed (DESIGN §40). Every other
+        model call is retried as outcomes.RETRIED["model call"] says.
         """
+        self._check_custody(model)
         key = self._api_key()
         stream = _wants_stream(model)
         body = _merge_extra(self._body(model, system, messages, tools, stream), getattr(model, "extra_body", None))
         request = self._request(body, self._headers(key, stream))
+        lease = custody.lease_of(self.cfg)
+        acts = lease is not None or getattr(self.cfg, "kind", None) == OPENWEBUI_KIND   # a repeat may act again
         attempt = 0
         while True:
             attempt += 1
             _raise_if_cancelled(cancel)
             try:
-                return self._attempt(request, stream, on_delta, cancel, on_wait)
+                return self._attempt(request, stream, on_delta, cancel, on_wait, abort)
             except ProviderError as err:
                 if key:
                     err.redact(key)
-                if not err.retryable or attempt >= MAX_ATTEMPTS:
+                if (cancel is not None and cancel.is_set()) or (abort is not None and abort.fired):
+                    raise ProviderError(None, "cancelled", False) from None
+                unknown = acts and err.may_have_acted()
+                retry = err.retryable and attempt < MAX_ATTEMPTS and not unknown
+                self._report(on_error, err, model, request, attempt, retry, [key] if key else [])
+                if unknown and lease is not None:
+                    note = lease.client.connection_lost(lease, str(err))
+                    raise ProviderError(None, f"{err}; GPU custody: the outcome is unknown, so the request was not "
+                                              f"replayed ({note})", False) from None
+                if unknown:
+                    raise ProviderError(None, f"{err}; Open WebUI: the outcome is unknown (the profile's filters and "
+                                              f"tools may have run), so the request was not replayed", False) from None
+                if not retry:
                     raise
+                rule.retried("model call")
                 delay = float(BACKOFF_SECONDS[attempt - 1])
                 if err.retry_after:
                     delay = max(delay, min(err.retry_after, MAX_RETRY_AFTER))
             self._wait(delay, cancel)
+            self._check_custody(model)   # a lease can expire or be lost while the call waits to retry
+
+    def _check_custody(self, model: "ModelConfig") -> None:
+        problem = custody.lease_problem(self.cfg, getattr(model, "model", ""))
+        if problem:
+            raise ProviderError(None, f"GPU custody: {problem}", False)
+
+    def _report(self, on_error: Callable[[dict], None] | None, err: ProviderError, model: "ModelConfig",
+                request: urllib.request.Request, attempt: int, retry: bool, secrets: list[str]) -> None:
+        """on_error(the attempt's error record); a failing callback never changes the call's outcome."""
+        if on_error is None:
+            return
+        try:
+            on_error(error_record(provider=str(getattr(self.cfg, "name", "")), model_id=str(getattr(model, "model", "")),
+                                  url=request.full_url, attempt=attempt, will_retry=retry, status=err.status,
+                                  message=str(err), body=err.full_body, headers=err.headers, started=err.started,
+                                  failed=err.failed, connection=err.connection, secrets=secrets,
+                                  http_status=err.http_status))
+        except Exception:  # noqa: BLE001 - the caller's callback; the call goes on as it would without it
+            pass
 
     def user_message(self, text: str) -> dict:
         """A plain user turn."""
@@ -253,6 +505,10 @@ class Provider:
 
     def tool_results_message(self, results: list[tuple[str, str, bool]]) -> list[dict]:
         """Messages carrying (tool_call_id, output, is_error) results, to append to the history."""
+        raise NotImplementedError
+
+    def tool_call_ids(self, message: Any) -> list[str]:
+        """The ids of the tool calls an assistant message in the history asked for ([] for any other message)."""
         raise NotImplementedError
 
     # Wire-format hooks, implemented by subclasses.
@@ -313,34 +569,60 @@ class Provider:
             raise ProviderError(None, f"invalid base_url {self.cfg.base_url!r}: {err}", False) from None
 
     def _attempt(self, request: urllib.request.Request, stream: bool, on_delta: OnDelta | None,
-                 cancel: threading.Event | None, on_wait: Callable[[], None] | None = None) -> Completion:
+                 cancel: threading.Event | None, on_wait: Callable[[], None] | None = None,
+                 abort: AbortHandle | None = None) -> Completion:
+        started: list[float] = []
+        try:
+            return self._send(request, stream, on_delta, cancel, on_wait, abort, started)
+        except ProviderError as err:   # when the attempt went out and when it failed, for the error record
+            if err.started is None and started:
+                err.started = started[0]
+            if err.failed is None:
+                err.failed = time.time()
+            raise
+
+    def _send(self, request: urllib.request.Request, stream: bool, on_delta: OnDelta | None,
+              cancel: threading.Event | None, on_wait: Callable[[], None] | None,
+              abort: AbortHandle | None, started: list[float]) -> Completion:
         with _concurrency_slot(self.cfg, cancel, _guarded_wait(on_wait)):
             _raise_if_cancelled(cancel)
+            started.append(time.time())
+            opener = _abortable_opener(self.cfg.base_url, abort) if abort is not None else self._opener
             try:
-                response = self._opener.open(request, timeout=self._timeout())
+                response = opener.open(request, timeout=self._timeout())
             except urllib.error.HTTPError as err:
                 raise _http_error(err) from None
             except ValueError as err:
                 raise ProviderError(None, f"invalid request: {err}", False) from None
-            except (OSError, http.client.HTTPException) as err:
+            except urllib.error.URLError as err:   # urllib wraps a failure to connect or to send the request
+                failure = _connection_error(err)
+                failure.sent = False
+                raise failure from None
+            except (OSError, http.client.HTTPException) as err:   # sent; no answer
                 raise _connection_error(err) from None
+            if abort is not None:
+                abort.register(response)
             guarded = _guard_callback(on_delta)
-            with response:
+            with response, _unregistered(abort, response):
                 try:
-                    # A server may answer otherwise than asked (Open WebUI does when a workspace model's Stream
-                    # Chat Response overrides the request): one whole JSON body to a stream request is a full
-                    # answer, not a stream that ended early, and an SSE stream to a request without one is
-                    # read as a stream, instead of failing (and retrying) either way.
-                    streamed = not _is_json_response(response) if stream else _is_event_stream(response)
-                    if streamed:
-                        return self._parse_stream(_sse_data(response, cancel), guarded)
-                    return self._parse(_read_json(response), guarded)
-                except _CallbackError as failed:  # the caller's own error, untouched and not retried
-                    raise failed.error from failed.error.__cause__
-                except (OSError, http.client.HTTPException) as err:
-                    raise _connection_error(err) from None
-                except _MALFORMED_ERRORS as err:
-                    raise ProviderError(None, f"malformed response: {type(err).__name__}: {err}", False) from None
+                    try:
+                        # A server may answer otherwise than asked (Open WebUI does when a workspace model's Stream
+                        # Chat Response overrides the request): one whole JSON body to a stream request is a full
+                        # answer, not a stream that ended early, and an SSE stream to a request without one is
+                        # read as a stream, instead of failing (and retrying) either way.
+                        streamed = not _is_json_response(response) if stream else _is_event_stream(response)
+                        if streamed:
+                            return self._parse_stream(_sse_data(response, cancel), guarded)
+                        return self._parse(_read_json(response), guarded)
+                    except _CallbackError as failed:  # the caller's own error, untouched and not retried
+                        raise failed.error from failed.error.__cause__
+                    except (OSError, http.client.HTTPException) as err:
+                        raise _connection_error(err) from None
+                    except _MALFORMED_ERRORS as err:
+                        raise ProviderError(None, f"malformed response: {type(err).__name__}: {err}", False) from None
+                except ProviderError as err:   # a failure read from an answer keeps the answer's ids and status
+                    _answered(err, response)
+                    raise
 
     def _timeout(self) -> float:
         return float(getattr(self.cfg, "timeout", None) or DEFAULT_TIMEOUT)
@@ -368,8 +650,14 @@ class OpenAIProvider(Provider):
         return [{"role": "tool", "tool_call_id": call_id, "content": output}
                 for call_id, output, _is_error in results]
 
+    def tool_call_ids(self, message: Any) -> list[str]:
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            return []
+        return [str(call["id"]) for call in message.get("tool_calls") or []
+                if isinstance(call, dict) and call.get("id")]
+
     def _url(self) -> str:
-        return self.cfg.base_url.rstrip("/") + "/chat/completions"
+        return _with_query(self.cfg.base_url.rstrip("/") + "/chat/completions", self.cfg)
 
     def _body(self, model: "ModelConfig", system: str, messages: list[dict], tools: list[dict],
               stream: bool) -> dict:
@@ -419,7 +707,7 @@ class OpenAIProvider(Provider):
                 if choice.get("finish_reason"):
                     acc.finish = choice["finish_reason"]
         if not done and acc.finish is None:
-            raise ProviderError(None, "response stream ended before the model finished", True)
+            raise _ended_early()
         return acc.completion()
 
 
@@ -538,8 +826,15 @@ class AnthropicProvider(Provider):
             {"type": "tool_result", "tool_use_id": call_id, "content": output, "is_error": bool(is_error)}
             for call_id, output, is_error in results]}]
 
+    def tool_call_ids(self, message: Any) -> list[str]:
+        if not isinstance(message, dict) or message.get("role") != "assistant" \
+                or not isinstance(message.get("content"), list):
+            return []
+        return [str(block["id"]) for block in message["content"]
+                if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("id")]
+
     def _url(self) -> str:
-        return self.cfg.base_url.rstrip("/") + "/v1/messages"
+        return _with_query(self.cfg.base_url.rstrip("/") + "/v1/messages", self.cfg)
 
     def _protocol_headers(self) -> dict[str, str]:
         return {"anthropic-version": ANTHROPIC_VERSION}
@@ -608,7 +903,7 @@ class AnthropicProvider(Provider):
             elif kind == "error":
                 _raise_for_error_payload(event)
         if not finished and stop_reason is None:
-            raise ProviderError(None, "response stream ended before the model finished", True)
+            raise _ended_early()
         calls = []
         for index in sorted(blocks):
             block = blocks[index]
@@ -701,6 +996,14 @@ def _is_loopback(host: str) -> bool:
         return False
 
 
+def _with_query(url: str, cfg: Any) -> str:
+    """url with cfg.url_query appended (a llama.cpp router's ?autoload=false for a wake turn, §5.11)."""
+    query = getattr(cfg, "url_query", None)
+    if not isinstance(query, dict) or not query:
+        return url
+    return url + ("&" if "?" in url else "?") + urllib.parse.urlencode(sorted((str(k), str(v)) for k, v in query.items()))
+
+
 def _raise_if_cancelled(cancel: threading.Event | None) -> None:
     if cancel is not None and cancel.is_set():
         raise ProviderError(None, "cancelled", False)
@@ -731,6 +1034,15 @@ def _guard_callback(on_delta: OnDelta | None) -> OnDelta | None:
             raise _CallbackError(err) from err
 
     return guarded
+
+
+@contextlib.contextmanager
+def _unregistered(abort: AbortHandle | None, response: Any) -> Iterator[None]:
+    try:
+        yield
+    finally:
+        if abort is not None:
+            abort.unregister(response)
 
 
 def _merge_extra(body: dict, extra: dict | None) -> dict:
@@ -787,8 +1099,27 @@ def _read_json(response: Any) -> dict:
         payload = None
     if not isinstance(payload, dict):
         text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
-        raise ProviderError(None, "invalid JSON response: " + _clip(text), False)
+        failure = ProviderError(None, "invalid JSON response: " + _clip(text), False)
+        failure.full_body = text[:CAPTURE_BODY_CHARS * 4]   # the whole page for the error record (capped there)
+        raise failure
     return payload
+
+
+def _ended_early() -> ProviderError:
+    """A stream that ended before the model finished: retryable, and a connection failure (the answer was cut
+    off), so under a GPU custody lease its outcome is unknown and it is never replayed (DESIGN §37 rule 5)."""
+    failure = ProviderError(None, "response stream ended before the model finished", True)
+    failure.connection = True
+    return failure
+
+
+def _answered(err: ProviderError, response: Any) -> None:
+    """err, raised while reading an answer, keeps that answer's headers (its request ids) and HTTP status."""
+    if err.headers is None:
+        err.headers = getattr(response, "headers", None)
+    if err.http_status is None:
+        status = getattr(response, "status", None)
+        err.http_status = status if isinstance(status, int) else None
 
 
 def _raise_for_error_payload(payload: dict) -> None:
@@ -800,25 +1131,35 @@ def _raise_for_error_payload(payload: dict) -> None:
     status = code if isinstance(code, int) else None
     retryable = status in RETRYABLE_STATUSES or (
         isinstance(error, dict) and error.get("type") in RETRYABLE_STREAM_ERRORS)
-    raise ProviderError(status, _clip(json.dumps(payload)), retryable)
+    text = json.dumps(payload)
+    failure = ProviderError(status, _clip(text), retryable)
+    failure.full_body = text[:CAPTURE_BODY_CHARS * 4]
+    raise failure
 
 
 def _http_error(err: urllib.error.HTTPError) -> ProviderError:
     try:
-        body = err.read(ERROR_BODY_CHARS * 4).decode("utf-8", "replace")
+        body = err.read(CAPTURE_BODY_CHARS * 4).decode("utf-8", "replace")
     except (OSError, http.client.HTTPException):
         body = ""
     finally:
         err.close()
     retry_after = _parse_retry_after(err.headers.get("Retry-After") if err.headers else None)
-    return ProviderError(err.code, _clip(body or str(err.reason)), err.code in RETRYABLE_STATUSES, retry_after)
+    failure = ProviderError(err.code, _clip(body or str(err.reason)), err.code in RETRYABLE_STATUSES, retry_after)
+    failure.full_body = body
+    failure.headers = err.headers
+    failure.http_status = err.code
+    return failure
 
 
 def _connection_error(err: BaseException) -> ProviderError:
     reason = err.reason if isinstance(err, urllib.error.URLError) else err
     if isinstance(reason, ssl.SSLCertVerificationError):
-        return ProviderError(None, f"TLS certificate verification failed: {reason}", False)
-    return ProviderError(None, f"connection error: {type(reason).__name__}: {reason}", True)
+        failure = ProviderError(None, f"TLS certificate verification failed: {reason}", False)
+    else:
+        failure = ProviderError(None, f"connection error: {type(reason).__name__}: {reason}", True)
+    failure.connection = True
+    return failure
 
 
 def _parse_retry_after(value: str | None) -> float | None:

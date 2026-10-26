@@ -1,0 +1,23 @@
+{
+ "body": null,
+ "headers": {
+  "Connection": "close",
+  "Content-Type": "application/json"
+ },
+ "json": {
+  "health": "pending",
+  "health_reason": "SMART telemetry could not be obtained for disk d1",
+  "instance": "lab",
+  "pulse": {
+   "activity": 840,
+   "array": 170,
+   "config": 4,
+   "current_at": "2026-10-25T15:09:27",
+   "disks": 230,
+   "tasks": 764
+  }
+ },
+ "method": "GET",
+ "path": "/snapraid/v1/state",
+ "status": 200
+}

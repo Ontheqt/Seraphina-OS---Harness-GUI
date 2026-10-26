@@ -11,7 +11,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from .agentdefs import AgentDef
@@ -48,6 +48,16 @@ class RunContext:
     # label, variables?, user_name?}. The builtin harness then writes a thin system prompt that does not compete
     # with the persona's own instructions.
     persona: dict | None = None
+    # Chat check-ins (Wake & Messages §5.8): the Wake tool's context (None: no Wake tool), the origin of the message
+    # this run sends ("wake" for a check-in; recorded as a harness message, never as the user's), and a check-in's
+    # smaller run: only Read, Glob, Grep, Wake and RunCheck (checkin), and the provider's slot taken as a background
+    # caller that yields when a person needs the model (background).
+    wake: "Any" = None
+    message_origin: str | None = None
+    checkin: bool = False
+    background: bool = False
+    checkin_commands: list = field(default_factory=list)
+    max_output_tokens: int | None = None
 
     def can_write(self, path: Path) -> bool:
         """True if path (resolved) is one of write_paths or below a directory in it."""

@@ -76,7 +76,9 @@ SMART_TYPE_RE = re.compile(r"^[A-Za-z0-9,_+-]{1,32}$")
 COLUMNS_RE = re.compile(r"^[A-Za-z0-9_,.:-]{1,300}$")
 DENIED_RE = re.compile(r"permission denied|operation not permitted|must be root|need to be root|are you root|"
                        r"a password is required|access denied|not allowed|got permission denied", re.IGNORECASE)
-SUDO_REFUSED_RE = re.compile(r"^sudo: |is not in the sudoers file|may not run sudo", re.MULTILINE)
+# sudo's own refusal (a password or interactive authentication wanted, no-new-privileges, not in sudoers): classic
+# sudo and sudo-rs both start it "sudo: " (sudo-rs 0.2.13 as /usr/bin/sudo); an older sudo-rs may name itself.
+SUDO_REFUSED_RE = re.compile(r"^sudo(?:-rs)?: |is not in the sudoers file|may not run sudo", re.MULTILINE)
 SHADOW_RE = re.compile(r"^g?shadow(?:-|~|\.[A-Za-z0-9-]+)?$")   # shadow, gshadow-, shadow.bak; not shadowsocks
 DPKG_FORMAT = r"-f=${Package}\t${Version}\t${db:Status-Abbrev}\n"   # dpkg-query expands \t and \n itself
 BACKUP_TOOLS = ("restic", "borg", "kopia", "snapraid", "timeshift", "rsnapshot", "duplicati", "rclone", "backup")
@@ -468,7 +470,8 @@ class Collector:
             return record
         result = self.runner.run(command, timeout)
         if command[0] == "sudo" and result.exit_code == 1 and SUDO_REFUSED_RE.search(result.stderr or ""):
-            # sudo itself said no (a password is required): this probe and every later one run as this user.
+            # sudo itself said no (it wants a password, or cannot raise rights here): this probe and every later
+            # one run as this user.
             self.sudo_refused.append(f"{section}.{name}")
             note = (result.stderr or "").strip().splitlines()[0][:200]
             command = list(argv)
@@ -806,6 +809,9 @@ class Collector:
         self.probe(s, "config_dir", ["ls", "-la", "/etc/cockpit"])
 
     def _cosmos(self) -> None:
+        """Cosmos's units, its folder and its config (routes, with its private key redacted), when Cosmos is
+        installed: a unit or a container of its own. Without either, the folder is listed (names, sizes and dates)
+        and the config is not read: a stale route table would show routes nothing serves, beside a private key."""
         s = "cosmos"
         files = self.ok("systemd", "unit_files")
         units = sorted({row["unit"] for row in parse_list_unit_files(files["stdout"] if files else "")
@@ -814,8 +820,27 @@ class Collector:
             self.probe(s, "units", ["systemctl", "show", "--no-pager",
                                     "--property=Id,LoadState,ActiveState,SubState,UnitFileState,FragmentPath",
                                     *units])
-        self.probe(s, "config_dir", ["ls", "-la", "/var/lib/cosmos"], root=True)
-        self.probe(s, "config", ["cat", "/var/lib/cosmos/cosmos.config.json"], root=True, kind="json")
+        listing = self.probe(s, "config_dir", ["ls", "-la", "/var/lib/cosmos"], root=True)
+        if units or self._cosmos_container():
+            self.probe(s, "config", ["cat", "/var/lib/cosmos/cosmos.config.json"], root=True, kind="json")
+            return
+        stale = listing["status"] == "ok" and bool((listing["stdout"] or "").strip())
+        self.skip(s, "config", ["cat", "/var/lib/cosmos/cosmos.config.json"],
+                  "Cosmos is not installed (no unit, no container of its own)" +
+                  (": stale files are left in /var/lib/cosmos, listed by name, size and date, never read" if stale
+                   else ""))
+
+    def _cosmos_container(self) -> bool:
+        """A container that is Cosmos itself (its image or its name), not one of the apps Cosmos once managed: those
+        keep their cosmos-* labels after Cosmos is gone."""
+        for row in self.parsed.get(("docker", "containers")) or []:
+            if not isinstance(row, dict):
+                continue
+            image, names = str(row.get("Image") or "").lower(), str(row.get("Names") or "").lower()
+            if "cosmos-server" in image or "azukaar/cosmos" in image or any(
+                    name.strip().lstrip("/") in ("cosmos", "cosmos-server") for name in names.split(",")):
+                return True
+        return False
 
     def _tailscale(self) -> None:
         s = "tailscale"
@@ -1277,7 +1302,7 @@ def _scope_limits(c: Collector, indexes: dict) -> list[str]:
                       + ("as root (this capture runs as root)." if os.getuid() == 0
                          else "as this user: some saw less or were denied."))
     if c.sudo_refused:
-        limits.append("sudo -n was refused (a password is needed), so these ran without sudo: "
+        limits.append("sudo -n was refused (each probe's record has sudo's own words), so these ran without sudo: "
                       + ", ".join(c.sudo_refused) + ".")
     if missing:
         limits.append("Commands not installed here were recorded, not installed: " + ", ".join(missing) + ".")

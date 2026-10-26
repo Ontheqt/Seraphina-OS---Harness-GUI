@@ -1,0 +1,43 @@
+{
+ "body": null,
+ "headers": {
+  "Connection": "close",
+  "Content-Type": "application/json"
+ },
+ "json": {
+  "check_updates": false,
+  "config_full_access": false,
+  "hook_docker_pause": "",
+  "hook_run_as_user": "",
+  "hook_script": "",
+  "maintenance_schedule": "",
+  "notify_differences": true,
+  "notify_heartbeat": "/usr/local/bin/notify-example heartbeat",
+  "notify_result": "/usr/local/bin/notify-example result \"%s\" \"%l\" \"%n\" \"%t\" \"%h\" \"%c\"",
+  "notify_result_level": "info",
+  "notify_run_as_user": "",
+  "notify_start": "/usr/local/bin/notify-example start \"%s\" \"%l\" \"%n\" \"%t\" \"%h\"",
+  "notify_syslog_enabled": false,
+  "notify_syslog_level": "info",
+  "probe_interval_minutes": 0,
+  "pulse": {
+   "activity": 1413,
+   "array": 202,
+   "config": 1,
+   "current_at": "2026-10-25T15:12:36",
+   "disks": 319,
+   "tasks": 1332
+  },
+  "scrub_older_than": 0,
+  "scrub_percentage": 5,
+  "spindown_idle_minutes": "0",
+  "sync_prehash": false,
+  "sync_prevent_truncations": true,
+  "sync_threshold_deletes": 20,
+  "sync_threshold_updates": 50,
+  "touch_zero_subseconds": true
+ },
+ "method": "GET",
+ "path": "/snapraid/v2/config",
+ "status": 200
+}

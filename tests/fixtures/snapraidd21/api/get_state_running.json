@@ -1,0 +1,24 @@
+{
+ "body": null,
+ "headers": {
+  "Connection": "close",
+  "Content-Type": "application/json"
+ },
+ "json": {
+  "active_command": "sync",
+  "health": "pending",
+  "health_reason": "The snapraid binary was not found in the expected location. Please install SnapRAID and restart the daemon.",
+  "next_command": "scrub",
+  "pulse": {
+   "activity": 22,
+   "array": 5,
+   "config": 1,
+   "current_at": "2026-10-25T14:37:51",
+   "disks": 1,
+   "tasks": 22
+  }
+ },
+ "method": "GET",
+ "path": "/snapraid/v1/state",
+ "status": 200
+}

@@ -1,0 +1,104 @@
+version:13.0
+unixtime:1792928531
+time:2026-10-25 11:42:11
+command:status
+argv:0:/usr/local/bin/snapraid
+argv:1:-c
+argv:2:/etc/snapraid.conf
+argv:3:-l
+argv:4:/var/lib/seraphina-snapraid/runs/J-1/snapraid.log
+argv:5:status
+selftest:
+msg:progress: Self test...
+conf:file:/etc/snapraid.conf
+blocksize:65536
+data:d1:/mnt/disk1/
+data:d2:/mnt/disk2/
+data:d3:/mnt/disk3/
+mode:par2
+parity:0:/mnt/parity1/snapraid.parity
+2-parity:0:/mnt/parity2/snapraid.2-parity
+autosave:1000000000
+filter:exclude /lost+found/
+filter:exclude *.unrecoverable
+filter:exclude /seraphina-restored/
+filter:exclude /.seraphina-trash/
+content:/var/snapraid/snapraid.content
+msg:progress: Loading state from /var/snapraid/snapraid.content...
+msg:fatal: WARNING! Content file '/var/snapraid/snapraid.content' not found, attempting with another copy...
+content:/mnt/disk1/.snapraid/snapraid.content
+msg:progress: Loading state from /mnt/disk1/.snapraid/snapraid.content...
+msg:fatal: WARNING! Content file '/mnt/disk1/.snapraid/snapraid.content' not found, attempting with another copy...
+content:/mnt/disk2/.snapraid/snapraid.content
+msg:progress: Loading state from /mnt/disk2/.snapraid/snapraid.content...
+msg:fatal: No content file found. Assuming empty.
+memory:used:211594
+memory:block:17
+memory:extent:88
+memory:file:192
+memory:link:88
+memory:dir:80
+msg:progress: Using 0 MiB of memory for the file-system.
+summary:block_size:65536
+summary:parity_block_count:0
+summary:parity_block_total:parity:0
+summary:parity_block_free:parity:0
+summary:parity_block_total:2-parity:0
+summary:parity_block_free:2-parity:0
+summary:parity_block_free_min:0
+summary:disk_file_count:d1:0
+summary:disk_block_count:d1:0
+summary:disk_fragmented_file_count:d1:0
+summary:disk_excess_fragment_count:d1:0
+summary:disk_zerosubsecond_file_count:d1:0
+summary:disk_file_size:d1:0
+summary:disk_block_allocated:d1:1
+summary:disk_block_total:d1:0
+summary:disk_block_free:d1:0
+summary:disk_block_max_by_space:d1:0
+summary:disk_block_max_by_parity:d1:0
+summary:disk_block_max:d1:0
+summary:disk_space_wasted:d1:0
+summary:disk_file_count:d2:0
+summary:disk_block_count:d2:0
+summary:disk_fragmented_file_count:d2:0
+summary:disk_excess_fragment_count:d2:0
+summary:disk_zerosubsecond_file_count:d2:0
+summary:disk_file_size:d2:0
+summary:disk_block_allocated:d2:1
+summary:disk_block_total:d2:0
+summary:disk_block_free:d2:0
+summary:disk_block_max_by_space:d2:0
+summary:disk_block_max_by_parity:d2:0
+summary:disk_block_max:d2:0
+summary:disk_space_wasted:d2:0
+summary:disk_file_count:d3:0
+summary:disk_block_count:d3:0
+summary:disk_fragmented_file_count:d3:0
+summary:disk_excess_fragment_count:d3:0
+summary:disk_zerosubsecond_file_count:d3:0
+summary:disk_file_size:d3:0
+summary:disk_block_allocated:d3:1
+summary:disk_block_total:d3:0
+summary:disk_block_free:d3:0
+summary:disk_block_max_by_space:d3:0
+summary:disk_block_max_by_parity:d3:0
+summary:disk_block_max:d3:0
+summary:disk_space_wasted:d3:0
+summary:file_count:0
+summary:file_block_count:0
+summary:fragmented_file_count:0
+summary:excess_fragment_count:0
+summary:zerosubsecond_file_count:0
+summary:file_size:0
+summary:parity_size:0
+summary:parity_size_max:0
+summary:hash:spooky2
+summary:prev_hash:undefined
+summary:best_hash:spooky2
+block_count:0
+summary:has_unsynced:0
+summary:has_unscrubbed:0
+summary:has_rehash:0
+summary:has_bad:0:0:0
+msg:fatal: The array is empty.

@@ -58,9 +58,10 @@ from typing import Any, Callable, Iterator, NamedTuple
 
 from . import gitops
 from . import items as tracker
+from . import outcomes as rule
 from .agentdefs import AgentDef, discover_agents, read_small_text, required_agents
 from .config import (Config, HousekeepingConfig, ModelConfig, ProviderConfig, RepoConfig, agent_dirs, deep_merge,
-                     expand_path, provider_secret_values)
+                     expand_path, provider_secret_values, sandbox_masks)
 from .delivery import check_delivery, export_folder
 from .drivers.cli import cli_model
 from .events import EventBus, env_secret_values, truncate, utc_now
@@ -68,13 +69,24 @@ from .gitops import GitError, MergeBusy
 from .gridcard import factory_grid
 from .gridcard import receipt as grid_receipt
 from .housekeeping import AgentTokens, HousekeepingManager, agent_update
+from .driftsources import DriftSources
+from .custody import (Claims, CustodyDenied, custody_on_server, lease_of, leased, register_names, residency_matches,
+                      server_of)
+from .custody import REFUSAL_WORDS as CUSTODY_WORDS
+from .custody import client_for as custody_client_for
+from .custody import parse_settings as parse_custody
+from .custody import needs_lease as custody_needs_lease
+from .custody import settings_of as custody_settings_of
+from .custody import set_journal as custody_journal
 from .harness.providers import make_provider
-from .harness.sandbox import Sandbox
+from .harness.sandbox import Sandbox, mask_plan
 from .jobs import JobStore, read_verdict
-from .routing import (REACHABILITY, ROUTE_KEYS as PLACEMENT_KEYS, Build, Reachability, Role, add_cost,
-                      check_placement, choose, choose_build, config_builds, effort_body, escalation_start, estimate,
-                      merged_placements, overflow_key, placement_reason, price_table, profile_name, profile_routes,
-                      reason, run_cost, take_slot, zero_cost)
+from .routing import (JUDGE_HINT, REACHABILITY, ROUTE_KEYS as PLACEMENT_KEYS, Build, Reachability, Role, add_cost,
+                      alternate_text, check_placement, choose, choose_build, config_builds, effort_body,
+                      escalation_start, estimate,
+                      independence_map, is_judge, judge_choice, merged_placements, model_family, overflow_key,
+                      placement_reason, price_table, profile_name, profile_routes, reason, route_family, run_cost,
+                      shared_model, shared_status, take_slot, zero_cost)
 from .runners import AgentRun, RunContext, Runner, add_usage, launch_model, make_runner
 from .skills import skill_dirs
 
@@ -105,7 +117,10 @@ PORT_OFFSETS = {"builder": 0, "reviewer-ux": 1, "reviewer-ui": 2}
 REVIEWED = ("PASS", "CHANGES")
 SPECIAL_MODES = {"120000": "symlink", "160000": "submodule"}
 ALWAYS_PROTECTED = (".factory/**",)   # a branch must never change the factory's own agents unreviewed
-ROUTE_KEYS = frozenset(PLACEMENT_KEYS)   # model, driver, extra_body, effort, escalate, reason
+ROUTE_KEYS = frozenset(PLACEMENT_KEYS)   # model, driver, extra_body, effort, escalate, reason, independent_alternate
+# a job's independence (section 23) is its judge runs' worst: a run on the builder's family the routing accepted,
+# code from a chat whose models are not recorded, a run on the builder's family with no way out
+INDEPENDENCE_RANK = {"accepted": 1, "unknown": 2, "reduced": 3}
 # What a routing snapshot keeps of the model and provider entries (section 23). Secrets are never
 # kept: the api key is read from api_key_env/api_key_file at call time, and secret-looking headers
 # come from the live provider of the same name and base_url.
@@ -115,7 +130,7 @@ PROVIDER_FIELDS = ("type", "base_url", "api_key_env", "api_key_file", "timeout",
 # Kept in a snapshot only when set: prices (model entries) and the placement settings (provider entries).
 PRICE_FIELDS = ("price_in", "price_out", "price_cached_in")
 PLACEMENT_FIELDS = ("kind", "loaded_model_url", "allow_model_swap", "swap_back", "overflow_after_seconds",
-                    "tokens_per_second")
+                    "tokens_per_second", "lazy_load", "custody")
 HANDOVER_CHARS = 8000               # each file a hand-over prompt quotes (build.md, a review)
 HANDOVER_DIFF_CHARS = 40000         # the diff it quotes
 SWAP_BACK_TIMEOUT = 600.0           # seconds a swap-back request may take (a model load)
@@ -172,16 +187,31 @@ class StepError(Exception):
 
 @dataclasses.dataclass
 class _Placement:
-    """Where one run goes (routing.py): the route that runs (the agent's route, an escalation rung or
-    the overflow), which of its builds, what agent.start and job.runs say about it (build, overflow,
-    swap, escalation), why other builds or rungs were passed over, and (provider, seconds, overflow
-    route) when the run waits at most that long for one of provider's slots before it overflows."""
+    """Where one run goes (routing.py): the route that runs (the agent's route, an escalation rung, a
+    judge's independent alternate or the overflow), which of its builds, what agent.start and job.runs
+    say about it (build, overflow, swap, escalation), why other builds or rungs were passed over, and
+    (provider, seconds, overflow route) when the run waits at most that long for one of provider's slots
+    before it overflows; claims the run's GPU custody request leases (section 37), taken while it is placed.
+
+    The independence guard (section 23): guard is {family: the builder's model key} a judge run must not
+    share, None otherwise; judge the judge's own route; left what the model it moved off shares with the
+    builder when the run moved to its independent alternate (routing.shared_model); escape the alternate
+    to take instead should the judge's own placement overflow onto one of guard's families (_off_guard);
+    tried what that alternate did when it could not take over; unknown True when code it judges was
+    written in a chat whose models the job does not record."""
 
     route: dict
     build: int = 0
     info: dict = dataclasses.field(default_factory=dict)
     notes: list[str] = dataclasses.field(default_factory=list)
     wait: tuple[ProviderConfig, float, dict] | None = None
+    claims: Any = None   # custody.Claims: the run's request lease (section 37), released when the run ends
+    guard: dict[str, str] | None = None
+    judge: dict | None = None
+    left: dict | None = None
+    escape: dict | None = None
+    tried: str = ""
+    unknown: bool = False
 
 
 class _Cancelled(Exception):
@@ -212,6 +242,7 @@ class Factory:
         self.store = store or JobStore(config.data_dir)
         self.clock = clock or time.monotonic
         self.reach = reach or REACHABILITY      # cached provider probes for placements (routing.py)
+        custody_journal(config.data_dir)        # what the custody clients note, for the operator's activity (§36)
         self._lock = threading.RLock()
         self._changed = threading.Condition(self._lock)
         self._jobs: dict[JobKey, dict] = {}
@@ -232,11 +263,18 @@ class Factory:
         self._scouts: dict[str, threading.Event] = {}
         self._chats: Any = None
         self._plans: Any = None
+        self._notifier: Any = None      # notify.Notifier (Wake & Messages W1), made by _notify_manager()
+        self._wakes: Any = None         # wakes.WakeManager (Wake & Messages W2, W3), made by _wake_manager()
+        self._drift: Any = None         # driftsources.DriftSources (section 38), made by _drift_manager()
+        self._snapraid: Any = None      # snapraid.SnapraidPanel (section 41), made by _snapraid_manager()
         self._system: HousekeepingManager | None = None
         self._tokens: AgentTokens | None = None
+        self._receipts: Any = None   # receipts.Receipts, made on first use (DESIGN §36)
+        self._looks: Any = None      # doctor.LookAround: the owner's look for model servers, made on first use
         self._secrets: tuple[float, list[str]] | None = None     # (when, values) cached by secret_values
         self._secrets_gen = 0                                    # bumped whenever that cache is dropped
-        self._swaps: dict[JobKey, list[tuple[ProviderConfig, str]]] = {}   # models to load back (swap_back)
+        # models to load back (swap_back): (provider, the model it had, the custody residency before the swap)
+        self._swaps: dict[JobKey, list[tuple[ProviderConfig, str, Any]]] = {}
         self._steps: dict[str, Callable[[dict], str | None]] = {
             "setup": self._setup, "spec": self._spec, "build": self._build,
             "build_check": self._build_check, "review": self._review_round, "approve": self._approve,
@@ -247,7 +285,8 @@ class Factory:
     # -- lifecycle ---------------------------------------------------------------
 
     def start(self) -> None:
-        """Mark jobs a previous server left active as failed, start the workers, chats and plans."""
+        """Mark jobs a previous server left active as failed, start the workers, chats and plans, then the
+        Notifier (messages to the owner's phone, DESIGN §34)."""
         with self._lock:
             if self._started:
                 return
@@ -256,38 +295,69 @@ class Factory:
         self._ensure_workers()
         self._chat_manager().start()
         self._plan_manager().start()
+        self._notify_manager().start()
+        self._wake_manager().start()
+        self._drift_manager().start()
+        self._snapraid_manager().start()
 
     def start_jobs(self) -> None:
-        """Restart recovery and the job workers only, without chats and plans (`factory run`)."""
+        """Restart recovery and the job workers only, without chats, plans or the Notifier (`factory run`)."""
         self._recover()
         self._ensure_workers()
 
     def stop(self, timeout: float = 10.0) -> None:
-        """Stop chats, plans and workers; a job still running ends failed ("interrupted (server stopped)")."""
+        """Stop plans, chats and workers, then the Notifier, against one shared deadline (S18: systemd's
+        TimeoutStopSec must cover all of it); a job still running ends failed ("interrupted (server
+        stopped)"). The Notifier records that a stop was asked for first and a clean stop last, so the
+        next start can tell a hard stop from this one."""
         self._stopping.set()
+        notifier, wakes = self._notifier, self._wakes
+        for record in (wakes, notifier):   # S18: the stopping records first
+            if record is not None:
+                record.mark_stopping()
+        deadline = time.monotonic() + timeout
+        if self._drift is not None:
+            self._drift.stop(min(2.0, timeout))
+        if self._snapraid is not None:
+            self._snapraid.stop(min(2.0, timeout))
+        if wakes is not None:   # no new wakes during shutdown; the turn in flight is cut (S17 retries it once)
+            wakes.stop(deadline)
         for manager in (self._plans, self._chats):
             if manager is not None:
-                manager.stop(timeout)
+                manager.stop(max(0.0, deadline - time.monotonic()))
         with self._lock:
             events = [*self._cancels.values(), *self._scouts.values()]
             workers = list(self._workers.values())
         for event in events:
             event.set()
-        deadline = time.monotonic() + timeout
         for worker in workers:
             worker.join(max(0.0, deadline - time.monotonic()))
+        if notifier is not None:
+            notifier.stop(max(deadline, time.monotonic() + 1.0))   # sends in flight finish or become unknown
 
     def reload_config(self, new_config: Config) -> None:
         """Swap in a new config: later steps and jobs use it, running jobs keep their routing snapshot."""
         with self._lock:
             self.config = new_config
+            custody_journal(new_config.data_dir)
             self._forget_secrets()
-            for manager in (self._chats, self._plans):
+            for manager in (self._chats, self._plans, self._drift, self._snapraid):
                 if manager is not None:
                     manager.config = new_config
             if self._system is not None:
                 self._system.max_proposals = self._max_proposals()
             started = self._started and not self._stopping.is_set()
+            notifier = self._notifier
+            wakes = self._wakes
+        if notifier is not None:   # outside the factory lock: the Notifier rebuilds channels and fingerprints
+            notifier.reload(new_config)
+        if wakes is not None:
+            wakes.reload(new_config)
+        if getattr(self.bus, "instance", None) is not None:
+            from .wakes import instance_name
+
+            self.bus.instance = instance_name(new_config)
+            tracker.INSTANCE["name"] = self.bus.instance
         if started:
             self._ensure_workers()
 
@@ -313,7 +383,29 @@ class Factory:
                 continue
             job = self._entry(key)
             with self._job_lock(key):
-                self._mark_failed(job, INTERRUPTED)
+                self._mark_failed(job, self._interrupted_merge(job) if job.get("stage") == "merging" else INTERRUPTED)
+
+    def _interrupted_merge(self, job: dict) -> str:
+        """The failed reason of a job a previous server left merging (DESIGN §40): what it did is looked at again,
+        read only, never assumed. A merge the job recorded is done (a retry never merges it again); else the
+        repository says whether base already contains the branch. A push whose intent is on record without an
+        answer is unknown, with a tracker item. Nothing is merged or pushed here."""
+        reason, base = f"{INTERRUPTED} while merging", str(job.get("base") or "")
+        try:
+            repo = self._repo(job)
+            sha = job.get("merged_commit")
+            if sha and gitops.is_ancestor(repo.path, sha, f"refs/heads/{base}"):
+                reason += f": {base} has the merge at {sha[:12]}; retry finishes the delivery"
+            elif self._base_has_branch(repo, job):
+                reason += f": {base} already contains {job['branch']} (looked again); retry finishes the delivery"
+            else:
+                reason += f": nothing was merged into {base} (looked again); retry merges it"
+        except (GitError, KeyError, ValueError, OSError) as exc:
+            reason += f": what it did could not be looked at ({exc}); check {base} before you retry"
+        push = job.get("push")
+        if isinstance(push, dict) and push.get("outcome") is None:
+            self._push_done(job, dict(push), rule.UNKNOWN, "the server stopped while the push was out")
+        return reason
 
     def _ensure_workers(self) -> None:
         with self._lock:
@@ -378,6 +470,9 @@ class Factory:
                 return list(cached[1])
             config, jobs, plans, generation = self.config, list(self._jobs.values()), self._plans, self._secrets_gen
         values = list(config.secret_values())
+        notifier = self._notifier
+        if notifier is not None:   # the phone channels' tokens (Wake & Messages S26)
+            values += [value for value in notifier.secret_values() if value not in values]
         entries: list[Any] = []
         for job in jobs:
             routing = job.get("routing")
@@ -422,7 +517,7 @@ class Factory:
 
     def submit(self, repo: str, feature: str, from_branch: str | None = None,
                routing: dict | str | None = None, delivery: str | None = None, profile: str | None = None,
-               items: list[dict] | None = None) -> dict:
+               items: list[dict] | None = None, handoff_models: list[dict] | None = None) -> dict:
         """Create a queued job with the full routing snapshot of its agents and queue it.
 
         from_branch: start the worktree from that branch (a chat handoff) instead of
@@ -431,8 +526,11 @@ class Factory:
         over the routing (None: the config's default_profile, "": none; recorded in job.json).
         delivery: merge, branch or folder (None: merge.delivery), kept in job.json. items: tracked
         items handed over with it (a chat's open items, items.transfer_copy), written into the job's
-        items.json before the job is queued, so nothing races its worker (section 32). ValueError
-        for an invalid feature, branch, routing, profile or delivery.
+        items.json before the job is queued, so nothing races its worker (section 32).
+        handoff_models: with from_branch, the models the chat's turns ran on ([{model, provider, model_id,
+        family}], kept as job.handoff_models): the independence guard counts them as round 1's builder
+        (section 23); a hand-off without them judges code of unknown models. ValueError for an invalid
+        feature, branch, routing, profile, delivery or handoff_models.
         """
         repo_cfg = self.config.repo(repo)
         pipeline = self.config.pipeline()
@@ -445,8 +543,15 @@ class Factory:
         snapshot, name = self._routing(repo_cfg, pipeline.reviewers, routing, profile=profile)
         if items is not None and not (isinstance(items, list) and all(isinstance(entry, dict) for entry in items)):
             raise ValueError("items must be a list of item fields")
+        if handoff_models is not None and not (isinstance(handoff_models, list)
+                                               and all(isinstance(entry, dict) for entry in handoff_models)):
+            raise ValueError("handoff_models must be a list of {model, provider, model_id, family}")
+        authors = None
+        if from_branch is not None and handoff_models is not None:
+            authors = [{key: str(entry[key]) for key in ("model", "provider", "model_id") if entry.get(key)}
+                       | {"family": route_family(entry)} for entry in handoff_models]
         return self._create_job(repo, feature, pipeline.reviewers, pipeline.max_resumes, snapshot, from_branch, mode,
-                                profile=name, items=items)
+                                profile=name, items=items, handoff_models=authors)
 
     def check_delivery(self, delivery: str | None = None) -> str:
         """The delivery mode a job submitted now with delivery would get: delivery itself, or
@@ -479,7 +584,10 @@ class Factory:
                  routing: dict | str | None = None) -> dict:
         """Expected tokens, cost and duration of a job (kind "feature") or a plan ("plan") on repo with
         routing and profile, from this repo's past jobs (routing.estimate: the median per agent once
-        MIN_HISTORY jobs have it, else a default table). Nothing runs; ValueError as submit would."""
+        MIN_HISTORY jobs have it, else a default table). A judge is priced where the independence guard
+        puts it while the builder runs on its own model (its alternate, with independence and instead_of
+        on its row); independence (routing.independence_map) says what the guard does on the builder's
+        other placements. Nothing runs; ValueError as submit would."""
         if kind not in ("feature", "plan"):
             raise ValueError("kind must be feature or plan")
         repo_cfg = self.config.repo(repo)
@@ -487,8 +595,12 @@ class Factory:
         extra = ("lead",) if kind == "plan" else ()
         snapshot, name = self._routing(repo_cfg, reviewers, routing, profile=profile, extra_agents=extra)
         stages = {"spec-writer": "spec", "builder": "build", "approver": "approve", "lead": "lead"}
-        roles = [Role(agent, stages.get(agent, "review"), self._model_config(route), route)
-                 for agent, route in snapshot.items()]
+        builder = snapshot.get("builder") if isinstance(snapshot.get("builder"), dict) else None
+        roles = []
+        for agent, route in snapshot.items():
+            if builder is not None and is_judge(agent):   # where the guard puts it, the builder on its own model
+                route = _estimated_judge(route, {route_family(builder): str(builder.get("model"))})
+            roles.append(Role(agent, stages.get(agent, "review"), self._model_config(route), route))
         history: dict[str, list[dict]] = {}
         for past in self.store.list(repo):
             for agent, usage in _usage_by_agent(past).items():
@@ -508,12 +620,13 @@ class Factory:
                     plan_jobs.append(len(plan["jobs"]))
             history["lead"] = lead_usage
         result = estimate(roles, history, kind, plan_jobs)
-        result.update(repo=repo, profile=name, routing=routing if isinstance(routing, str) else None)
+        result.update(repo=repo, profile=name, routing=routing if isinstance(routing, str) else None,
+                      independence=independence_map(snapshot))
         return result
 
     def _create_job(self, repo: str, feature: str, reviewers: list[str], max_resumes: int, snapshot: dict,
                     from_branch: str | None, delivery: str = "merge", profile: str | None = None,
-                    items: list[dict] | None = None) -> dict:
+                    items: list[dict] | None = None, handoff_models: list[dict] | None = None) -> dict:
         """Write the new job (queued, with its routing snapshot, profile, delivery and handed-over items),
         announce it and queue its setup. Handed-over items are checked before anything is written (ValueError
         for a malformed one) and written before the job is announced: job.created comes first, then its
@@ -529,6 +642,8 @@ class Factory:
         with self._job_lock(key):
             job.update(routing=snapshot, profile=profile, from_branch=from_branch, step="setup", delivery=delivery,
                        delivered=None, cost=zero_cost(), sendbacks=0)
+            if handoff_models is not None:
+                job["handoff_models"] = handoff_models
             if items:
                 store = self._items_store(job)
                 try:   # before the job is announced or queued: no worker or GUI reads it yet
@@ -899,13 +1014,19 @@ class Factory:
         root = self.store.repo_dir(repo.name)
         work = root / "scout"
         release = None
+        placement: _Placement | None = None
         try:
             agent = self.agents(repo.name).get(SCOUT_AGENT)
             if agent is None:
                 raise StepError(f"no agent named {SCOUT_AGENT!r}")
             placements = profile_routes(self.config.raw, profile_name(self.config.raw, None))
             base = self._resolve_route(self.config, agent, placements.get(SCOUT_AGENT))
-            placement = self._place(None, SCOUT_AGENT, base)
+            placement = self._place(None, SCOUT_AGENT, base, purpose=f"scout {repo.name}", cancel=cancel, on_wait=(
+                lambda provider, seconds, denied: self.bus.publish("log", {"level": "info", "message": (
+                    f"repo-scout on {repo.name} waits up to {seconds:g}s for {provider}: GPU custody: {denied}")},
+                    repo=repo.name)))
+            if placement.claims is not None and placement.claims.waited and cancel.is_set():
+                return   # cancelled while the placement waited out a HELD answer
             log_path = _next_log_path(work / "logs", SCOUT_AGENT)
             emit = self._emitter(repo.name, None, SCOUT_AGENT, log_path)
             if placement.wait is not None:
@@ -915,6 +1036,9 @@ class Factory:
                 placement, release = waited
             route = placement.route
             model = self._model_config(route, placement.build)
+            if placement.claims is not None:   # the run's request lease (section 37)
+                model = placement.claims.attach(model)
+                placement.info.update(placement.claims.info())
             ctx = self._context(agent, model, cwd=repo.path, job_dir=work, repo_path=repo.path,
                                 job={"id": None, "repo": repo.name, "kind": "scout"},
                                 write_paths=[root / SCOUT_DRAFT], roots=[repo.path, work],
@@ -936,6 +1060,8 @@ class Factory:
         finally:
             if release is not None:
                 release()
+            if placement is not None:
+                self._release_claims(None, SCOUT_AGENT, placement, repo=repo.name)
             with self._lock:
                 self._scouts.pop(repo.name, None)
 
@@ -961,15 +1087,72 @@ class Factory:
         """
         from .settings import update_config
 
-        update_config(self.config, patch, on_saved=self.reload_config)
+        notifier = self._notifier
+        # S47: the check, the save and the Notifier's new baseline (its reload) as one step, so no tamper check on
+        # another thread compares the saved file against the baseline from before it
+        with notifier.writing(None) if notifier is not None else contextlib.nullcontext():
+            self._before_settings_save(patch)
+            update_config(self.config, patch, on_saved=self.reload_config)
         return self.config_view()
+
+    @contextlib.contextmanager
+    def _config_write(self, patch: Any = None) -> Iterator[None]:
+        """A save of config.json outside update_config (a preset, the offline snapshot's import), made as
+        update_config makes its own: the S47 check, the save and the Notifier's new baseline (its reload) as one
+        step under the settings lock (Notifier.writing), so a check on another thread can neither skip the
+        hand-edit check nor compare in between."""
+        notifier = self._notifier
+        with notifier.writing(None) if notifier is not None else contextlib.nullcontext():
+            self._before_settings_save(patch if patch is not None else {})
+            yield
+
+    def _before_settings_save(self, patch: Any) -> None:
+        """S47: a hand edit of config.json must be caught before an API save folds it into the new baseline;
+        S46: a patch may not turn a phone channel on while agents could read its messages."""
+        notifier = self._notifier
+        if notifier is not None:
+            notifier.check_tamper()
+            notifier.check_patch(patch)
+        self._check_wake_patch(patch)
+
+    def _check_wake_patch(self, patch: Any) -> None:
+        """S46 for step W2/W3: a patch may not turn personas or chat check-ins on while agents run without bwrap or
+        through a CLI driver, unless the owner typed the acknowledgement; and once notice-rules.json exists, the keys
+        it holds are changed there only (one rulebook, operator decision g)."""
+        from . import rules
+        from .notify import sandbox_mode, uses_cli_driver
+
+        if not isinstance(patch, dict):
+            return
+        notify = patch.get("notify") if isinstance(patch.get("notify"), dict) else {}
+        moved = sorted(set(notify) & set(rules.CONFIG_KEYS))
+        if moved and rules.rules_path(self.config).exists():
+            raise ValueError(f"notify.{moved[0]} lives in {rules.RULES_FILE} now (the one rulebook): change it with "
+                             "POST /api/notify/rules")
+        wakes = patch.get("wakes") if isinstance(patch.get("wakes"), dict) else {}
+        turning_on = wakes.get("enabled") is True or (isinstance(wakes.get("chat_wakes"), dict)
+                                                      and wakes["chat_wakes"].get("enabled") is True)
+        personas = wakes.get("personas") if isinstance(wakes.get("personas"), dict) else {}
+        turning_on = turning_on or any(isinstance(entry, dict) and entry.get("enabled") is True
+                                       for entry in personas.values())
+        if not turning_on:
+            return
+        harness = patch.get("harness") if isinstance(patch.get("harness"), dict) else {}
+        if harness.get("sandbox", sandbox_mode(self.config)) == "bwrap" and not uses_cli_driver(self.config):
+            return
+        if self._notify_manager().precondition().get("acknowledged_at"):
+            return
+        raise ValueError("personas and chat check-ins stay off while your AI agents run without the sandbox or "
+                         "through a CLI driver (they could read what you tell Seraphina). Set harness.sandbox to bwrap "
+                         "and use the builtin driver, or type the acknowledgement in Phone setup first")
 
     def apply_preset(self, name: str) -> dict:
         """Merge examples/<name>.json into the config, save it, swap it in (under the save lock, like
         update_config) and return the new view."""
         from .settings import apply_preset
 
-        apply_preset(self.config, name, on_saved=self.reload_config)
+        with self._config_write():
+            apply_preset(self.config, name, on_saved=self.reload_config)
         return self.config_view()
 
     def test_model(self, key: str) -> dict:
@@ -1012,10 +1195,25 @@ class Factory:
     # -- setup status, secrets and docs (delegated) -------------------------------
 
     def setup_status(self) -> dict:
-        """{configured, steps: {providers, models, routing, repos, tools, output}: {ok, detail}} (doctor)."""
+        """{configured, steps: {providers, models, routing, repos, tools, output}: {ok, detail}, host} (doctor),
+        offline: host carries the last look for model servers the owner asked for, never a new one."""
         from .doctor import setup_status
 
-        return setup_status(self.config, factory=self)
+        return setup_status(self.config, factory=self, looked=self._look_around().last())
+
+    def look_around(self, own_port: int | None = None) -> dict:
+        """The owner's look for model servers, run once now: {at, model_servers, note} (doctor.LookAround; its
+        LookAroundRefused when asked again too soon or while one runs). own_port: the port the server listens on,
+        skipped like the config's server.port."""
+        return self._look_around().ask(self.config, self.clock(), skip_ports={own_port} if own_port else frozenset())
+
+    def _look_around(self) -> Any:
+        from .doctor import LookAround
+
+        with self._lock:
+            if self._looks is None:
+                self._looks = LookAround()
+            return self._looks
 
     def secret_status(self) -> dict:
         """{env_file, secrets: [{name, set, in_env_file, providers}]}: names only, never values (envfile)."""
@@ -1052,6 +1250,330 @@ class Factory:
 
         return mermaid_maps(self.config)
 
+    # -- messages to the owner's phone (delegated to notify.Notifier; DESIGN §34) ----------------------
+
+    def _notify_manager(self) -> Any:
+        with self._lock:
+            if self._notifier is None:
+                from .notify import Notifier
+
+                self._notifier = Notifier(self.config, self.bus, self)
+            return self._notifier
+
+    def messages(self, **filters: Any) -> dict:
+        """The inbox: {messages: [...newest first], unread} (filters: persona, state, channel, unread, before,
+        limit, kind)."""
+        return self._notify_manager().messages(**filters)
+
+    def message(self, message_id: str) -> dict:
+        """One notice: {message, deliveries: [{channel, rendered, why, state, ...}], inbound} (KeyError)."""
+        return self._notify_manager().message(message_id)
+
+    def message_action(self, message_id: str, action: str, minutes: int | None = None) -> dict:
+        """ack | snooze (minutes) | retry | resend, from the cockpit."""
+        return self._notify_manager().message_action(message_id, action, minutes=minutes)
+
+    def notify_state(self) -> dict:
+        """The Messages settings card: {state, channels, hooks}."""
+        manager = self._notify_manager()
+        return {**manager.state(), "channels": manager.channels(), "hooks": manager.hooks()}
+
+    def notify_channels(self) -> list[dict]:
+        return self._notify_manager().channels()
+
+    def notify_test(self, channel: str) -> dict:
+        return self._notify_manager().test(channel)
+
+    def notify_prepare(self, channel: str) -> dict:
+        return self._notify_manager().prepare_ntfy(channel)
+
+    def notify_check(self, channel: str) -> dict:
+        return self._notify_manager().check_ntfy(channel)
+
+    def notify_pair(self, channel: str) -> dict:
+        return self._notify_manager().pair(channel)
+
+    def notify_pair_status(self, channel: str) -> dict:
+        return self._notify_manager().pair_status(channel)
+
+    def notify_pair_confirm(self, channel: str, code: str) -> dict:
+        return self._notify_manager().pair_confirm(channel, code)
+
+    def notify_unpair(self, channel: str, chat_id: Any) -> dict:
+        return self._notify_manager().unpair(channel, chat_id)
+
+    def notify_channel_action(self, channel: str, action: str, token: str | None = None) -> dict:
+        """rotate | leaked | disable (S51); for Telegram, token is the new bot token from @BotFather."""
+        self._forget_secrets()
+        try:
+            return self._notify_manager().channel_action(channel, action, token)
+        finally:
+            self._forget_secrets()
+
+    def notify_lost_phone(self) -> dict:
+        self._forget_secrets()
+        try:
+            return self._notify_manager().lost_phone()
+        finally:
+            self._forget_secrets()
+
+    def notify_event(self, body: dict) -> dict:
+        """POST /api/notify/events: the owner (master token) reports an event, as `factory notify event` does."""
+        return self._notify_manager().owner_event(body)
+
+    def notify_terms(self) -> dict:
+        return self._notify_manager().terms()
+
+    def notify_set_terms(self, text: str | None = None, none: bool = False) -> dict:
+        return self._notify_manager().set_terms(text, none=none)
+
+    def notify_inbound(self, limit: int = 100, kind: str | None = None) -> list[dict]:
+        return self._notify_manager().inbound(limit=limit, kind=kind)
+
+    def notify_apply_inbound(self, inbound_id: str) -> dict:
+        """[Apply now] for a late command or tap."""
+        return self._notify_manager().apply_inbound(inbound_id)
+
+    def notify_hook_add(self, body: dict) -> dict:
+        return self._notify_manager().hook_add(body)
+
+    def notify_hook_action(self, hook: str, action: str) -> dict:
+        return self._notify_manager().hook_action(hook, action)
+
+    def hook_for_token(self, token: str) -> str | None:
+        """The event source whose token this is (only its sha256 is stored), or None; never the master token."""
+        return self._notify_manager().hook_for_token(token)
+
+    def hook_auth_failed(self) -> None:
+        self._notify_manager().hook_auth_failed()
+
+    def hook_limits(self, hook: str) -> tuple[int, int]:
+        """(per_minute, per_day) of an event source."""
+        spec = next((h for h in self._notify_manager().hooks() if h["name"] == hook), None) or {}
+        return int(spec.get("per_minute") or 10), int(spec.get("per_day") or 200)
+
+    def hook_event(self, hook: str, body: dict, idempotency_key: str | None = None) -> dict:
+        return self._notify_manager().hook_event(hook, body, idempotency_key)
+
+    def wake_control(self, action: str, by: str = "human", via: str = "cockpit", persona: str | None = None,
+                     until: str | None = None) -> dict:
+        """pause | resume | mute | unmute (S43): all of Seraphina (the PAUSED file; the turn in flight is cut at once)
+        or one persona, until a time. resume and unmute only from the cockpit or the CLI."""
+        if action not in ("pause", "resume", "mute", "unmute"):
+            raise ValueError("action must be pause, resume, mute or unmute")
+        if action in ("resume", "unmute") and by not in ("human", "cli"):
+            raise ValueError("Seraphina is restarted only in the cockpit or the CLI")
+        manager = self._notify_manager()
+        if persona is None and action == "pause":
+            manager.pause(by=by, via=via)
+        elif persona is None and action == "resume":
+            manager.resume(by=by)
+        result = self._wake_manager().control(action, persona=persona, until=until, by=by, via=via)
+        return {"paused": manager.paused(), "personas": result.get("personas")}
+
+    def wake_acknowledge(self, text: str | None = None, withdraw: bool = False) -> dict:
+        """S46: the typed acknowledgement (or its withdrawal), audited."""
+        return self._notify_manager().acknowledge(text, withdraw=withdraw)
+
+    def wake_review(self, action: str) -> dict:
+        """After S47: accept the current settings as the new baseline (accept), and restart (restart)."""
+        return self._notify_manager().review(action)
+
+    # -- personas that wake themselves (delegated to wakes.WakeManager; Wake & Messages W2, W3) ------------------
+
+    def _wake_manager(self) -> Any:
+        with self._lock:
+            if self._wakes is None:
+                from .wakes import WakeManager
+
+                self._wakes = WakeManager(self.config, self.bus, self)
+            return self._wakes
+
+    def wakes(self) -> dict:
+        """GET /api/wakes: personas, the queue, budgets, the last gate reasons, reminders, servers."""
+        return self._wake_manager().state()
+
+    def wakes_ready(self) -> bool:
+        """Whether a phone's free text can go to a persona's thread (wakes on)."""
+        wakes = self.config.raw.get("wakes")
+        return isinstance(wakes, dict) and wakes.get("enabled") is True
+
+    def wake_request(self, persona: str, source: str, **kwargs: Any) -> dict:
+        return self._wake_manager().request(persona, source, **kwargs)
+
+    def wake_run_now(self, persona: str, reason: str | None = None) -> dict:
+        return self._wake_manager().run_now(persona, reason)
+
+    def wake_cancel(self, wake_id: str) -> dict:
+        return self._wake_manager().cancel(wake_id)
+
+    def wake_event(self, rule: str, fields: dict | None = None, message: str | None = None) -> list[dict]:
+        """A rule's notice was written (notify.py): the personas whose on_events list it wake (§2.3)."""
+        if not self.wakes_ready():
+            return []
+        return self._wake_manager().event(rule, fields, message)
+
+    def wake_persona_names(self) -> list[str]:
+        """The wake personas by name (a phone's status lists them for mute <n>)."""
+        return sorted(self._wake_manager()._personas())
+
+    def wake_mute_target(self, reply_persona: str | None = None, index: int | None = None) -> str:
+        return self._wake_manager().mute_target(reply_persona, index)
+
+    def reminders(self) -> list[dict]:
+        return self._wake_manager().reminders()
+
+    def add_reminder(self, at: str, text: str, persona: str | None = None, show_on: Any = ()) -> dict:
+        return self._wake_manager().add_reminder(at, text, persona=persona, show_on=show_on)
+
+    def cancel_reminder(self, reminder_id: str) -> dict:
+        return self._wake_manager().cancel_reminder(reminder_id)
+
+    def wake_attest(self, provider: str, local: bool) -> dict:
+        return self._wake_manager().attest_server(provider, local)
+
+    def persona_soul(self, name: str, text: str, base_sha256: str) -> dict:
+        return self._wake_manager().save_soul(name, text, base_sha256)
+
+    def persona_privacy(self, name: str, what: str, ref: Any, clean: bool = True) -> dict:
+        return self._wake_manager().confirm_clean(name, what, ref, clean)
+
+    def persona_integrity(self, name: str, action: str) -> dict:
+        return self._wake_manager().resolve_integrity(name, action)
+
+    def persona_memory(self, name: str, text: str, base_version: int, clean: bool = False) -> dict:
+        return self._wake_manager().set_memory(name, text, base_version, clean=clean)
+
+    def persona_memory_rollback(self, name: str, version: int) -> dict:
+        return self._wake_manager().memory_rollback(name, version)
+
+    def persona_memory_version(self, name: str, version: int) -> dict:
+        self._wake_manager()._require_persona(name)
+        return self._wake_manager().store.memory_version(name, version)
+
+    def persona_consolidation(self, name: str, action: str) -> dict:
+        return self._wake_manager().consolidation(name, action)
+
+    def persona_retract(self, name: str, entry: str) -> dict:
+        return self._wake_manager().retract(name, entry)
+
+    def persona_forget(self, name: str, before: str) -> dict:
+        return self._wake_manager().forget(name, before)
+
+    def persona_send(self, name: str, text: str, via: str = "cockpit", channel: str | None = None,
+                     sent_at: str | None = None, forwarded: bool = False) -> dict:
+        return self._wake_manager().persona_send(name, text, via=via, channel=channel, sent_at=sent_at,
+                                                 forwarded=forwarded)
+
+    def persona_sound(self, name: str) -> dict:
+        return self._wake_manager().allow_sound(name)
+
+    def persona_reimport(self, name: str, body: dict) -> dict:
+        return self._wake_manager().reimport_stage(name, body)
+
+    def persona_reimport_decide(self, name: str, action: str) -> dict:
+        return self._wake_manager().reimport_decide(name, action, by="human")
+
+    def persona_run_log(self, name: str, run: str) -> list[dict]:
+        self._wake_manager()._require_persona(name)
+        return self._wake_manager().store.run_log(name, run)
+
+    def persona_external(self, name: str) -> dict:
+        return self._wake_manager().external_ledger(name)
+
+    def persona_external_version(self, name: str, digest: str) -> dict:
+        return self._wake_manager().external_version(name, digest)
+
+    def persona_external_diff(self, name: str, older: str, newer: str) -> dict:
+        return self._wake_manager().external_diff(name, older, newer)
+
+    def persona_external_restore(self, name: str, digest: str, file: str | None = None) -> dict:
+        return self._wake_manager().external_restore(name, digest, file)
+
+    def persona_external_erase(self, name: str, digest: str) -> dict:
+        return self._wake_manager().external_erase(name, digest)
+
+    def chat_wake_allow(self, chat_id: str, allow: bool) -> dict:
+        self._chat_manager().chat(chat_id)   # KeyError for an unknown chat
+        return self._wake_manager().chat_allow(chat_id, allow)
+
+    def chat_wakes(self, chat_id: str) -> list[dict]:
+        return self._wake_manager().chat_wakes(chat_id)
+
+    def chat_wake_allowed(self, chat_id: str) -> bool:
+        """The owner's switch "Let this chat schedule check-ins", as it stands."""
+        return self._wake_manager().chat_allowed(chat_id)
+
+    def wake_chat_context(self, chat_id: str, chain: int, *, checkin: bool) -> Any:
+        if not self.wakes_ready():
+            return None
+        return self._wake_manager().chat_context(chat_id, chain, checkin=checkin)
+
+    def wake_cancel_chat(self, chat_id: str) -> int:
+        return self._wake_manager().cancel_chat(chat_id)
+
+    def wake_chat_done(self, chat_id: str, wake_id: str, log_stem: str | None, ok: bool) -> None:
+        self._wake_manager().chat_done(chat_id, wake_id, log_stem, ok)
+
+    def hook_wake(self, hook: str, body: dict, idempotency_key: str | None = None) -> dict:
+        return self._wake_manager().hook_wake(hook, body, idempotency_key)
+
+    # the Notifier's side, for the WakeManager (neither module imports the other)
+
+    def notify_notice(self, notice: Any) -> dict:
+        return self._notify_manager().notify(notice)
+
+    def notify_precondition(self) -> dict:
+        return self._notify_manager().precondition()
+
+    def notify_tamper(self) -> Any:
+        return self._notify_manager().tamper()
+
+    def notify_check_tamper(self) -> None:
+        self._notify_manager().check_tamper()
+
+    def notify_baseline(self, why: str) -> None:
+        self._notify_manager().settings_written(why)
+
+    def notify_writing(self, why: str | None) -> Any:
+        """The context of one of the harness's own writes of a fingerprinted file (Notifier.writing, S47)."""
+        return self._notify_manager().writing(why)
+
+    def notify_pause(self, by: str = "human", via: str = "cockpit") -> dict:
+        return self._notify_manager().pause(by=by, via=via)
+
+    def notify_resume(self, by: str = "human") -> Any:
+        return self._notify_manager().resume(by=by)
+
+    def notify_rules(self) -> dict:
+        from .rules import load_rules
+
+        return load_rules(self.config)
+
+    def notify_set_rules(self, change: dict) -> dict:
+        """POST /api/notify/rules: the rulebook (quiet hours, rate limits, the data boundary) changed in the cockpit;
+        written to notice-rules.json, audited, and the new S47 baseline."""
+        from .rules import update_rules
+
+        if not isinstance(change, dict) or "confirmed_profiles" in change:
+            raise ValueError("send the rules to change; confirmations come from a persona's page")
+        manager = self._notify_manager()
+        with manager.writing("rules"):
+            rules = update_rules(self.config, change)
+            manager.audit.write("rules", keys=sorted(change))
+        return rules
+
+    def record_decline(self, persona: str, wake: str, run: str, item: str | None = None, title: str = "",
+                       taint: Any = ()) -> dict:
+        """Decision d: a persona's considered refusal, in the tracker (never as a failure)."""
+        parsed = None
+        if item:
+            parsed = self._parse_ref(item, item=True)
+            if parsed.kind != "system":
+                parsed = None
+        return self._system_manager().record_decline(persona, wake, run, parsed.item if parsed else None, title=title,
+                                                     taint=taint)
+
     def _chat_manager(self) -> Any:
         with self._lock:
             if self._chats is None:
@@ -1086,17 +1608,23 @@ class Factory:
             extra["persona"] = persona
         return self._chat_manager().new_chat(repo, model, mode, agent, **extra)
 
-    def chat_send(self, chat_id: str, text: str) -> dict:
-        """Start a chat turn in a thread."""
-        return self._chat_manager().chat_send(chat_id, text)
+    def chat_send(self, chat_id: str, text: str, origin: str = "user", wake_id: str | None = None,
+                  wake_item: str | None = None) -> dict:
+        """Start a chat turn in a thread (origin "wake": a scheduled check-in, Wake & Messages §5.8)."""
+        if origin == "user" and wake_id is None and wake_item is None:
+            return self._chat_manager().chat_send(chat_id, text)
+        return self._chat_manager().chat_send(chat_id, text, origin=origin, wake_id=wake_id, wake_item=wake_item)
 
     def chat_cancel(self, chat_id: str) -> dict:
         """Cancel the chat's running turn."""
         return self._chat_manager().chat_cancel(chat_id)
 
     def chat_delete(self, chat_id: str) -> None:
-        """Delete a chat with its worktree and branch."""
+        """Delete a chat with its worktree and branch; then (after ChatManager returns, so neither manager calls the
+        other under its lock) its pending check-ins end."""
         self._chat_manager().chat_delete(chat_id)
+        if self._wakes is not None or self.config.raw.get("wakes"):
+            self._wake_manager().cancel_chat(chat_id)
 
     def chat_handoff(self, chat_id: str, feature: str, delivery: str | None = None,
                      profile: str | None = None) -> dict:
@@ -1115,27 +1643,90 @@ class Factory:
         return [personas.persona_view(self.config, found[name]) for name in sorted(found)]
 
     def persona(self, name: str) -> dict:
-        """{persona, card, drift}: one persona, the saved profile card of its workspace model and the last drift
-        observation (KeyError if unknown)."""
+        """{persona, card, drift, capability_map, import}: one persona, the saved profile card of its workspace
+        model, the last drift observation, the card's capability map for this persona now and what the card says
+        about its import (_import_record; null without a card; KeyError if unknown). A wake persona answers her
+        page, with import for the workspace model her soul was imported from."""
         from . import personas
 
         found = personas.find_persona(self.config, name)
+        if found.kind == "wake":   # a persona that wakes itself: her page (Wake & Messages §4.5)
+            source = found.source or {}
+            record = self._import_record(str(source["model"]), source.get("imported_at"), source.get("version_id")) \
+                if source.get("model") else None
+            return {**self._wake_manager().persona(name), "card": None, "drift": None, "import": record}
         model_id = (found.binding or {}).get("model")
-        return {"persona": personas.persona_view(self.config, found),
-                "card": personas.load_profile(model_id) if model_id else None,
-                "drift": personas.drift_state(self.config, model_id) if model_id else None}
+        card = personas.load_profile(model_id) if model_id else None
+        return {"persona": personas.persona_view(self.config, found), "card": card,
+                "drift": personas.drift_state(self.config, model_id) if model_id else None,
+                "capability_map": personas.capability_map(card, found, self.config) if card else None,
+                "import": self._import_record(str(model_id), card.get("imported_at"), card.get("version_id"))
+                if card else None}
 
     def persona_card(self, name: str) -> dict:
-        """{persona, card, live, drift}: the profile card page of a persona bound to (or copied from) an Open
-        WebUI workspace model: the saved card (null before an import) and what the key sees live now."""
+        """{persona, card, live, drift, appended_text, capability_map, import}: the profile card page of a persona
+        bound to (or copied from) an Open WebUI workspace model: the saved card (null before an import), what the
+        key sees live now, the card's capability map for this persona and the personas there are now, and what
+        the card says about its import and the changes before it (section 33; both null before an import)."""
         from . import personas
 
         found = personas.find_persona(self.config, name)
         model_id = (found.binding or {}).get("model")
         if not model_id:
             raise ValueError(f"persona {name} is not bound to an Open WebUI workspace model")
-        return {"persona": name, "card": personas.load_profile(model_id), "live": personas.live_card(self.config, found),
-                "drift": personas.drift_state(self.config, model_id)}
+        card = personas.load_profile(model_id)
+        return {"persona": name, "card": card, "live": personas.live_card(self.config, found),
+                "drift": personas.drift_state(self.config, model_id),
+                "appended_text": personas.appended_text(found, self.config),
+                "capability_map": personas.capability_map(card, found, self.config) if card else None,
+                "import": self._import_record(model_id, (card or {}).get("imported_at"), (card or {}).get("version_id"))
+                if card else None}
+
+    def _import_record(self, model_id: str, imported_at: Any, version_id: Any) -> dict:
+        """What the persona card says about its import (DESIGN §33 "Changes before import"): the harness had no copy
+        before its first import, so that import is the baseline and there is no diff of what came before; the
+        changes before it are only the operator's receipts the owner or the operator attached here by id, each
+        with its time, intent, not_verified, verified and outcome (with the outcome the receipt itself reports, DESIGN
+        §40), labelled reported by the operator."""
+        from . import personas
+        from .receipts import REPORTED
+
+        reader = self._receipt_reader()
+        rows = []
+        for row in reader.attached(model_id):
+            try:
+                receipt = reader.get(row["id"])["receipt"]
+            except KeyError:
+                rows.append({**row, "missing": True, "label": REPORTED,
+                             "note": "the receipts index no longer holds this receipt"})
+                continue
+            rows.append({**row, **{key: receipt.get(key) for key in ("time", "intent", "not_verified", "verified",
+                                                                      "outcome", "reported_outcome", "file", "gone")},
+                         "label": REPORTED})
+        return {"model": model_id, "imported_at": imported_at, "version_id": version_id, "diff": None,
+                "baseline": personas.IMPORT_BASELINE, "changes_before_import": rows}
+
+    def persona_before_import(self, name: str, *, attach: list[str] | None = None, detach: list[str] | None = None,
+                              by: str = "owner") -> dict:
+        """Attach the operator's receipts (by id) to the import of a persona's workspace model as its changes
+        before import, or take them off (DESIGN §33). Ids the receipts index does not hold are refused (her
+        receipts are scanned first, at most every operator.scan_seconds); nothing is chosen by a receipt's text.
+        Returns {import} as the persona card shows it."""
+        from . import personas
+
+        found = personas.find_persona(self.config, name)
+        model_id = personas.workspace_model(found)
+        if not model_id:
+            raise ValueError(f"persona {name} is not bound to or imported from an Open WebUI workspace model")
+        reader = self._receipt_reader()
+        self._operator_prescan(reader)
+        reader.attach(model_id, attach=attach or [], detach=detach or [], by=by)
+        self.bus.publish("persona.updated", {"persona": name, "what": "before_import"})
+        if found.kind == "wake":
+            source = found.source or {}
+            return {"import": self._import_record(model_id, source.get("imported_at"), source.get("version_id"))}
+        card = personas.load_profile(model_id) or {}
+        return {"import": self._import_record(model_id, card.get("imported_at"), card.get("version_id"))}
 
     def persona_import(self, body: dict) -> dict:
         """Import an Open WebUI workspace model's profile card: {export: [records], model_id?} (an uploaded Export
@@ -1147,6 +1738,15 @@ class Factory:
 
         if not isinstance(body, dict):
             raise ValueError("the import must be a JSON object")
+        if "name" in body and "snapshot" not in body:   # a wake persona's soul (Wake & Messages §2.2)
+            unknown = sorted(set(body) - {"export", "source", "key", "model_id", "provider", "name", "user_name",
+                                          "description", "display"})
+            if unknown:
+                raise ValueError(f"unknown field {', '.join(unknown)}")
+            result = self._wake_manager().import_persona(body)
+            self.bus.publish("persona.imported", {"model": body.get("model_id"), "persona": result["persona"],
+                                                  "fingerprint": result["fingerprint"], "wake": True})
+            return result
         unknown = sorted(set(body) - {"export", "source", "model_id", "provider", "snapshot"})
         if unknown:
             raise ValueError(f"unknown field {', '.join(unknown)} (use export or source, model_id, provider, snapshot)")
@@ -1166,7 +1766,8 @@ class Factory:
         if snapshot is not None and not isinstance(snapshot, dict):
             raise ValueError("snapshot must be an object like {\"name\": \"kate-offline\"} (only for the offline mode)")
         result = personas.import_profile(self.config, records=records, model_id=model_id, provider=provider,
-                                         snapshot=snapshot, on_saved=self.reload_config)
+                                         snapshot=snapshot, on_saved=self.reload_config,
+                                         writing=self._config_write if snapshot is not None else None)
         card = result["card"]
         made = result.get("snapshot")
         self.bus.publish("persona.imported", {"model": card["model_id"], "version_id": card["version_id"],
@@ -1507,6 +2108,131 @@ class Factory:
             raise ValueError("a chat's wake item is closed through the chat turn's ItemsContext")
         return self._system_manager().drop_wake_item(parsed.item, reason)
 
+    # -- GPU custody and drift sources (sections 37, 38) --------------------------------------------------
+
+    def custody(self, refresh: bool = False) -> dict:
+        """GET /api/custody: {providers: [{provider, lazy_load, allow_model_swap, needs_lease, custody_from (the
+        entry on the same server whose custody this one follows, else None), held_wait_seconds (how long a run
+        waits out a HELD answer: the provider's overflow_after_seconds, else None: no wait), settings (no token),
+        register: {url, generation, epoch, fenced, residency, leases, history}}], reason_codes: {code: plain
+        words}}; refresh reads residency now. Read-only: the harness never mutates the register's state; it only
+        asks, and the register (the operator's) decides."""
+        rows = []
+        read: set[int] = set()   # one residency GET per register, however many providers name it
+        for name in sorted(self.config.raw.get("providers") or {}):
+            try:
+                provider = self.config.provider(str(name))
+            except (KeyError, ValueError):
+                continue
+            settings = custody_settings_of(provider)
+            if settings is None:
+                continue
+            client = custody_client_for(settings)
+            if refresh and id(client) not in read:
+                read.add(id(client))
+                client.reread()
+            entry = (self.config.raw.get("providers") or {}).get(name)
+            owner = None
+            if isinstance(entry, dict) and entry.get("custody") is None:   # it follows another entry on its server
+                found = custody_on_server(self.config.raw.get("providers"), provider.base_url, skip=str(name))
+                owner = found[0] if found else None
+            rows.append({"provider": provider.name, "lazy_load": provider.lazy_load,
+                         "allow_model_swap": provider.allow_model_swap, "needs_lease": custody_needs_lease(provider),
+                         "custody_from": owner, "held_wait_seconds": provider.overflow_after_seconds or None,
+                         "settings": settings.to_dict(), "register": client.view()})
+        return {"providers": rows, "reason_codes": dict(CUSTODY_WORDS)}
+
+    def drift_sources(self) -> list[dict]:
+        """GET /api/drift-sources: each source's settings (never its token), status and findings."""
+        return self._drift_manager().views()
+
+    def check_drift_source(self, name: str) -> dict:
+        """POST /api/drift-sources/<name>/check: check it now (KeyError for an unknown source)."""
+        return self._drift_manager().check(name)
+
+    def drift_manifest(self, name: str) -> dict | None:
+        """GET /api/drift-sources/<name>/manifest: its generated role manifest, or None (KeyError if unknown)."""
+        return self._drift_manager().manifest(name)
+
+    # -- disk protection with SnapRAID (section 41: the daemon route, and the read-only reader) -------------
+
+    def snapraid_view(self) -> dict:
+        """GET /api/snapraid: the disk protection card (snapraid.SnapraidPanel.view)."""
+        return self._snapraid_manager().view()
+
+    def snapraid_refresh(self, what: str = "status", wait: bool = False) -> dict:
+        """POST /api/snapraid/refresh: a fresh read (status, health, or diff: a guard report). ValueError when the
+        panel is not reading (absent, no reader, off)."""
+        return self._snapraid_manager().refresh(what, wait=wait)
+
+    def snapraid_jobs(self) -> dict:
+        return self._snapraid_manager().jobs()
+
+    def snapraid_job(self, job: str, log: bool = False, offset: int = 0) -> dict:
+        return self._snapraid_manager().job(job, log=log, offset=offset)
+
+    def snapraid_guard(self, guard: str, **page: Any) -> dict:
+        return self._snapraid_manager().guard_page(guard, **page)
+
+    def snapraid_files(self, **page: Any) -> dict:
+        return self._snapraid_manager().files_page(**page)
+
+    def snapraid_setup(self) -> dict:
+        return self._snapraid_manager().setup()
+
+    def snapraid_setup_action(self, action: str) -> dict:
+        """stage (the files the copy blocks install) or check (the reader's info)."""
+        panel = self._snapraid_manager()
+        if action == "stage":
+            return panel.stage()
+        if action == "check":
+            return panel.check()
+        if action == "link-stage":
+            return panel.stage_link()
+        if action == "link-check":
+            return panel.check_link()
+        raise ValueError("action must be stage, check, link-stage or link-check")
+
+    # the SnapRAID Daemon route (BACKUPS_SNAPRAID.md §3 to §7): approvals, the review page, runs, reports
+
+    def snapraid_action_preview(self, action: str, **fields: Any) -> dict:
+        """POST /api/snapraid/actions: a preview A-<n> (snapraidd.DaemonRoute.preview); ValueError when refused."""
+        return self._snapraid_manager().daemon.preview(action, **fields)
+
+    def snapraid_action_approve(self, approval: str, shown_sha256: str, typed: Any = None) -> dict:
+        """POST /api/snapraid/actions/<A-n>/approve: one send through the link (snapraidd.Changed: 409)."""
+        return self._snapraid_manager().daemon.approve(approval, shown_sha256, typed)
+
+    def snapraid_action_cancel(self, approval: str) -> dict:
+        return self._snapraid_manager().daemon.cancel(approval)
+
+    def snapraid_actions(self) -> dict:
+        daemon = self._snapraid_manager().daemon
+        return {"actions": [daemon.public(record) for record in daemon.approvals()[-50:]]}
+
+    def snapraid_action(self, approval: str) -> dict:
+        daemon = self._snapraid_manager().daemon
+        return daemon.public(daemon.approval(approval))
+
+    def snapraid_review(self, **page: Any) -> dict:
+        return self._snapraid_manager().daemon.review(**page)
+
+    def snapraid_fixes(self, offset: int = 0) -> dict:
+        return self._snapraid_manager().daemon.fixes(offset)
+
+    def snapraid_runs(self) -> dict:
+        return self._snapraid_manager().daemon.runs()
+
+    def snapraid_run(self, number: int) -> dict:
+        return self._snapraid_manager().daemon.run(number)
+
+    def snapraid_report(self, subject: Any, detail: Any) -> None:
+        """A parity.report event from the daemon's forwarder (notify.PANEL_HOOK_KINDS): read the daemon now, in the
+        background (the hook answers at once)."""
+        panel = self._snapraid_manager()
+        threading.Thread(target=panel.daemon.report_event, args=(subject, detail), name="snapraid-report",
+                         daemon=True).start()
+
     # -- the factory's own system items (§33 drift, §15 a deleted chat without a repository) ------------
 
     def add_system_items(self, entries: list[dict]) -> list[str]:
@@ -1519,6 +2245,98 @@ class Factory:
         detail?, kind?, source?, due?}. With dedupe, an item still open whose source.hash is dedupe is returned
         instead of a new one. Returns {ref, item, added}."""
         return self._system_manager().open_once(fields, dedupe)
+
+    # -- operator personas: receipts, activity, open items (section 36) -------------------------------
+
+    def _receipt_reader(self) -> Any:
+        from .receipts import Receipts
+
+        with self._lock:
+            if self._receipts is None:
+                self._receipts = Receipts(lambda: self.config, self.config.data_dir, secrets=self._item_secrets,
+                                          system=self._system_manager, bus=self.bus)
+            return self._receipts
+
+    def operator_state(self) -> dict:
+        """{operators, marked, several, problem, receipts_dir, scan}: who the owner's config marks as the operator and
+        what the last scan of the receipts directory found (no scan is run here)."""
+        from . import operator as op
+
+        raw = self.config.raw
+        reader = self._receipt_reader()
+        summary = reader.summary()
+        return {"operators": op.operators(self.config), "marked": op.marked(raw),
+                "several": list(op.section(raw).get("several") or []), "problem": op.rule_problem(raw),
+                "receipts_dir": reader.settings()["receipts_dir"], "label": op.REPORTED,
+                "scan": {key: summary[key] for key in ("scanned_at", "read", "cannot_read", "refused", "past_limit",
+                                                       "writable", "gone", "problem")}}
+
+    def operator_scan(self, force: bool = True) -> dict:
+        """Read the operator's receipts directory now (only what changed is read again) and bring the tracker items
+        of the checks she reports as not done up to date; the scan's summary. force False: at most every
+        operator.scan_seconds."""
+        return self._receipt_reader().scan(force=force)
+
+    def operator_receipts(self, limit: int = 200, since: str | None = None, until: str | None = None,
+                          rescan: bool = False) -> dict:
+        """{receipts, refused, scan}: the receipts the harness read, newest first (a scan first, at most every
+        operator.scan_seconds unless rescan), each labelled "reported by the operator". A scan that fails (the
+        tracker was busy) still serves what the index holds, with scan.problem saying why."""
+        from .activity import parse_when
+
+        reader = self._receipt_reader()
+        try:
+            scan = reader.scan(force=rescan)
+        except Exception as exc:  # noqa: BLE001 - what was read before is still served
+            scan = {**reader.summary(), "skipped": False, "problem": f"the scan failed ({type(exc).__name__}): "
+                                                                      "what was read before is shown"}
+        return {"receipts": reader.rows(limit=limit, since=parse_when(since), until=parse_when(until)),
+                "refused": reader.index().get("refused") or [], "scan": scan}
+
+    def operator_receipt(self, receipt_id: str) -> dict:
+        """{receipt, duplicates}: one receipt by its id, with before and after (KeyError when unknown)."""
+        return self._receipt_reader().get(receipt_id)
+
+    def activity(self, agent: str, since: Any = None, until: Any = None, limit: int = 500,
+                 after: Any = None) -> dict:
+        """What the agent or persona did in [since, until], oldest first, from durable files (activity.activity);
+        the operator's receipts are scanned first (at most every operator.scan_seconds). A scan that fails is
+        listed in errors and never hides the rest."""
+        from .activity import activity
+
+        reader = self._receipt_reader()
+        problem = self._operator_prescan(reader)
+        result = activity(self.config, agent=agent, since=since, until=until, limit=limit, after=after,
+                          receipts=reader, secrets=self._item_secrets)
+        if problem:
+            result["errors"] = [*result.get("errors", []), f"receipt scan: {problem}"]
+        return result
+
+    def _operator_prescan(self, reader: Any) -> str | None:
+        """An automatic scan before an activity query or an operator's turn; why it failed, or None. Never raises:
+        what the index already holds is still used."""
+        if reader.directory() is None:
+            return None
+        try:
+            reader.scan(force=False)
+        except Exception as exc:  # noqa: BLE001 - a failed scan never stops a query or a turn
+            return f"{type(exc).__name__}: the scan failed; what was read before is used"
+        return None
+
+    def operator_items_view(self, name: str, titles: bool = True) -> tracker.ItemsView | None:
+        """The read-only view of an operator persona's open system-scope items for her turn (None when she is not
+        the operator, or the tracker cannot be read): her receipts are scanned first, so what she reported as not
+        verified is on it (DESIGN §36)."""
+        from .operator import is_operator, owner
+
+        if not is_operator(self.config, name):
+            return None
+        self._operator_prescan(self._receipt_reader())
+        try:
+            return tracker.ItemsView(self._system_manager().store(), owner(name), settings=self._housekeeping(),
+                                     titles=titles)
+        except (OSError, ValueError):
+            return None
 
     # -- outside agents' tokens ------------------------------------------------------------------
 
@@ -1872,13 +2690,20 @@ class Factory:
             try:
                 with self._job_lock(key):
                     self._check_cancel(job)   # a cancel that landed before the flag
-                try:
-                    sha = gitops.merge(repo.path, job["base"], job["branch"], _merge_message(job), self._tmp_dir())
-                except MergeBusy:
-                    return self._needs_human(job, MERGE_BUSY, decision="APPROVE")
-                except GitError as exc:
-                    return self._needs_human(job, f"merge failed: {exc}")
-                self._update(job, merged_commit=sha)
+                sha = job.get("merged_commit")
+                if not (sha and gitops.is_ancestor(repo.path, sha, f"refs/heads/{job['base']}")):
+                    try:   # (a merge the job recorded before a restart is done: never merged twice, DESIGN §40)
+                        sha = gitops.merge(repo.path, job["base"], job["branch"], _merge_message(job),
+                                           self._tmp_dir())
+                    except MergeBusy:
+                        return self._needs_human(job, MERGE_BUSY, decision="APPROVE")
+                    except GitError as exc:
+                        if not exc.timed_out:
+                            return self._needs_human(job, f"merge failed: {exc}")
+                        sha = self._timed_out_merge(job, repo, exc)
+                        if sha is None:
+                            return None
+                    self._update(job, merged_commit=sha)
                 self._remove_checkout(job, repo)
                 self._push(job, repo)
                 self._update(job, stage="merged", reason=None, error=None,
@@ -1886,6 +2711,30 @@ class Factory:
             finally:
                 with self._lock:
                     self._merging.discard(key)
+
+    def _timed_out_merge(self, job: dict, repo: RepoConfig, exc: GitError) -> str | None:
+        """git merge was killed at its timeout, so what it did is unknown (it may have moved base, then been killed
+        while it printed): looked at again, read only, never assumed (DESIGN §40). base's head when base already
+        contains the branch (the merge landed: the delivery carries on); else None, with the job stopped for a
+        person and what the look found, never "merge failed"."""
+        base = job["base"]
+        try:
+            if self._base_has_branch(repo, job):
+                sha = gitops.rev_parse(repo.path, base)
+                self._log(job, "warn", f"git merge timed out ({exc}), but {base} already contains {job['branch']} "
+                                       f"(looked again): the merge landed")
+                return sha
+            found = f"nothing was merged into {base} (looked again); approve again to merge it"
+        except GitError as look:
+            found = f"what it did could not be looked at ({look}); check {base} before you approve again"
+        self._needs_human(job, f"merge timed out: {found}")
+        return None
+
+    @staticmethod
+    def _base_has_branch(repo: RepoConfig, job: dict) -> bool:
+        """Whether base already contains the job's branch (read only); GitError when git cannot say."""
+        return gitops.branch_exists(repo.path, job["branch"]) and gitops.is_ancestor(
+            repo.path, f"refs/heads/{job['branch']}", f"refs/heads/{job['base']}")
 
     def _deliver(self, job: dict) -> None:
         """A branch or folder delivery: the branch is kept and its worktree removed; a folder delivery
@@ -1937,10 +2786,15 @@ class Factory:
         worktree = Path(job["worktree"])
         common_dir = (repo.path / gitops.git(repo.path, "rev-parse", "--git-common-dir").strip()).resolve()
         harness = _section(self.config.raw, "harness")
+        masks = sandbox_masks(self.config)
+        hidden, hidden_files, rebind = mask_plan(masks["dirs"], masks["files"],
+                                                 [worktree, Path(job["job_dir"]), common_dir, repo.path],
+                                                 masks["fallback"])
         try:
             sandbox = Sandbox(str(harness.get("sandbox") or "none"), worktree,
                               [worktree, Path(job["job_dir"]), common_dir], True, {},
-                              secret_names=self._key_names())
+                              secret_names=self._key_names(), masked=hidden, masked_files=hidden_files,
+                              readonly_rebind=[*masks["rebind"], *rebind])
             try:
                 code, output, timed_out = sandbox.run(repo.setup, SETUP_TIMEOUT, self._cancel_event(_key(job)))
             finally:
@@ -1975,17 +2829,78 @@ class Factory:
             self._log(job, "warn", f"could not remove the worktree or branch: {exc}")
 
     def _push(self, job: dict, repo: RepoConfig) -> None:
-        """Push base to merge.remote when merge.push is true (never forced); failures are logged."""
+        """Push base to merge.remote when merge.push is true (one branch, never forced), recording the outcome in
+        job.push (DESIGN §40): the intent first, on disk before the call; succeeded or failed as the remote's own
+        line for the ref says (git push --porcelain: a refusal is failed); failed too when nothing left (git never
+        ran, or git's own words say it never reached the remote: gitops.push_never_left); with no confirming line
+        (a timeout, a connection cut, "[remote failure]"), whatever a read-only look at the remote finds:
+        succeeded when it has the commit, else unknown, with a tracker item. A push that already succeeded is not
+        repeated, and nothing is pushed again by itself (a person's retry may: a repeat ends in the same state or is
+        refused)."""
         merge = _section(self.config.raw, "merge")
-        if merge.get("push") is not True:
+        if merge.get("push") is not True or (job.get("push") or {}).get("outcome") == rule.SUCCEEDED:
             return
         remote, base = str(merge.get("remote") or "origin"), job["base"]
+        ref = f"refs/heads/{base}"
+        record: dict[str, Any] = {"remote": remote, "ref": ref, "commit": job.get("merged_commit"), "outcome": None,
+                                  "at": utc_now()}
         try:
-            if remote.startswith("-"):
-                raise GitError(["git", "push"], f"refusing remote name {remote!r}")
-            gitops.git(repo.path, "push", remote, f"refs/heads/{base}:refs/heads/{base}", timeout=gitops.SLOW_TIMEOUT)
+            record["commit"] = gitops.rev_parse(repo.path, base)
+        except GitError:
+            pass
+        self._update(job, push=dict(record))   # the intent, before anything leaves
+        try:
+            proc = gitops.push(repo.path, remote, base)
         except GitError as exc:
-            self._log(job, "warn", f"push to {remote} failed: {exc}")
+            if not exc.timed_out:   # git never ran, or the remote name was refused: nothing left this machine
+                return self._push_done(job, record, rule.FAILED, str(exc))
+            detail = str(exc)
+        else:
+            line = gitops.push_line(proc.stdout, ref)
+            record["response"] = rule.response(proc.returncode, [line[1]] if line else [], proc.stdout)
+            said = gitops.complaint(proc.stderr)
+            if gitops.push_refused(line):
+                return self._push_done(job, record, rule.FAILED, f"the remote refused it: {line[1]}")
+            if gitops.push_never_left(proc, ref):
+                return self._push_done(job, record, rule.FAILED, f"it never reached {remote}: {said}")
+            if line is not None and line[0] in gitops.PUSH_DONE_FLAGS:
+                return self._push_done(job, record, rule.SUCCEEDED, f"the remote answered {line[1]}")
+            detail = f"no confirming answer for {ref} ({line[1]})" if line is not None else \
+                said or f"git push ended with exit {proc.returncode} and no answer for {ref}"
+        try:   # the outcome is unknown: look again, read only, and record what is there
+            seen = gitops.remote_head(repo.path, remote, base)
+        except GitError as exc:
+            record["observed"] = {"remote_commit": None, "at": utc_now(), "error": truncate(str(exc), NOTE_CHARS)}
+            return self._push_done(job, record, rule.UNKNOWN, f"{detail}; the remote could not be asked afterwards")
+        record["observed"] = {"remote_commit": seen, "at": utc_now()}
+        if seen and seen == record["commit"]:
+            return self._push_done(job, record, rule.SUCCEEDED, f"{detail}; looked again: {remote} has {base} at "
+                                                                f"{seen[:12]}")
+        where = f"at {seen[:12]}" if seen else "without it"
+        self._push_done(job, record, rule.UNKNOWN, f"{detail}; looked again: {remote} has {base} {where}")
+
+    def _push_done(self, job: dict, record: dict, outcome: str, detail: str) -> None:
+        """Record a push's outcome on the job and in its log; an unknown one also opens one system item, "Outcome
+        unknown: check before retrying", for a person (DESIGN §40)."""
+        record.update(outcome=outcome, detail=truncate(detail, NOTE_CHARS), done_at=utc_now())
+        remote, base = record.get("remote"), job.get("base")
+        if outcome == rule.UNKNOWN:
+            title = f"{rule.UNKNOWN_TITLE} (push of {base} to {remote}, job {job['repo']}/{job['id']})"
+            digest = hashlib.sha256(f"push|{job['repo']}|{job['id']}|{record.get('commit')}".encode()).hexdigest()
+            detail = (f"The push of {base} ({str(record.get('commit') or '')[:12]}) to {remote} may or may not have "
+                      f"landed: {record['detail']}. Look at the remote before you push again (DESIGN §40).")
+            try:
+                opened = self.system_item({"title": title, "kind": "gap", "detail": detail,
+                                           "source": {"type": "push", "job": f"{job['repo']}/{job['id']}"}},
+                                          dedupe=digest[:16])
+                record["item"] = opened["ref"]
+            except Exception as exc:  # noqa: BLE001 - the tracker being busy never undoes the record
+                self._log(job, "warn", f"could not open the tracker item for the unknown push: {exc}")
+        self._update(job, push=record)
+        level, words = {rule.SUCCEEDED: ("info", "pushed"), rule.FAILED: ("warn", "push failed"),
+                        rule.UNKNOWN: ("warn", "push outcome unknown")}[outcome]
+        tail = "; check the remote before pushing again" if outcome == rule.UNKNOWN else ""
+        self._log(job, level, f"{words} ({base} to {remote}): {record['detail']}{tail}")
 
     def _prompt(self, job: dict, agent_name: str, *lines: str) -> str:
         """The paths line, the job's tracked items for this agent (when there are any, section 32), the
@@ -2027,21 +2942,34 @@ class Factory:
         agents = self._agent_defs(job["repo"])
         if agent_name not in agents:
             raise StepError(f"no agent definition named {agent_name!r}")
-        placement = self._place(job, agent_name, route)
-        log_path = self.store.next_log_path(job, agent_name)
-        emit = self._emitter(job["repo"], job["id"], agent_name, log_path)
+        early: list[Path] = []   # the run's log, made early when a GPU custody wait must say so (section 37)
+
+        def held(provider: str, seconds: float, denied: CustodyDenied) -> None:
+            if not early:
+                early.append(self.store.next_log_path(job, agent_name))
+            self._emitter(job["repo"], job["id"], agent_name, early[0])(
+                "agent.waiting", {"provider": provider, "overflow_after_seconds": seconds, "custody": denied.code})
+            self._log(job, "info", f"{agent_name} waits up to {seconds:g}s for {provider}: GPU custody: {denied}")
+
+        placement = self._place(job, agent_name, route, round, f"job {job['repo']}/{job['id']} {agent_name}",
+                                on_wait=held)
         release = None
-        if placement.wait is not None:
-            waited = self._wait_for_slot(placement, self._cancel_event(_key(job)), emit)
-            if waited is None:
-                raise _Cancelled()
-            placement, release = waited
         try:
+            if placement.claims is not None and placement.claims.waited and self._cancel_event(_key(job)).is_set():
+                raise _Cancelled()   # cancelled while the placement waited out a HELD answer
+            log_path = early[0] if early else self.store.next_log_path(job, agent_name)
+            emit = self._emitter(job["repo"], job["id"], agent_name, log_path)
+            if placement.wait is not None:
+                waited = self._wait_for_slot(placement, self._cancel_event(_key(job)), emit)
+                if waited is None:
+                    raise _Cancelled()
+                placement, release = waited
             return self._run_placed(job, agent_name, prompt, round, resume, guard, ingest, placement, agents,
                                     log_path, emit)
         finally:
             if release is not None:
                 release()
+            self._release_claims(job, agent_name, placement)
 
     def _run_placed(self, job: dict, agent_name: str, prompt: str, round: int | None, resume: bool, guard: bool,
                     ingest: bool | None, placement: _Placement, agents: dict[str, AgentDef], log_path: Path,
@@ -2049,7 +2977,11 @@ class Factory:
         """_run_agent once the placement is final."""
         run_route = placement.route
         model = self._model_config(run_route, placement.build)
-        self._note_placement(job, agent_name, placement, model)
+        if placement.claims is not None:   # the run's request lease on its provider (section 37)
+            model = placement.claims.attach(model)
+            placement.info.update(placement.claims.info())
+        independence = self._independence(placement, run_route, model)
+        self._note_placement(job, agent_name, placement, model, independence, round)
         repo = self._repo(job)
         worktree, job_dir = Path(job["worktree"]), Path(job["job_dir"])
         with self._job_lock(_key(job)):
@@ -2068,8 +3000,10 @@ class Factory:
         ctx.grid = factory_grid(snapshot, agent_name, items=self._housekeeping().enabled)
         grid = grid_receipt(ctx.grid)
         session = self._resumable_session(job, agent_name, run_route, model) if resume else None
-        labels: dict[str, Any] = {"round": round, "grid": grid, **placement.info}
-        reason_ = placement_reason((job.get("routing") or {}).get(agent_name, {}).get("reason"), placement.info)
+        labels: dict[str, Any] = {"round": round, "grid": grid, **placement.info, "family": route_family(run_route),
+                                  **independence}
+        reason_ = placement_reason((job.get("routing") or {}).get(agent_name, {}).get("reason"),
+                                   {**placement.info, **independence})
         if reason_:
             labels["reason"] = reason_
         if resume and session is None and agent_name == "builder" and self._model_changed(job, agent_name, run_route,
@@ -2111,6 +3045,16 @@ class Factory:
                           runs=int(record.get("runs") or 0) + 1, grid=grid)
             add_usage(job.setdefault("usage", {}), result.usage or {})
             add_cost(job.setdefault("cost", zero_cost()), cost, priced)
+            status = labels.get("independence")
+            if status in INDEPENDENCE_RANK:   # section 23: the job says so too, for its badge
+                if status != "unknown":
+                    shared = {"round": labels.get("round"), "agent": agent_name, **labels.get("shared_model", {}),
+                              **({"accepted": True} if status == "accepted" else {})}
+                    listed = job.setdefault("shared_models", [])
+                    if shared not in listed:
+                        listed.append(shared)
+                if INDEPENDENCE_RANK[status] > INDEPENDENCE_RANK.get(str(job.get("independence")), 0):
+                    job["independence"] = status
             job.setdefault("runs", []).append({
                 "run": log_path.stem, "agent": agent_name, "round": labels.get("round"), "driver": run_route["driver"],
                 "model": run_route["model"], "provider": model.provider.name, "model_id": model.model,
@@ -2122,14 +3066,49 @@ class Factory:
 
     # -- placement (section 23, routing.py) ---------------------------------------------
 
-    def _place(self, job: dict | None, agent_name: str, route: dict) -> _Placement:
+    def _place(self, job: dict | None, agent_name: str, route: dict, round_: int | None = None,
+               purpose: str = "", cancel: threading.Event | None = None,
+               on_wait: Callable[[str, float, CustodyDenied], None] | None = None) -> _Placement:
         """Where a run of route goes: the builder's escalation rung for the job's sendbacks (skipping
-        rungs none of whose builds answers), then the first build that answers, else the overflow.
-        A CLI driver reaches its own endpoint, so its route is never probed: only its rung changes."""
+        rungs none of whose builds answers); a judge's independent alternate when its own model is of a
+        family the builder ran on (the independence guard, routing.judge_choice and _guard); then the
+        first build that answers, else the overflow. A CLI driver reaches its own endpoint, so its route
+        is never probed: only its rung or alternate changes.
+        On a server under GPU custody the build's request lease is taken here (purpose: what the run is,
+        for the register): a build the register gives none for is passed over (section 37), and a judge's
+        alternate it gives none for counts as not answering (the judge then stays on its own model, reduced).
+        A HELD answer waits first, for at most the provider's overflow_after_seconds, until cancel (default: the
+        job's cancel event) is set; on_wait(provider, seconds, the refusal) is told once when it starts. FULL
+        passes the build over at once. A CLI route whose provider needs a lease takes it too, and fails the step
+        without one (it has no overflow)."""
+        if cancel is None and job is not None:
+            cancel = self._cancel_event(_key(job))
+        claims = Claims(purpose or f"{agent_name} run", cancel=cancel, on_wait=on_wait)
+        try:
+            return self._place_with(job, agent_name, route, round_, claims)
+        except BaseException:   # a placement that fails gives back any lease it took (section 37)
+            claims.release("the placement failed")
+            raise
+
+    def _place_with(self, job: dict | None, agent_name: str, route: dict, round_: int | None,
+                    claims: Claims) -> _Placement:
+        """_place with the run's Claims."""
         cli = self._is_cli(route.get("driver"))
         notes: list[str] = []
         info: dict[str, Any] = {}
         chosen = route
+        judged = job is not None and is_judge(agent_name)
+        guard = self._builder_families(job, round_, agent_name) if judged else {}
+        status, tried = None, ""
+        if guard:
+            chosen, status = judge_choice(route, guard)
+            if status == "alternate":
+                cli = self._is_cli(chosen.get("driver"))
+                answers, why = self._answers(chosen, cli, claims)
+                if not answers:   # an alternate that cannot run is no way out: the judge's own model, reduced
+                    notes += why
+                    chosen, status, tried = route, shared_status(route), "does not answer"
+                    cli = self._is_cli(route.get("driver"))
         rungs = [rung for rung in route.get("escalate") or [] if isinstance(rung, dict)]
         sendbacks = int(job.get("sendbacks") or 0) if job is not None and agent_name == "builder" else 0
         start = escalation_start(len(rungs), sendbacks)
@@ -2148,31 +3127,140 @@ class Factory:
             chosen = rungs[rung]
             info["escalation"] = {"rung": rung + 1, "of": len(rungs), "sendbacks": sendbacks,
                                   "from": route.get("model"), "model": chosen.get("model")}
+        placement = self._place_on(chosen, info, notes, cli, claims, agent_name)
+        placement.tried = tried
+        if judged:
+            placement.unknown = self._unknown_authors(job, round_, agent_name)   # type: ignore[arg-type]
+        return self._guard(placement, route, guard, status) if guard else placement
+
+    def _answers(self, route: dict, cli: bool, claims: Claims | None) -> tuple[bool, list[str]]:
+        """(whether a build of route, else of its overflow, answers, and under GPU custody gets its request
+        lease from claims; why the others were passed over). A CLI route reaches its own endpoint and counts as
+        answering once it holds the lease its provider needs."""
         if cli:
-            return _Placement(route=chosen, info=info, notes=notes)
+            provider = self._builds(route)[0].provider
+            if claims is not None and custody_needs_lease(provider):
+                granted, why = claims(provider, str(route.get("model_id")))
+                if not granted:
+                    return False, [f"{route.get('model')} is unavailable: GPU custody: {why}"]
+            return True, []
+        found, _, why = choose_build(self._builds(route), self.reach, claims)
+        overflow = route.get("overflow") if isinstance(route.get("overflow"), dict) else None
+        if found is None and overflow is not None:
+            found, _, more = choose_build(self._builds(overflow), self.reach, claims)
+            why += more
+        return found is not None, why
+
+    def _place_on(self, chosen: dict, info: dict, notes: list[str], cli: bool, claims: Claims | None,
+                  agent_name: str = "the run") -> _Placement:
+        """chosen's placement: on a CLI driver chosen itself (with its request lease when its provider needs
+        one: StepError without it); else its first build that answers (and gets its lease), else its
+        overflow's, with the slot wait (wait) when its provider has max_concurrency and
+        overflow_after_seconds and chosen has an overflow."""
+        if cli:
+            provider = self._builds(chosen)[0].provider
+            if claims is not None and custody_needs_lease(provider):
+                granted, why = claims(provider, str(chosen.get("model_id")))
+                if not granted:
+                    raise StepError(f"{agent_name} cannot start: GPU custody: {why}")
+            return _Placement(route=chosen, info=info, notes=notes, claims=claims)
         builds = self._builds(chosen)
         overflow = chosen.get("overflow") if isinstance(chosen.get("overflow"), dict) else None
         choice = choose(builds, self._builds(overflow) if overflow else None, self.reach,
-                        str(overflow.get("model")) if overflow else "")
+                        str(overflow.get("model")) if overflow else "", claims)
         notes += choice.notes
         if choice.swap:
             info["swap"] = choice.swap
         if choice.overflowed and overflow is not None:
             info["overflow"] = {"from": chosen.get("model"), "to": overflow.get("model"), "why": choice.why}
-            return _Placement(route=overflow, build=choice.index, info=info, notes=notes)
+            return _Placement(route=overflow, build=choice.index, info=info, notes=notes, claims=claims)
         if len(builds) > 1:
             info["build"] = {"index": choice.index, "of": len(builds), "provider": builds[choice.index].provider.name,
                              "model_id": builds[choice.index].model_id}
-        placement = _Placement(route=chosen, build=choice.index, info=info, notes=notes)
+        placement = _Placement(route=chosen, build=choice.index, info=info, notes=notes, claims=claims)
         provider = builds[choice.index].provider
         if overflow is not None and provider.overflow_after_seconds and provider.max_concurrency:
             placement.wait = (provider, float(provider.overflow_after_seconds), overflow)
         return placement
 
+    def _guard(self, placement: _Placement, route: dict, guard: dict[str, str], status: str | None) -> _Placement:
+        """A judge's placement under the independence guard (section 23): placement with guard and judge set,
+        left when it moved to its alternate (status "alternate"). When the judge's own model is independent
+        but its placement overflowed onto one of guard's families, its independent alternate takes over if
+        it is placed off them (_off_guard); with a slot wait still to come, the alternate is kept for then
+        (escape)."""
+        placement.guard, placement.judge = guard, route
+        if status == "alternate":
+            placement.left = shared_model(route, guard)
+            return placement
+        if status is not None:   # reduced or accepted on its own model
+            return placement
+        alternate = route.get("independent_alternate")
+        if isinstance(alternate, dict) and route_family(alternate) not in guard:
+            placement.escape = alternate
+        if placement.wait is None and placement.escape is not None and route_family(placement.route) in guard:
+            return self._off_guard(placement)
+        return placement
+
+    def _off_guard(self, placement: _Placement) -> _Placement:
+        """placement overflowed onto a family the builder ran on: the judge's independent alternate
+        (placement.escape) instead, when it is placed off those families on a build or overflow that
+        answers (and, under GPU custody, gets its lease from the placement's claims: a lease taken for the
+        build left behind is given back when the run starts, Claims.attach); else placement as it is, saying
+        what the alternate did (tried)."""
+        guard, landed, escape = placement.guard or {}, placement.route, placement.escape
+        placement.escape = None
+        if escape is None:
+            return placement
+        cli = self._is_cli(escape.get("driver"))
+        answers, why = self._answers(escape, cli, placement.claims)   # placing one build alone never probes it
+        if not answers:
+            placement.notes += why
+            placement.tried = "does not answer"
+            return placement
+        moved = self._place_on(escape, {}, [], cli, placement.claims)
+        if route_family(moved.route) not in guard:
+            moved.guard, moved.judge, moved.unknown = placement.guard, placement.judge, placement.unknown
+            moved.left = shared_model(landed, guard, self._build_model_id(landed, placement.build))
+            moved.notes = placement.notes + [f"its overflow {landed.get('model')} is of the {route_family(landed)} "
+                                             f"family the builder ran on"] + moved.notes
+            return moved
+        placement.tried = f"would overflow to {moved.route.get('model')}, of a family the builder ran on too"
+        return placement
+
+    def _build_model_id(self, route: dict, build: int) -> str | None:
+        """The model id of route's build-th build (None when its builds cannot be read)."""
+        try:
+            return self._builds(route)[build].model_id
+        except (IndexError, StepError):
+            return None
+
+    def _release_claims(self, job: dict | None, agent_name: str, placement: _Placement, repo: str | None = None) -> None:
+        """Give back the run's request leases when it ends, however it ended (section 37), and log what the
+        register says is resident afterwards: a release is never taken as evidence that VRAM is free."""
+        claims = placement.claims
+        if claims is None or not claims.leases:
+            return
+        cancelled = job is not None and self._cancel_event(_key(job)).is_set()
+        for view in claims.release("cancelled" if cancelled else "the run ended"):
+            if view["state"] == "held":   # another run of this process still uses the shared lease
+                continue
+            after = ", ".join(model for _, model in view.get("resident_after") or []) or "nothing"
+            line = (f"{agent_name}: GPU custody lease {view['lease_id']} on {view['provider']}/{view['model']} "
+                    f"{view['state']}" + (f" ({view['error']})" if view.get("error") else "")
+                    + (f"; resident on {view['register_provider']} afterwards: {after}"
+                       if view.get("resident_after") is not None else "; residency could not be read afterwards"))
+            if job is not None:
+                self._log(job, "info" if view["state"] in ("released", "held") else "warn", line)
+            else:
+                self.bus.publish("log", {"level": "info", "message": line}, repo=repo)
+
     def _wait_for_slot(self, placement: _Placement, cancel: threading.Event, emit: Callable[[str, dict], None]
                        ) -> tuple[_Placement, Callable[[], None] | None] | None:
         """Wait for a slot of the placed provider for at most its overflow_after_seconds (agent.waiting
-        when it is busy); past that the run overflows. Returns the final placement and the slot's
+        when it is busy); past that the run overflows (a judge's onto its independent alternate instead
+        when the overflow is of a family the builder ran on: _off_guard), its overflow's build under GPU
+        custody only with a lease from the placement's claims. Returns the final placement and the slot's
         release (None after an overflow), or None when cancel is set meanwhile (no slot is then held:
         take_slot gives back one that came free after the cancel)."""
         provider, seconds, overflow = placement.wait   # type: ignore[misc]
@@ -2183,8 +3271,10 @@ class Factory:
             return placement, release
         if cancel.is_set():
             return None
+        if isinstance(placement.claims, Claims):   # the run waited its time: the overflow's HELD answers do not wait
+            placement.claims.stop_waiting(f"waited {seconds:g}s for a slot of {provider.name}")
         builds = self._builds(overflow)
-        found, swap, notes = choose_build(builds, self.reach)
+        found, swap, notes = choose_build(builds, self.reach, placement.claims)
         if found is None:   # nowhere to go: keep waiting for the slot, as without an overflow
             placement.notes += notes + [f"the overflow {overflow.get('model')} is unavailable too; waiting for "
                                         f"{provider.name}"]
@@ -2195,7 +3285,13 @@ class Factory:
                             "why": f"no slot of {provider.name} came free within {seconds:g}s"}
         if swap:
             info["swap"] = swap
-        return _Placement(route=overflow, build=found, info=info, notes=placement.notes + notes), None
+        moved = dataclasses.replace(placement, route=overflow, build=found, info=info, notes=placement.notes + notes,
+                                    wait=None)   # the same claims: its leases are given back when the run ends
+        if moved.guard and moved.escape is not None and route_family(overflow) in moved.guard:
+            other = self._off_guard(moved)
+            if other is not moved:
+                return self._wait_for_slot(other, cancel, emit) if other.wait is not None else (other, None)
+        return moved, None
 
     def _builds(self, route: dict) -> list[Build]:
         """A snapshot route's builds as routing.Build (index 0: the route's own provider and model)."""
@@ -2213,21 +3309,102 @@ class Factory:
                                 f"{_message(exc)}; change the job's routing") from None
         return found
 
+    def _builder_families(self, job: dict, round_: int | None, agent_name: str = "") -> dict[str, str]:
+        """{family: model key} a judge of round_ must not share (section 23): the families of the builder's
+        runs in round_ (job.runs), and of a chat hand-off's models (job.handoff_models) in round 1, whose code
+        the chat wrote. The approver judges the whole branch once, so it is compared with every round up to
+        round_. {} without a round."""
+        if not round_:
+            return {}
+        approver = agent_name == "approver"
+        with self._job_lock(_key(job)):
+            runs = [dict(run) for run in job.get("runs") or [] if isinstance(run, dict)
+                    and run.get("agent") == "builder" and isinstance(run.get("round"), int)
+                    and (run["round"] <= round_ if approver else run["round"] == round_)]
+            chat = [dict(entry) for entry in job.get("handoff_models") or [] if isinstance(entry, dict)]
+        found: dict[str, str] = {}
+        for entry in [*(chat if approver or round_ == 1 else []), *runs]:
+            found.setdefault(route_family(entry), str(entry.get("model")))
+        return found
+
+    @staticmethod
+    def _unknown_authors(job: dict, round_: int | None, agent_name: str) -> bool:
+        """Whether a judge of round_ judges code a chat wrote on models the job does not record: a
+        hand-off job (from_branch) without handoff_models, in round 1 or for the approver."""
+        return (bool(job.get("from_branch")) and not isinstance(job.get("handoff_models"), list)
+                and (round_ == 1 or agent_name == "approver"))
+
+    @staticmethod
+    def _independence(placement: _Placement, run_route: dict, model: ModelConfig) -> dict:
+        """The independence fields agent.start and job.runs carry for a judge run (section 23): "reduced"
+        (or "accepted", when the judge's route says independent_alternate: false) and the model it shares
+        with the builder when it runs on a family the builder ran on (no alternate, an alternate of such a
+        family too, or an overflow onto one with no way out); "alternate" and the model it left when it
+        moved to its independent alternate; "unknown" when code it judges was written in a chat whose
+        models the job does not record; {} otherwise (and for every other run)."""
+        guard = placement.guard
+        if guard and route_family(run_route) in guard:
+            return {"independence": shared_status(placement.judge or {}),
+                    "shared_model": shared_model(run_route, guard, model.model)}
+        if guard and placement.left:
+            return {"independence": "alternate", "shared_model": dict(placement.left)}
+        if placement.unknown:
+            return {"independence": "unknown"}
+        return {}
+
+    @staticmethod
+    def _shared_why(placement: _Placement) -> str:
+        """Why a judge run on the builder's family had no way out, for its log line."""
+        judge = placement.judge or {}
+        guard = placement.guard or {}
+        alternate = judge.get("independent_alternate")
+        if alternate is False:
+            return "the routing accepts it: independent_alternate is false"
+        overflow = placement.info.get("overflow") if isinstance(placement.info.get("overflow"), dict) else {}
+        if placement.left:   # it moved to its alternate, and that overflowed onto a builder family
+            return (f"{placement.left.get('model')} is of a family the builder ran on too, and its independent "
+                    f"alternate {overflow.get('from')} overflowed to {overflow.get('to')}")
+        if route_family(judge) in guard:
+            return ("it has no independent_alternate" if not isinstance(alternate, dict) else
+                    f"its independent alternate {alternate.get('model')} does not answer" if placement.tried else
+                    f"its independent alternate {alternate.get('model')} is of a family the builder ran on too")
+        head = f"its own model {judge.get('model')} overflowed to {placement.route.get('model')}"
+        if not isinstance(alternate, dict):
+            return head + ", and it has no independent_alternate"
+        what = ("is of a family the builder ran on too" if route_family(alternate) in guard
+                else placement.tried or "did not take over")
+        return head + f", and its independent alternate {alternate.get('model')} {what}"
+
     def _is_cli(self, driver: Any) -> bool:
         try:
             return self.config.driver(str(driver)).type == "cli"
         except (KeyError, ValueError):
             return False
 
-    def _note_placement(self, job: dict, agent_name: str, placement: _Placement, model: ModelConfig) -> None:
+    def _note_placement(self, job: dict, agent_name: str, placement: _Placement, model: ModelConfig,
+                        independence: dict | None = None, round_: int | None = None) -> None:
         """Log why a run does not go to its route's first build (passed-over builds and rungs, an
-        overflow, a swap), and remember a swap to undo when the job's step loop ends (swap_back)."""
+        overflow, a swap, an independent alternate or a reduced independence), and remember a swap to
+        undo when the job's step loop ends (swap_back)."""
         info = placement.info
         lines = list(placement.notes)
         if "escalation" in info:
             esc = info["escalation"]
             lines.append(f"escalated to rung {esc['rung']} of {esc['of']} ({esc['model']}) after "
                          f"{esc['sendbacks']} send-back(s)")
+        shared = (independence or {}).get("shared_model") or {}
+        status = (independence or {}).get("independence")
+        when = "in the rounds so far" if agent_name == "approver" else f"in round {round_}"
+        if status == "alternate":
+            lines.append(f"runs on its independent alternate {placement.route.get('model')} instead of "
+                         f"{shared.get('model')}: the builder ran on the {shared.get('family')} family "
+                         f"({shared.get('builder_model')}) {when}")
+        elif status in ("reduced", "accepted"):
+            lines.append(f"independence {status}: {shared.get('model')} is of the {shared.get('family')} family, "
+                         f"like the builder's {shared.get('builder_model')} {when} ({self._shared_why(placement)})")
+        elif status == "unknown":
+            lines.append("independence unknown: the code it judges was written in a chat whose models the job "
+                         "does not record")
         if "overflow" in info:
             lines.append(f"overflows from {info['overflow']['from']} to {info['overflow']['to']}: "
                          f"{info['overflow']['why']}")
@@ -2237,34 +3414,59 @@ class Factory:
                          f"(allow_model_swap)")
             self.reach.forget(str(swap["provider"]))
             if model.provider.swap_back and swap.get("from"):
+                lease = lease_of(model.provider)
                 with self._lock:
                     swaps = self._swaps.setdefault(_key(job), [])
-                    if all(provider.name != model.provider.name for provider, _ in swaps):
-                        swaps.append((model.provider, str(swap["from"])))
+                    if all(provider.name != model.provider.name for provider, _, _ in swaps):
+                        swaps.append((dataclasses.replace(model.provider, lease=None), str(swap["from"]),
+                                      lease.before if lease is not None else None))
         if lines:
             level = "warn" if "overflow" in info or swap else "info"
             self._log(job, level, f"{agent_name} runs on {model.provider.name}/{model.model}: " + "; ".join(lines))
 
     def _swap_back(self, job: dict) -> None:
         """Load back the model a swap replaced on each swap_back provider (best effort; logged): one tiny
-        request naming the original model, which a server with inline model loading (TabbyAPI) loads."""
+        request naming the original model, which a server with inline model loading (TabbyAPI) loads. Under
+        GPU custody the request holds its own lease (purpose "swap_back"), and afterwards the register's
+        residency on that server is compared with the residency read before the swap: exact restoration is
+        checked, never assumed (section 37)."""
         with self._lock:
             swaps = self._swaps.pop(_key(job), [])
-        for provider, original in swaps:
+        for provider, original, before in swaps:
             try:
                 loaded, _ = self.reach.loaded(provider, self.reach.timeout)
                 if loaded == original:
                     continue
                 cfg = dataclasses.replace(provider, timeout=min(provider.timeout, SWAP_BACK_TIMEOUT))
-                client = make_provider(cfg)
-                client.complete(ModelConfig(key="swap-back", provider=cfg, model=original, max_tokens=1, stream=False),
-                                "", [client.user_message("Reply with OK")], [], cancel=self._stopping)
+                target = ModelConfig(key="swap-back", provider=cfg, model=original, max_tokens=1, stream=False)
+                with leased(target, f"swap_back {job['repo']}/{job['id']}") as call:
+                    client = make_provider(call.provider)
+                    client.complete(call, "", [client.user_message("Reply with OK")], [], cancel=self._stopping)
                 self._log(job, "info", f"swap_back: {provider.name} has {original} loaded again")
+                self._check_restored(job, provider, original, before)
+            except CustodyDenied as exc:
+                self._log(job, "warn", f"swap_back: GPU custody gave no lease to load {original} on {provider.name} "
+                                       f"again ({exc}); it was not loaded back")
             except Exception as exc:  # noqa: BLE001 - the job is over; a failed swap-back is reported only
                 self._log(job, "warn", f"swap_back: could not load {original} on {provider.name} again: "
                                        f"{_message(exc)}")
             finally:
                 self.reach.forget(provider.name)
+
+    def _check_restored(self, job: dict, provider: ProviderConfig, original: str, before: Any) -> None:
+        """Under custody: is the residency on provider's server what it was before the swap? (logged)"""
+        settings = custody_settings_of(provider)
+        if settings is None or before is None:
+            return
+        after = custody_client_for(settings).reread()
+        name = register_names(provider, original)[0]
+        if residency_matches(before, after, name):
+            self._log(job, "info", f"swap_back: GPU custody residency on {name} matches what it was before the swap "
+                                   f"({', '.join(model for _, model in before.on(name)) or 'nothing resident'})")
+            return
+        now = "could not be read" if after is None else (", ".join(model for _, model in after.on(name)) or "nothing")
+        self._log(job, "warn", f"swap_back: GPU custody residency on {name} differs from before the swap: before "
+                               f"{', '.join(model for _, model in before.on(name)) or 'nothing'}, now {now}")
 
     def _model_changed(self, job: dict, agent_name: str, route: dict, model: ModelConfig) -> bool:
         """Whether the agent's last run in this job ran on another driver, model or served model id."""
@@ -2494,7 +3696,9 @@ class Factory:
                 continue
             try:
                 route = self._resolve_route(source, agents[agent], placements.get(agent))
-                for part in [route, *route.get("escalate", []), *([route["overflow"]] if "overflow" in route else [])]:
+                for part in [route, *route.get("escalate", []), *([route["overflow"]] if "overflow" in route else []),
+                             *([route["independent_alternate"]] if isinstance(route.get("independent_alternate"), dict)
+                               else [])]:
                     self._model_config(part)
                 self.config.driver(route["driver"])
             except (KeyError, ValueError, StepError) as exc:
@@ -2514,12 +3718,15 @@ class Factory:
     def _resolve_route(config: Config, agent: AgentDef, override: dict | None = None) -> dict:
         """The agent's full route in config: override's placement over its agents entry.
 
-        agents.<name> extra_body, effort, escalate and reason apply only when the model comes from
-        config; the resolved extra_body is the model entry's with the route's deep-merged over it
-        (an effort becomes output_config.effort on Anthropic providers, reasoning_effort on OpenAI
-        ones). model_entry and provider_entry are the resolved entries' settings (no secrets), so
-        the job runs on exactly them however the config changes later; builds, overflow and the
-        escalation rungs (each a whole route of its own) come along (section 23).
+        agents.<name> extra_body, effort, escalate, reason and independent_alternate apply only when
+        the model comes from config; the resolved extra_body is the model entry's with the route's
+        deep-merged over it (an effort becomes output_config.effort on Anthropic providers,
+        reasoning_effort on OpenAI ones). model_entry and provider_entry are the resolved entries'
+        settings (no secrets), so the job runs on exactly them however the config changes later;
+        builds, overflow, the escalation rungs and a judge's independent alternate (each a whole route
+        of its own, on the model entry's own extra_body; false when the routing accepts the judge on the
+        builder's family) come along (section 23). ValueError for an alternate on an agent that is not a
+        judge, or one of the route's own family.
         """
         override = override or {}
         driver = str(override.get("driver") or config.agent_driver(agent.name))
@@ -2541,17 +3748,31 @@ class Factory:
         found = reason(override["reason"] if "reason" in override else own.get("reason"))
         if found:
             route["reason"] = found
+        alternate = (override["independent_alternate"] if "independent_alternate" in override
+                     else own.get("independent_alternate"))
+        if alternate is False:   # the routing accepts this judge on the builder's family
+            if not is_judge(agent.name):
+                raise ValueError(f"{agent.name}: {JUDGE_HINT}")
+            route["independent_alternate"] = False
+        elif alternate:
+            if not is_judge(agent.name):
+                raise ValueError(f"{agent.name}: {JUDGE_HINT}")
+            other = Factory._model_route(config, config.model(str(alternate)), driver)
+            if route_family(other) == route_family(route):
+                raise ValueError(f"independent_alternate {alternate!r} is of the {route_family(route)} family, like "
+                                 f"{route['model']!r}: name a model of another family")
+            route["independent_alternate"] = other
         return route
 
     @staticmethod
     def _model_route(config: Config, model: ModelConfig, driver: str, extra_body: dict | None = None,
                      overflow: bool = True) -> dict:
-        """The route of model on driver: {model, driver, provider, model_id, extra_body, model_entry,
-        provider_entry}, cli_model on a CLI driver, builds when the entry has more than one, and the
-        overflow model's route (without an overflow of its own) when it has one."""
+        """The route of model on driver: {model, driver, provider, model_id, family, extra_body,
+        model_entry, provider_entry}, cli_model on a CLI driver, builds when the entry has more than one,
+        and the overflow model's route (without an overflow of its own) when it has one."""
         route = {"model": model.key, "driver": driver, "provider": model.provider.name,
-                 "model_id": model.model, "extra_body": copy.deepcopy(model.extra_body if extra_body is None
-                                                                       else extra_body),
+                 "model_id": model.model, "family": model_family(model),
+                 "extra_body": copy.deepcopy(model.extra_body if extra_body is None else extra_body),
                  "model_entry": _model_entry(model), "provider_entry": _provider_entry(model.provider)}
         driver_cfg = config.driver(driver)
         if driver_cfg.type == "cli":
@@ -2617,6 +3838,7 @@ class Factory:
                 keep_reasoning=entry.get("keep_reasoning") is not False,
                 allow_history_edits=history_edits if isinstance(history_edits, bool) else None,
                 eager_tools=entry.get("eager_tools") is True,
+                family=str(route["family"]) if isinstance(route.get("family"), str) and route["family"] else None,
                 **{field: float(entry[field]) for field in PRICE_FIELDS if entry.get(field) is not None})
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
             raise StepError(f"the job's route on model {route.get('model')!r} is malformed: {_message(exc)}; "
@@ -2638,7 +3860,29 @@ class Factory:
             kind=saved.get("kind") or None, loaded_model_url=saved.get("loaded_model_url") or None,
             allow_model_swap=saved.get("allow_model_swap") is True, swap_back=saved.get("swap_back") is True,
             overflow_after_seconds=float(wait) if wait is not None else None,
-            tokens_per_second=float(speed) if speed is not None else None)
+            tokens_per_second=float(speed) if speed is not None else None,
+            **self._custody_of(name, base_url, saved))
+
+    def _custody_of(self, name: str, base_url: str, saved: dict) -> dict:
+        """{lazy_load, custody} for a snapshot's provider: the live provider's while it is the same server, else
+        the custody of any live provider entry on that server (custody follows the server, not the job or a
+        name: a server put under custody mid-job, or a provider renamed since, is not bypassed by an older
+        snapshot), else the snapshot's own (section 37)."""
+        try:
+            live = self.config.provider(name)
+        except (KeyError, ValueError):
+            live = None
+        if live is not None and server_of(live.base_url) == server_of(base_url):
+            return {"lazy_load": live.lazy_load, "custody": live.custody}
+        found = custody_on_server(self.config.raw.get("providers"), base_url)
+        if found is not None:
+            _, settings, loads = found
+            return {"lazy_load": saved.get("lazy_load") is True or loads, "custody": settings}
+        try:
+            settings = parse_custody(saved.get("custody"), f"the snapshot's provider {name}.custody")
+        except ValueError as exc:
+            raise StepError(f"{exc}; change the job's routing") from None
+        return {"lazy_load": saved.get("lazy_load") is True, "custody": settings}
 
     def _live_secret_headers(self, name: str, base_url: str) -> dict[str, str]:
         """Secret-looking headers of the live provider `name`, only while it still points at base_url."""
@@ -2685,6 +3929,23 @@ class Factory:
                 self._system = HousekeepingManager(self.config.data_dir, self.bus, self._item_secrets,
                                                    max_proposals=self._max_proposals())
             return self._system
+
+    def _drift_manager(self) -> DriftSources:
+        system = self._system_manager()
+        with self._lock:
+            if self._drift is None:
+                self._drift = DriftSources(self.config, system, self.bus)
+            return self._drift
+
+    def _snapraid_manager(self) -> Any:
+        from .snapraid import SnapraidPanel
+
+        system = self._system_manager()
+        notifier = self._notify_manager()
+        with self._lock:
+            if self._snapraid is None:
+                self._snapraid = SnapraidPanel(self.config, system, notifier, self.bus)
+            return self._snapraid
 
     def _agent_tokens(self) -> AgentTokens:
         with self._lock:
@@ -3270,6 +4531,10 @@ def new_factory(config: Config, **kwargs: Any) -> tuple[Factory, EventBus]:
         return list(provider()) if callable(provider) else config.secret_values()
 
     bus = EventBus(secrets_provider=secrets)
+    from .wakes import instance_name
+
+    bus.instance = instance_name(config)
+    tracker.INSTANCE["name"] = bus.instance
     holder.append(Factory(config, bus, **kwargs))
     return holder[0], bus
 
@@ -3320,7 +4585,7 @@ def _check_overrides(routing: dict) -> dict:
                 raise ValueError(f"routing for {name}: {field} must be a string")
         if entry.get("extra_body") is not None and not isinstance(entry["extra_body"], dict):
             raise ValueError(f"routing for {name}: extra_body must be an object")
-        check_placement(entry, f"routing for {name}")
+        check_placement(entry, f"routing for {name}", agent=name)
     return routing
 
 
@@ -3427,17 +4692,31 @@ def _provider_entry(provider: ProviderConfig) -> dict:
     entry["headers"] = {k: v for k, v in (provider.headers or {}).items() if not _secret_header(k, v)}
     entry.update({field: getattr(provider, field) for field in PLACEMENT_FIELDS
                   if getattr(provider, field, None) not in (None, False)})
+    if entry.get("custody") is not None:   # the register's settings (no token: only where it is read from)
+        entry["custody"] = entry["custody"].to_dict()
     return entry
 
 
+def _estimated_judge(route: dict, builder: dict[str, str]) -> dict:
+    """A judge's route for the estimate when the builder runs on builder's families (routing.judge_choice):
+    its own route, marked with its independence when that is reduced or accepted; its independent alternate,
+    with independence "alternate", instead_of (the model it moves off) and the alternate's reason."""
+    chosen, status = judge_choice(route, builder)
+    if status == "alternate":
+        left = shared_model(route, builder)
+        return {**chosen, "independence": "alternate", "instead_of": route.get("model"),
+                "reason": {"kind": "stage-fit", "text": alternate_text(left)}}
+    return {**route, "independence": status} if status else route
+
+
 def _route_provider_entries(route: Any) -> list[Any]:
-    """Every provider entry a snapshot route can run on: its own, its builds', its overflow's and each
-    escalation rung's (with theirs), for redaction."""
+    """Every provider entry a snapshot route can run on: its own, its builds', its overflow's, each
+    escalation rung's and its independent alternate's (with theirs), for redaction."""
     if not isinstance(route, dict):
         return []
     entries = [route.get("provider_entry")]
     entries += [build.get("provider_entry") for build in route.get("builds") or [] if isinstance(build, dict)]
-    for nested in [route.get("overflow"), *(route.get("escalate") or [])]:
+    for nested in [route.get("overflow"), *(route.get("escalate") or []), route.get("independent_alternate")]:
         entries += _route_provider_entries(nested)
     return entries
 

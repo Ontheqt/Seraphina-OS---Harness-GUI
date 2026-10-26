@@ -1,0 +1,13 @@
+{
+ "body": {},
+ "headers": {
+  "Connection": "close",
+  "Content-Type": "application/json"
+ },
+ "json": {
+  "success": true
+ },
+ "method": "POST",
+ "path": "/snapraid/v1/heal",
+ "status": 202
+}

@@ -1,0 +1,274 @@
+{
+ "body": null,
+ "headers": {
+  "Connection": "close",
+  "Content-Type": "application/json"
+ },
+ "json": {
+  "block_begin": 0,
+  "block_end": 500,
+  "block_idx": 276,
+  "blocks_count": 160,
+  "blocks_done": 89,
+  "command": "sync",
+  "cpu_usage": 0,
+  "elapsed_seconds": 4,
+  "error_data": 0,
+  "error_io": 0,
+  "error_soft": 0,
+  "eta_seconds": 0,
+  "exit_code": 1,
+  "finished_at": "2026-10-25T15:01:42",
+  "health": "passed",
+  "high_command": "maintenance",
+  "log_file": "/var/log/20261025-150135-sync.log",
+  "messages": [
+   {
+    "level": "info",
+    "text": "Self-test..."
+   },
+   {
+    "level": "info",
+    "text": "Loading state from /var/content/snapraid.content..."
+   },
+   {
+    "level": "info",
+    "text": "Loaded state in 0 seconds"
+   },
+   {
+    "level": "verbose",
+    "text": "364 files"
+   },
+   {
+    "level": "verbose",
+    "text": "0 hardlinks"
+   },
+   {
+    "level": "verbose",
+    "text": "0 symlinks"
+   },
+   {
+    "level": "verbose",
+    "text": "0 empty dirs"
+   },
+   {
+    "level": "info",
+    "text": "Setting sub-second timestamps..."
+   },
+   {
+    "level": "info",
+    "text": ""
+   },
+   {
+    "level": "info",
+    "text": "0 touched files"
+   },
+   {
+    "level": "info",
+    "text": "Scanning..."
+   },
+   {
+    "level": "info",
+    "text": "Scanned d2 in 0 seconds"
+   },
+   {
+    "level": "info",
+    "text": "Scanned d1 in 0 seconds"
+   },
+   {
+    "level": "info",
+    "text": "Applying..."
+   },
+   {
+    "level": "error",
+    "text": "WARNING! UUID is unsupported for disks: 'd1'msg:error: , 'd2'msg:error: . Not using inodes to detect move operations.",
+    "type": "soft"
+   },
+   {
+    "level": "verbose",
+    "text": "362 equal"
+   },
+   {
+    "level": "verbose",
+    "text": "0 added"
+   },
+   {
+    "level": "verbose",
+    "text": "0 removed"
+   },
+   {
+    "level": "verbose",
+    "text": "2 updated"
+   },
+   {
+    "level": "verbose",
+    "text": "0 moved"
+   },
+   {
+    "level": "verbose",
+    "text": "0 copied"
+   },
+   {
+    "level": "verbose",
+    "text": "0 relocated"
+   },
+   {
+    "level": "verbose",
+    "text": "0 restored"
+   },
+   {
+    "level": "info",
+    "text": "Using 0 MiB of memory for the file-system."
+   },
+   {
+    "level": "info",
+    "text": "Initializing..."
+   },
+   {
+    "level": "info",
+    "text": "Resizing..."
+   },
+   {
+    "level": "info",
+    "text": "Saving state to /var/content/snapraid.content..."
+   },
+   {
+    "level": "info",
+    "text": "Saving state to /mnt/d1/snapraid.content..."
+   },
+   {
+    "level": "info",
+    "text": "Saving state to /mnt/d2/snapraid.content..."
+   },
+   {
+    "level": "info",
+    "text": "Saved state in 0 seconds"
+   },
+   {
+    "level": "info",
+    "text": "Verifying..."
+   },
+   {
+    "level": "info",
+    "text": "Verified /var/content/snapraid.content in 0 seconds"
+   },
+   {
+    "level": "info",
+    "text": "Verified /mnt/d1/snapraid.content in 0 seconds"
+   },
+   {
+    "level": "info",
+    "text": "Verified /mnt/d2/snapraid.content in 0 seconds"
+   },
+   {
+    "level": "verbose",
+    "text": "364 files"
+   },
+   {
+    "level": "verbose",
+    "text": "0 hardlinks"
+   },
+   {
+    "level": "verbose",
+    "text": "0 symlinks"
+   },
+   {
+    "level": "verbose",
+    "text": "0 empty dirs"
+   },
+   {
+    "level": "info",
+    "text": "Using 48 MiB of memory for 64 cached blocks."
+   },
+   {
+    "level": "info",
+    "text": "Selecting..."
+   },
+   {
+    "level": "info",
+    "text": "Syncing..."
+   },
+   {
+    "level": "error",
+    "text": "Stop requested",
+    "type": "soft"
+   },
+   {
+    "level": "error",
+    "text": "Stop requested",
+    "type": "soft"
+   },
+   {
+    "level": "error",
+    "text": "Stopping for interruption at block 276",
+    "type": "soft"
+   },
+   {
+    "level": "info",
+    "text": "Saving state to /var/content/snapraid.content..."
+   },
+   {
+    "level": "info",
+    "text": "Saving state to /mnt/d1/snapraid.content..."
+   },
+   {
+    "level": "info",
+    "text": "Saving state to /mnt/d2/snapraid.content..."
+   },
+   {
+    "level": "info",
+    "text": "Saved state in 0 seconds"
+   },
+   {
+    "level": "info",
+    "text": "Verifying..."
+   },
+   {
+    "level": "info",
+    "text": "Verified /var/content/snapraid.content in 0 seconds"
+   },
+   {
+    "level": "info",
+    "text": "Verified /mnt/d1/snapraid.content in 0 seconds"
+   },
+   {
+    "level": "info",
+    "text": "Verified /mnt/d2/snapraid.content in 0 seconds"
+   },
+   {
+    "level": "verbose",
+    "text": "364 files"
+   },
+   {
+    "level": "verbose",
+    "text": "0 hardlinks"
+   },
+   {
+    "level": "verbose",
+    "text": "0 symlinks"
+   },
+   {
+    "level": "verbose",
+    "text": "0 empty dirs"
+   }
+  ],
+  "number": 10,
+  "progress": 55,
+  "pulse": {
+   "activity": 214,
+   "array": 51,
+   "config": 1,
+   "current_at": "2026-10-25T15:01:43",
+   "disks": 72,
+   "tasks": 194
+  },
+  "scheduled_at": "2026-10-25T15:01:33",
+  "size_done_bytes": 46661632,
+  "speed_mbs": 0,
+  "started_at": "2026-10-25T15:01:35",
+  "status": "terminated"
+ },
+ "method": "GET",
+ "path": "/snapraid/v1/activity",
+ "status": 200
+}

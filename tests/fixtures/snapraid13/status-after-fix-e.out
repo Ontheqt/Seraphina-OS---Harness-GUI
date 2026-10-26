@@ -1,0 +1,43 @@
+Self test...
+Loading state from /var/snapraid/snapraid.content...
+Using 0 MiB of memory for the file-system.
+SnapRAID status report:
+
+   Files Fragmented Excess  Wasted  Used    Free  Use Name
+            Files  Fragments  GB      GB      GB
+      12       1       1     0.0       0       0  38% d1
+      14       0       0     0.0       0       0  27% d2
+       6       1       2     0.0       0       0  21% d3
+ --------------------------------------------------------------------------
+      32       2       3     0.0       0       0  29%
+
+
+ 99%|                                                                     *
+    |                                                                     *
+    |                                                                     *
+    |                                                                     *
+    |                                                                     *
+    |                                                                     *
+    |                                                                     *
+ 49%|                                                                     *
+    |                                                                     *
+    |                                                                     *
+    |                                                                     *
+    |                                                                     *
+    |                                                                     *
+    |                                                                     *
+  0%|o____________________________________________________________________*
+     0                    days ago of the last scrub/sync                 0
+
+The oldest block was scrubbed 0 days ago, the median 0, the newest 0.
+
+No sync is in progress.
+1% of the array is not scrubbed.
+No file has a zero sub-second timestamp.
+No rehash is in progress or needed.
+DANGER! In the array there are 1 errors!
+
+They are from block 13 to 13.
+
+To fix them use the command 'snapraid -e fix'.
+The errors will disappear from the 'status' at the next 'scrub' command.

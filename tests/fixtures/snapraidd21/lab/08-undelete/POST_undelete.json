@@ -1,0 +1,20 @@
+{
+ "body": {
+  "filter_disks": [
+   "d1"
+  ],
+  "filters": [
+   "docs/d1-docs-003.bin"
+  ]
+ },
+ "headers": {
+  "Connection": "close",
+  "Content-Type": "application/json"
+ },
+ "json": {
+  "success": true
+ },
+ "method": "POST",
+ "path": "/snapraid/v1/undelete",
+ "status": 202
+}

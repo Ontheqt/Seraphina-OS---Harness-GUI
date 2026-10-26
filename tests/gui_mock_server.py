@@ -17,15 +17,24 @@ markdown, diffs and job text to exercise the GUI's escaping.
 
 Prints "READY http://127.0.0.1:<port>" on stdout once listening. Token: test-token.
 Section 25 (Welcome, Grid Card, guided setup): GET /api/setup (computed from the live state, so it changes as
-the wizard applies things), GET/POST /api/secrets (names only; values are never stored or logged), GET
+the wizard applies things; host.model_servers only after POST /api/setup/look-around, which keeps the real rate
+limit), GET/POST /api/secrets (names only; values are never stored or logged), GET
 /api/docs/procedures(.html), delivery modes (merge.delivery/output_dir, per-job delivery, stage delivered, a
 seeded delivered folder job and branch job), presets as {name, description} objects, chats with an agent
 (coder or analyst), agent.updated events and the plan log endpoint. --fresh starts from a fresh install
 (no repos, no keys, no jobs).
 
-Test hooks: POST /__mock/drop-sse, GET /__mock/requests, POST /__mock/hold {provider,
+Test hooks: POST /__mock/drop-sse, POST /__mock/publish {type, data, repo?, job?} (any event on the stream),
+GET /__mock/requests, POST /__mock/look-around {finds?, error?, gap?, forget?} (what the next look for model servers
+finds, or the error it breaks with; a fresh budget, gap: seconds between looks; forget drops the last look), POST
+/__mock/hold {provider,
 seconds} (occupy a provider slot so the next run on it waits), POST /__mock/stopped-job {repo,
 feature, routing, stage, delivery} (a job that is needs-human or failed at once). Standard library only.
+
+Seraphina OS Harness areas (the GUI's view modules): each area's endpoints live in its own module,
+tests/gui_mock/<area>.py (routing, tracker, personas, messages, operator), loaded here; it seeds its own state,
+answers /api/... before the core routes and owns /__mock/<area>/<name>. tests/gui_mock/__init__.py has the hooks.
+The view modules themselves are served from swfactory/web/views/<name>.js, as by the real server.
 """
 
 from __future__ import annotations
@@ -47,12 +56,18 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB_DIR = ROOT / "swfactory" / "web"
+if str(ROOT) not in sys.path:   # run as a script: tests/ is on the path, the repository root is not
+    sys.path.insert(0, str(ROOT))
+from tests import gui_mock  # noqa: E402  (the per-area mock modules)
+
+AREAS = gui_mock.load()
+CORE = sys.modules[__name__]   # what the area modules get as `core` (this module, also when run as __main__)
 AGENTS_DIR = ROOT / "agents"
 PRESETS_DIR = ROOT / "examples"
 USER_AGENTS_DIR = "/home/ai-dev/.config/software-factory/agents"
 DATA_DIR = "/srv/ai-work/factory"
 TOKEN = "test-token"
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 SPEED = 1.0
 PING_INTERVAL = 15.0
 CANCEL_TOKEN = object()
@@ -1626,6 +1641,13 @@ def seed_plans() -> None:
                    merged_commit=f"{n}e{n}d{n}c{n}b{n}a{n}f{n}0912", base_commit="1a2b3c4d")
         job["updated_at"] = ago(85000 - n * 600)
         job["_seed"] = True
+        if n in (1, 2):   # merge.push (DESIGN §40): git's own line for the ref; the second one refused by the remote
+            line = f"1a2b3c4..{job['merged_commit'][:7]}" if n == 1 else "[rejected] (fetch first)"
+            job["push"] = {"remote": "origin", "ref": "refs/heads/main", "commit": job["merged_commit"] + "aa" * 10,
+                           "outcome": "succeeded" if n == 1 else "failed", "at": ago(85000 - n * 600 + 5),
+                           "response": {"status": 0 if n == 1 else 1, "ids": [line], "body_sha256": "ab" * 32},
+                           "detail": f"the remote answered {line}" if n == 1 else f"the remote refused it: {line}",
+                           "done_at": ago(85000 - n * 600 + 2)}
         p["jobs"].append({"n": n, "feature": feature, "after": after, "job_id": job["id"], "stage": "merged",
                           "merged_commit": job["merged_commit"]})
     plan_files(p)["plan.md"] = text + "\n## Risks\n- None beyond the usual: keep the CSV filename ASCII.\n"
@@ -1657,11 +1679,20 @@ def seed_plans() -> None:
 
 
 def seed(fresh: bool = False) -> None:
+    """The core seed, then each area's (tests/gui_mock/<area>.py) on a fresh STATE["area"]."""
+    seed_core(fresh)
+    STATE["area"] = {name: {} for name in gui_mock.AREAS}
+    for area in AREAS:
+        if hasattr(area, "seed"):
+            area.seed(CORE, fresh)
+
+
+def seed_core(fresh: bool = False) -> None:
     agents = load_agents()
     STATE.update({"config": fresh_config() if fresh else default_config(), "agents": agents, "builtin_agents": copy.deepcopy(agents), "jobs": {},
                   "files": {}, "diffs": {}, "backlog": {}, "chats": {}, "messages": {}, "scout": {}, "pipelines": {},
                   "removed_numbers": {}, "chat_cancel": {}, "requests": [], "plans": {}, "plan_files": {},
-                  "keys": set() if fresh else set(DEFAULT_KEYS)})
+                  "keys": set() if fresh else set(DEFAULT_KEYS), "look": {"last": None, "started": [], "finds": copy.deepcopy(LOOK_FINDS), "error": None, "gap": LOOK_GAP}})
     SLOTS.clear()
     if fresh:
         return
@@ -1676,6 +1707,13 @@ def seed(fresh: bool = False) -> None:
     run_approver(j, 1, "APPROVE", instant=True)
     j.update(stage="merged", round=1, reviews=dict(allpass), history=[{"round": 1, "reviews": dict(allpass)}],
              decision="APPROVE", merged_commit="a1b2c3d4e5f60718293a", base_commit="1a2b3c4d")
+    # merge.push (DESIGN §40): no answer for the ref, and the remote has main elsewhere when looked at again, so the
+    # outcome is unknown, with its tracker item (orchestrator._push, _push_done)
+    j["push"] = {"remote": "origin", "ref": "refs/heads/main", "commit": "a1b2c3d4e5f60718293a0b1c2d3e4f5a6b7c8d9e", "outcome": "unknown",
+                 "at": ago(86400 - 5), "response": {"status": 128, "ids": [], "body_sha256": None},
+                 "observed": {"remote_commit": "0f9e8d7c6b5a49382716a5b4c3d2e1f0a9b8c7d6", "at": ago(86400 - 40)},
+                 "detail": "fatal: the remote end hung up unexpectedly <b>(raw)</b>; looked again: origin has main at 0f9e8d7c6b5a",
+                 "done_at": ago(86400 - 40), "item": "system:S-10"}
     j["updated_at"] = ago(86400)
     files_of(j)["job.json"] = json.dumps(public_job(j), indent=2)
     STATE["diffs"][("my-app", j["id"])] = {"stat": NORMAL_STAT, "diff": NORMAL_DIFF, "truncated": False}
@@ -1770,6 +1808,17 @@ def seed(fresh: bool = False) -> None:
     STATE["scout"]["docs-site"] = {"running": False, "draft": "# AGENTS.md (draft)\n\n## Stack\nAstro 4, pnpm.\n\n## Commands\n- `pnpm dev` (port from prompt)\n- `pnpm test`\n\n<img src=x onerror=alert('scout')>\n"}
 
 
+def chat_messages(chat_id: str) -> list[dict]:
+    """chats.ChatManager._messages: [{role, text, turn}], the person's k-th message opening turn k and its reply
+    carrying it (so a sweep suggestion of turn k shows under that reply)."""
+    out, turn = [], 0
+    for entry in copy.deepcopy(STATE["messages"].get(chat_id, [])):
+        turn += entry.get("role") == "user"
+        entry["turn"] = turn or None
+        out.append(entry)
+    return out
+
+
 def delivered_record(job: dict, mode: str, at: str) -> dict:
     """orchestrator._deliver: {mode, branch, base, commit, at}, plus export_folder's {path, files, skipped,
     patch_bytes} for a folder (<output_dir>/<repo>/<job-id>: changes.patch, files/, REPORT.md)."""
@@ -1805,7 +1854,7 @@ def _loopback(url) -> bool:
 
 
 def setup_status() -> dict:
-    """GET /api/setup: {configured, steps: {providers, models, routing, repos, tools, output}: {ok, detail}}."""
+    """GET /api/setup: {configured, steps: {providers, models, routing, repos, tools, output}: {ok, detail}, host}."""
     cfg = STATE["config"]
     models, provs = cfg.get("models") or {}, cfg.get("providers") or {}
     reviewers = (cfg.get("pipeline") or {}).get("reviewers") or []
@@ -1847,7 +1896,50 @@ def setup_status() -> dict:
                                           "folder": "Export to " + output_root()}.get(mode, mode)},
     }
     # doctor.REQUIRED_STEPS: tools and output are optional.
-    return {"configured": all(steps[k]["ok"] for k in ("providers", "models", "routing", "repos")), "steps": steps}
+    # doctor.setup_host: this demo machine has no /etc/ai-stack, and two more servers listen on ports no preset names
+    # (5000 and 5005 answer /v1/models like a model server; 18090 is something else). Which of them is a model server
+    # only the owner's look tells (POST /api/setup/look-around): its last answer, with when it was taken.
+    host = {"key_dirs": {"/etc/ai-stack": False}, "listening": [5000, 5005, 18090]}
+    last = STATE["look"]["last"]
+    if last is not None and last.get("error"):   # a look that broke found nothing: its error, not "none answered"
+        host.update(model_servers_error=last["error"], model_servers_at=last["at"])
+    elif last is not None:
+        host.update(model_servers=copy.deepcopy(last["model_servers"]), model_servers_at=last["at"])
+    return {"configured": all(steps[k]["ok"] for k in ("providers", "models", "routing", "repos")), "steps": steps,
+            "host": host}
+
+
+# doctor.look_for_model_servers on the demo machine (POST /__mock/look-around {finds} changes it)
+LOOK_FINDS = [{"url": "http://127.0.0.1:5000/v1", "port": 5000, "status": 200, "ids": ["qwen3.8-flash-next"]},
+              {"url": "http://127.0.0.1:5005/v1", "port": 5005, "status": 401, "ids": []}]
+LOOK_GAP, LOOK_PER_HOUR = 30.0, 10   # doctor.LOOK_AROUND_GAP and LOOK_AROUND_PER_HOUR
+LOOK_SECONDS = 0.6   # how long the demo look takes, so the page's busy state shows
+
+
+def look_around() -> dict | tuple:
+    """POST /api/setup/look-around (doctor.LookAround.ask): {at, model_servers, note}, {at, error} for a look that
+    broke, or (429, message, retry) when asked again within the gap (LOOK_GAP seconds) or past LOOK_PER_HOUR an
+    hour. The look itself takes LOOK_SECONDS."""
+    t = time.monotonic()
+    with LOCK:
+        look = STATE["look"]
+        look["started"] = [x for x in look["started"] if t - x < 3600.0]
+        if look["started"] and t - look["started"][-1] < look["gap"]:
+            since, wait = t - look["started"][-1], look["gap"] - (t - look["started"][-1])
+            return 429, f"You looked {'just now' if since < 2 else f'{int(since)} seconds ago'}. You can look again in {int(wait + 0.999)} seconds.", wait
+        if len(look["started"]) >= LOOK_PER_HOUR:
+            wait = 3600.0 - (t - look["started"][0])
+            return 429, f"You looked {LOOK_PER_HOUR} times in the last hour. You can look again in {int(wait / 60 + 0.999)} minutes.", wait
+        look["started"].append(t)
+        finds, error = copy.deepcopy(look["finds"]), look["error"]
+    time.sleep(LOOK_SECONDS)
+    result = {"at": now(), "error": error} if error else {
+        "at": now(), "model_servers": finds,
+        "note": "Sent one GET /v1/models, without a key, to each program listening on this machine (ports from 1024 up, at most 40, "
+                "1.5 s each; the harness's own port skipped). Nothing was changed."}
+    with LOCK:
+        STATE["look"]["last"] = copy.deepcopy(result)
+    return result
 
 
 def _key_users() -> dict:
@@ -2203,7 +2295,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def static(self, name):
         path = WEB_DIR / name
-        if not path.is_file():
+        if path.is_symlink() or not path.is_file():
             return self.error(404, f"{name} not found")
         ctype = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8"}[path.suffix]
         self.send_text(path.read_text(encoding="utf-8"), 200, ctype)
@@ -2281,6 +2373,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.static("index.html")
             if method == "GET" and path in ("/app.js", "/style.css", "/flows.js"):
                 return self.static(path[1:])
+            if method == "GET" and re.fullmatch(r"/views/[a-z0-9][a-z0-9_-]*\.js", path):   # the view modules
+                return self.static(path[1:])
             if path.startswith("/api/"):
                 return self.api(method, [urllib.parse.unquote(p) for p in path[5:].split("/")], q, body)
             if path.startswith("/__mock/"):
@@ -2298,11 +2392,33 @@ class Handler(BaseHTTPRequestHandler):
             self.error(404, f"not found: {exc.args[0] if exc.args else ''}")
 
     def mock(self, method, name, body):
+        area_name, _, rest = name.partition("/")
+        if rest and area_name in gui_mock.AREAS:   # /__mock/<area>/<name>: the area's own test hooks
+            area = AREAS[gui_mock.AREAS.index(area_name)]
+            answer = area.mock(CORE, self, method, rest, body) if hasattr(area, "mock") else NotImplemented
+            return self.error(404, "unknown mock endpoint") if answer is NotImplemented else answer
         if name == "drop-sse" and method == "POST":
             return self.send_json({"dropped": BUS.drop_all()})
+        if name == "publish" and method == "POST":   # any event on the stream: {type, data?, repo?, job?, agent?}
+            b = body or {}
+            if not isinstance(b.get("type"), str) or not re.fullmatch(r"[a-z][a-z0-9_.-]{0,63}", b["type"]):
+                raise Invalid("'type' must be an event type such as items.updated")
+            ev = BUS.publish(b["type"], b.get("data") if isinstance(b.get("data"), dict) else {}, repo=b.get("repo"), job=b.get("job"), agent=b.get("agent"))
+            return self.send_json({"event": ev})
         if name == "requests":
             with LOCK:
                 return self.send_json({"requests": STATE["requests"][-200:]})
+        if name == "look-around" and method == "POST":   # what the next look finds ({finds} or {error}), a fresh budget
+            b = body or {}
+            with LOCK:
+                if isinstance(b.get("finds"), list):
+                    STATE["look"]["finds"] = copy.deepcopy(b["finds"])
+                STATE["look"]["error"] = str(b["error"]) if b.get("error") else None
+                STATE["look"]["gap"] = float(b.get("gap") or LOOK_GAP)
+                STATE["look"]["started"] = []
+                if b.get("forget"):
+                    STATE["look"]["last"] = None
+            return self.send_json({"look": {"finds": STATE["look"]["finds"], "last": STATE["look"]["last"]}})
         if name == "hold" and method == "POST":
             hold_provider(str((body or {}).get("provider") or ""), float((body or {}).get("seconds") or 5))
             return self.send_json({"held": True})
@@ -2321,6 +2437,11 @@ class Handler(BaseHTTPRequestHandler):
     # -- API
     def api(self, method, parts, q, body):
         p = parts
+        for area in AREAS:   # each area first: its own routes, or a core route it extends
+            if hasattr(area, "api"):
+                answer = area.api(CORE, self, method, p, q, body)
+                if answer is not NotImplemented:
+                    return answer
         if method == "GET" and p == ["state"]:
             return self.send_json(state_view())
         if method == "GET" and p == ["events"]:
@@ -2329,6 +2450,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"checks": doctor_checks()})
         if method == "GET" and p == ["setup"]:
             return self.send_json(setup_status())
+        if method == "POST" and p == ["setup", "look-around"]:
+            answer = look_around()
+            if isinstance(answer, tuple):
+                return self.send_json({"error": answer[1]}, answer[0], {"Retry-After": str(max(1, int(answer[2] + 0.999)))})
+            return self.send_json(answer)
         if p == ["secrets"]:
             if method == "GET":
                 return self.send_json(secrets_view())
@@ -2755,7 +2881,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.error(404, f"unknown chat {cid!r}")
         if method == "GET" and len(p) == 1:
             with LOCK:
-                return self.send_json({"chat": copy.deepcopy(chat), "messages": copy.deepcopy(STATE["messages"].get(cid, []))})
+                return self.send_json({"chat": copy.deepcopy(chat), "messages": chat_messages(cid)})
         action = p[1] if len(p) > 1 else ""
         if method != "POST":
             return self.error(404, "unknown endpoint")

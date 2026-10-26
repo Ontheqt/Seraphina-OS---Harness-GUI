@@ -1,0 +1,56 @@
+version:13.0
+unixtime:1792928574
+time:2026-10-25 11:42:54
+command:sync
+argv:0:/usr/local/bin/snapraid
+argv:1:-c
+argv:2:/etc/snapraid.conf
+argv:3:-l
+argv:4:/var/lib/seraphina-snapraid/runs/J-1/snapraid.log
+argv:5:sync
+selftest:
+msg:progress: Self test...
+conf:file:/etc/snapraid.conf
+uuid:by-uuid:7:5: opendir(/dev/disk/by-uuid) failed, No such file or directory
+uuid:blkid:7:5:7e387000-0cc5-4f60-9c08-c27504b3227b: found /dev/loop5
+uuid:by-uuid:7:6: opendir(/dev/disk/by-uuid) failed, No such file or directory
+uuid:blkid:7:6:570f566e-dcf4-4c4a-9b8b-f33ac5c35ecb: found /dev/loop6
+uuid:by-uuid:7:7: opendir(/dev/disk/by-uuid) failed, No such file or directory
+uuid:blkid:7:7:49978a8b-220a-4ec8-ad0e-23d57ad6b79a: found /dev/loop7
+blocksize:65536
+data:d1:/mnt/disk1/
+data:d2:/mnt/disk2/
+data:d3:/mnt/disk3/
+mode:par2
+parity:0:/mnt/parity1/snapraid.parity
+2-parity:0:/mnt/parity2/snapraid.2-parity
+autosave:1000000000
+filter:exclude /lost+found/
+filter:exclude *.unrecoverable
+filter:exclude /seraphina-restored/
+filter:exclude /.seraphina-trash/
+content:/var/snapraid/snapraid.content
+msg:progress: Loading state from /var/snapraid/snapraid.content...
+msg:verbose:       32 files
+msg:verbose:        0 hardlinks
+msg:verbose:        0 symlinks
+msg:verbose:        4 empty dirs
+uuid:by-uuid:7:8: opendir(/dev/disk/by-uuid) failed, No such file or directory
+uuid:blkid:7:8:edc3bb94-8a01-4ef1-be3a-7ede66bbdb21: found /dev/loop8
+uuid:by-uuid:7:9: opendir(/dev/disk/by-uuid) failed, No such file or directory
+uuid:blkid:7:9:7aa14332-8868-4a39-af8c-a92d415217cc: found /dev/loop9
+msg:progress: Scanning...
+statfs:ext2/3/4: /mnt/disk1/ 
+statfs:ext2/3/4: /mnt/disk3/ 
+statfs:ext2/3/4: /mnt/disk2/ 
+msg:verbose: Excluding directory '/mnt/disk1/lost+found' for rule 'exclude /lost+found/'
+msg:verbose: Excluding content '/mnt/disk1/.snapraid/snapraid.content'
+msg:verbose: Excluding directory '/mnt/disk2/lost+found' for rule 'exclude /lost+found/'
+msg:verbose: Excluding directory '/mnt/disk3/lost+found' for rule 'exclude /lost+found/'
+msg:verbose: Excluding content '/mnt/disk2/.snapraid/snapraid.content'
+msg:progress: Scanned d3 in 0 seconds
+msg:progress: Scanned d1 in 0 seconds
+msg:fatal: The file '/mnt/disk2/media/photos/img5.jpg' has unexpected zero size!
+msg:fatal: It's possible that after a kernel crash this file was lost,
+msg:fatal: and you can use 'snapraid fix -f /media/photos/img5.jpg' to recover it.
+msg:fatal: If this an expected condition you can 'sync' anyway using 'snapraid --force-zero sync'

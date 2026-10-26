@@ -1,6 +1,9 @@
 """Static checks for the web GUI (no browser): files exist, no external URLs, no unsafe
-HTML sinks, valid JavaScript syntax, and the mock server used by the smoke test serves
-the documented shapes. The browser smoke test is tests/gui/smoke.mjs (Playwright)."""
+HTML sinks, valid JavaScript syntax, the Seraphina OS Harness branding, the view modules
+(swfactory/web/views/<area>.js) and the window.SF namespace they use, and the mock server
+used by the smoke test serves the documented shapes (each area's through its own module in
+tests/gui_mock/). The browser smoke test is tests/gui/smoke.mjs (Playwright), with one suite
+file per area in tests/gui/."""
 
 from __future__ import annotations
 
@@ -15,10 +18,21 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-GUI_PENDING_PRESETS = ("local-first", "nanogpt-value")   # no flows.js PRESETS row yet (GUI phase)
 WEB = ROOT / "swfactory" / "web"
 FILES = ("index.html", "app.js", "flows.js", "style.css", "login.html")
 URL_RE = re.compile(r"https?://", re.I)
+PRODUCT = "Seraphina OS Harness"
+SVG_NS = "http://www.w3.org/2000/svg"   # the favicon's XML namespace: a name, never fetched
+AREAS = ("routing", "tracker", "personas", "messages", "operator", "backups")   # one view module, mock module and suite each
+VIEWS = WEB / "views"
+# window.SF, the one namespace the view modules use (app.js, "view modules"): area builders rely on these names.
+SF_API = ("version", "product", "registerView", "registerJobTab", "extend", "refreshJobs", "h", "add", "clear", "icon", "btn",
+          "field", "selectEl", "callout", "emptyState", "skeleton", "setBusy", "timeEl", "viewHead", "procedureList", "rebuild",
+          "placeholder", "unavailable", "trackFades", "text", "md", "safeHref", "relTime", "fmtDur", "fmtNum", "plural",
+          "firstLine", "enc", "isObj", "api", "ApiError", "gone", "toast", "toastError", "copyText", "openModal",
+          "confirmModal", "on", "onReconnect", "conn", "drawer", "route", "go", "jobs", "job", "repos", "agents",
+          "filterRepo", "isNarrow", "storage", "announce", "sentence", "words", "itemWord", "custodyAnswer", "custodyReason",
+          "custodyPlain", "itemHref", "itemLink", "beforeImport")
 
 
 def read(name: str) -> str:
@@ -40,7 +54,7 @@ class WebFilesTest(unittest.TestCase):
 
     def test_no_external_urls_in_html_and_css(self):
         for name in ("index.html", "style.css", "login.html"):
-            hits = [line.strip() for line in read(name).splitlines() if URL_RE.search(line)]
+            hits = [line.strip() for line in read(name).replace(SVG_NS, "").splitlines() if URL_RE.search(line)]
             self.assertEqual(hits, [], f"{name} must not reference external URLs")
 
     def test_app_js_urls_only_in_link_scheme_check(self):
@@ -79,10 +93,191 @@ class WebFilesTest(unittest.TestCase):
     def test_index_loads_flows_before_app(self):
         html = read("index.html")
         self.assertLess(html.index('src="/flows.js"'), html.index('src="/app.js"'))
-        for view in ("view-flow", "view-grid", "view-procedures"):
+        for view in ("view-home", "view-flow", "view-grid", "view-procedures"):
             self.assertIn(f'id="{view}"', html)
+        self.assertIn('href="#/home"', html)
         self.assertIn('href="#/grid"', html)
         self.assertIn('href="#/procedures"', html)
+
+    def test_branding_is_seraphina_os_harness(self):
+        """The product is Seraphina OS Harness: the page title, the header, the login page, the favicon's letter and
+        Welcome say so; Software Factory is the name of one section (its card on Home, the board, the booklet)."""
+        html, login, app = read("index.html"), read("login.html"), read("app.js")
+        self.assertIn(f"<title>{PRODUCT}</title>", html)
+        self.assertIn(f'<span class="brand-name">{PRODUCT}</span>', html)
+        self.assertRegex(html, r'<a class="brand" href="#/home" aria-label="Seraphina OS Harness: Home">')
+        self.assertIn(f"<title>Sign in · {PRODUCT}</title>", login)
+        self.assertIn(f"<h1>{PRODUCT}</h1>", login)
+        for page in (html, login):
+            icon = re.search(r'<link rel="icon" href="([^"]+)"', page).group(1)
+            self.assertTrue(icon.startswith("data:image/svg+xml,"), icon)
+            self.assertIn("%3ES%3C/text%3E", icon, "the favicon shows the letter S")
+        self.assertNotIn("Software Factory", re.sub(r"<!--.*?-->", "", html, flags=re.S).split("<body>")[0])
+        self.assertIn(f"const PRODUCT = '{PRODUCT}';", app)
+        self.assertIn("'Welcome to ' + PRODUCT", app)
+        self.assertIn("document.title = (human ? '(' + human + ') ' : '') + view + ' · ' + PRODUCT;", app)
+        self.assertIn("title: 'Software Factory'", app, "Software Factory is Home's first section")
+        self.assertIn("const v = parts[0] || 'home';", app, "Home is the default route")
+
+    def test_view_modules_are_loaded_after_app_and_use_only_window_sf(self):
+        """Each area lives in swfactory/web/views/<area>.js, loaded by index.html after app.js (deferred, so app.js
+        boots after every module registered), and reaches the page only through window.SF."""
+        html = read("index.html")
+        scripts = re.findall(r'<script src="(/[^"]+)" defer></script>', html)
+        self.assertEqual(scripts[:2], ["/flows.js", "/app.js"])
+        on_disk = sorted(f"/views/{path.name}" for path in VIEWS.glob("*.js"))
+        self.assertEqual(sorted(scripts[2:]), on_disk, "index.html loads every view module, and only those")
+        self.assertEqual(sorted(path.stem for path in VIEWS.glob("*.js")), sorted(AREAS))
+        for path in VIEWS.glob("*.js"):
+            js = path.read_text(encoding="utf-8")
+            code = strip_js_comments(js)
+            with self.subTest(view=path.name):
+                self.assertGreater(len(js), 200)
+                self.assertTrue(js.startswith("/* Seraphina OS Harness: "), "a header naming the area and its DESIGN notes")
+                self.assertIn("'use strict';\n(function (SF) {", js)
+                self.assertTrue(js.rstrip().endswith("})(window.SF);"), "one IIFE that gets window.SF")
+                self.assertIn("SF.registerView({", code)
+                self.assertNotRegex(js, URL_RE, "no URLs")
+                for bad in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function(",
+                            "createContextualFragment", "srcdoc", "fetch(", "XMLHttpRequest", "EventSource", "localStorage",
+                            "sessionStorage", "import(", "importScripts", "window.SFFlows"):
+                    self.assertNotIn(bad, code, f"{path.name}: {bad} (use SF.h, SF.api, SF.on, SF.storage)")
+                self.assertNotRegex(code, r"setAttribute\(\s*['\"]on", "inline event handler attributes")
+                self.assertEqual(set(re.findall(r"\bwindow\.(\w+)", code)), {"SF"}, "window.SF is the only global it reads")
+
+    def test_window_sf_is_the_documented_namespace(self):
+        """window.SF (app.js) is frozen and carries exactly the helpers the view modules are written against."""
+        app = read("app.js")
+        body = app[app.index("  const SF = Object.freeze({"):]
+        body = body[: body.index("\n  });\n")]
+        keys = []
+        for line in body.splitlines()[1:]:
+            if not line.startswith("    ") or line.startswith("     ") or line.strip().startswith(("//", "/*", "*")):
+                continue   # only the object's own lines (4 spaces), not comments or continuations
+            named = re.match(r"\s+(\w+):", line)
+            keys += [named.group(1)] if named else [k.strip() for k in line.split(",") if re.fullmatch(r"\w+", k.strip())]
+        self.assertEqual(sorted(keys), sorted(SF_API))
+        self.assertIn("Object.defineProperty(window, 'SF', { value: SF, writable: false, configurable: false, enumerable: true });", app)
+        for name in ("registerView", "registerJobTab", "extend", "openPanel", "closePanel", "onEvent", "onReconnect", "rebuild"):
+            self.assertRegex(app, rf"function {name}\(", name)
+
+    def test_one_vocabulary_for_every_section(self):
+        """SF.words (app.js) holds the words of items.WORDS, driftsources.STATES and custody.LEASE_STATES, and no view
+        module keeps a copy of a table: an item reads "Waiting for a check" on every page, a drift check "Cannot reach
+        it", a lease "Given back"."""
+        from swfactory import custody, driftsources, items
+
+        app = read("app.js")
+        block = app[app.index("  const WORDS = Object.freeze({"):]
+        block = block[: block.index("\n  });\n")]
+
+        def table(name):
+            found = re.search(name + r": Object\.freeze\(\{(.*?)\}\)", block)
+            self.assertIsNotNone(found, name)
+            return dict(re.findall(r"(\w+): '([^']*)'", found.group(1)))
+
+        self.assertEqual(table("items"), items.WORDS)
+        self.assertEqual(set(table("drift")), set(driftsources.STATES))
+        self.assertEqual(set(table("driftTone")), set(driftsources.STATES))
+        self.assertEqual(set(table("lease")), set(custody.LEASE_STATES))
+        for path in sorted(VIEWS.glob("*.js")):
+            code = strip_js_comments(path.read_text(encoding="utf-8"))
+            for word in ("Waiting for a check", "Working on it", "Observation too old", "Not given back"):
+                self.assertNotIn("'" + word + "'", code, f"{path.name} keeps its own copy of SF.words ({word})")
+
+    def test_outcome_words_are_the_rule_s_and_the_receipts(self):
+        """DESIGN §40: SF.words.outcome names outcomes.STATES in words ("Outcome unknown: it may or may not have
+        happened"), SF.words.unknownTitle is outcomes.UNKNOWN_TITLE, and SF.words.receiptTone covers receipts.OUTCOMES
+        and is never green; a view reads them from SF.words (no copy of the tables)."""
+        from swfactory import outcomes, receipts
+
+        app = read("app.js")
+        block = app[app.index("  const WORDS = Object.freeze({"):]
+        block = block[: block.index("\n  });\n")]
+
+        def table(name):
+            found = re.search(r"\b" + name + r": Object\.freeze\(\{(.*?)\}\)", block)
+            self.assertIsNotNone(found, name)
+            return dict(re.findall(r"(\w+): '([^']*)'", found.group(1)))
+
+        self.assertEqual(set(table("outcome")), set(outcomes.STATES))
+        self.assertEqual(table("outcome")["unknown"], "Outcome unknown: it may or may not have happened")
+        self.assertEqual(table("outcomeTone"), {"succeeded": "ok", "failed": "err", "unknown": "warn"})
+        self.assertIn(f"unknownTitle: '{outcomes.UNKNOWN_TITLE}'", block)
+        tones = table("receiptTone")
+        self.assertEqual(set(tones), set(receipts.OUTCOMES))
+        self.assertNotIn("ok", tones.values(), "a receipt is never green")
+        self.assertEqual((tones["outcome_unknown"], tones["reported_failed"]), ("warn", "err"))
+        for path in sorted(VIEWS.glob("*.js")):
+            code = strip_js_comments(path.read_text(encoding="utf-8"))
+            self.assertNotIn("'Outcome unknown: it may or may not have happened'", code, f"{path.name} keeps its own copy")
+
+    def test_messages_rule_words_name_every_rule(self):
+        """The rulebook's quiet-hours list (views/messages.js RULE_WORDS) names every notify.RULE_IDS kind, the disk
+        protection ones (§41) too, so none of them is missing from "may break through"."""
+        from swfactory import notify
+
+        js = (VIEWS / "messages.js").read_text(encoding="utf-8")
+        block = js[js.index("  const RULE_WORDS = {"):]
+        block = block[: block.index("\n  };\n")]
+        self.assertEqual(sorted(re.findall(r"'([a-z_]+\.[a-z_]+)':", block)), sorted(notify.RULE_IDS))
+
+    @unittest.skipUnless(shutil.which("node"), "node not installed")
+    def test_custody_answers_in_plain_words(self):
+        """SF.custodyAnswer (app.js) words every custody answer (DESIGN §37): a refused claim with the register's words
+        (the line's own, else reason_codes), a HELD wait and how it ended, "not sent" to a register that restarted, and
+        a request with no answer recorded (§40); SF.custodyPlain is a grant, a give-back or an ended wait only."""
+        from swfactory import custody
+
+        app = read("app.js")
+        code = app[app.index("  function custodyReason(code, codes) {"):app.index("  /** Text from the server as a sentence of the page")]
+        script = ("const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);\n" + code +
+                  "\nconst codes = JSON.parse(process.argv[1]);\nconst lines = JSON.parse(process.argv[2]);\n"
+                  "console.log(JSON.stringify(lines.map((x) => [custodyAnswer(x, codes), custodyPlain(x)])));")
+        lines = [
+            {"op": "claim", "outcome": "denied", "reason": "FULL", "words": "the card cannot fit this model now"},
+            {"op": "claim", "outcome": "denied", "reason": "LEASED"},
+            {"op": "claim", "outcome": "granted"},
+            {"op": "wait", "outcome": "waiting", "reason": "HELD", "seconds": 120},
+            {"op": "wait", "outcome": "granted", "reason": "HELD", "seconds": 60.2},
+            {"op": "wait", "outcome": "gave_up", "reason": "HELD", "seconds": 120},
+            {"op": "wait", "outcome": "ended", "reason": "FULL"},
+            {"op": "release", "outcome": "lost", "reason": "not sent: the register restarted (epoch a became b)"},
+            {"op": "renew", "outcome": "lost", "reason": "not sent: the register restarted (epoch a became b)"},
+            {"op": "release", "outcome": "released"},
+            {"op": "claim", "outcome": "requested"},
+        ]
+        proc = subprocess.run(["node", "-e", script, json.dumps(custody.REFUSAL_WORDS), json.dumps(lines)],
+                              capture_output=True, text=True, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        got = json.loads(proc.stdout)
+        self.assertEqual(got, [
+            ["Lease denied: the card cannot fit this model now", False],
+            ["Lease denied: " + custody.REFUSAL_WORDS["LEASED"], False],
+            ["Lease granted", True],
+            ["Waits up to 120s: the card is held by someone else", False],
+            ["The hold ended after 60.2s: lease granted", True],
+            ["Gave up after 120s: the card is still held", False],
+            ["Stopped waiting: " + custody.REFUSAL_WORDS["FULL"], False],
+            ["Not released: the register restarted, so it no longer knows this lease", False],
+            ["Not renewed: the register restarted, so it no longer knows this lease", False],
+            ["Lease given back", True],
+            ["Asked, with no answer recorded: outcome unknown", False],
+        ])
+        fallback = dict(re.findall(r"(\w+): '([^']*)'", app[app.index("const CUSTODY_FALLBACK"):].split("\n", 1)[0]))
+        self.assertEqual(fallback, {k: custody.REFUSAL_WORDS[k] for k in fallback}, "the words without reason_codes are custody's")
+
+    def test_custody_editor_offers_every_token_source(self):
+        """Settings › Providers (views/routing.js CUSTODY_FIELDS) edits every custody.SETTINGS_KEYS field (models and the
+        timeout have their own fields), token_credential among them (one of three token sources, DESIGN §37)."""
+        from swfactory import custody
+
+        js = (VIEWS / "routing.js").read_text(encoding="utf-8")
+        block = js[js.index("  const CUSTODY_FIELDS = ["):]
+        block = block[: block.index("];\n")]
+        keys = set(re.findall(r"\['([a-z_]+)', '", block))
+        self.assertEqual(keys | {"models", "timeout"}, set(custody.SETTINGS_KEYS))
+        self.assertIn("const TOKEN_KEYS = ['token_file', 'token_env', 'token_credential'];", js)
 
     @unittest.skipUnless(shutil.which("node"), "node not installed")
     def test_flows_js_syntax_and_helpers(self):
@@ -103,9 +298,6 @@ class WebFilesTest(unittest.TestCase):
         table = json.loads(proc.stdout)
         examples = ROOT / "examples"
         routing = sorted(p.stem for p in examples.glob("*.json") if json.loads(p.read_text(encoding="utf-8")).get("agents"))
-        # The routing-engine presets get their rows with the GUI phase; until then the cards show the server's
-        # own description (flows.js: "A preset the table does not know is shown from the server's own description").
-        routing = [name for name in routing if name not in GUI_PENDING_PRESETS]
         self.assertEqual(sorted(table), routing, "every routing preset has a row, and only those")
         for name in routing:
             data = json.loads((examples / f"{name}.json").read_text(encoding="utf-8"))
@@ -115,6 +307,22 @@ class WebFilesTest(unittest.TestCase):
                 self.assertEqual(row["models"], {k: f"{v['provider']}/{v['model']}" for k, v in data["models"].items()})
                 self.assertEqual(row["agents"], {k: v["model"] for k, v in data["agents"].items() if "model" in v})
                 self.assertTrue(row["title"] and row["does"].endswith(".") and row["when"].endswith("."), row)
+
+    def test_mock_server_serves_the_view_modules_and_loads_every_area(self):
+        """tests/gui_mock_server.py serves swfactory/web/views/*.js and loads tests/gui_mock/<area>.py for every area;
+        each area has its smoke suite tests/gui/<area>.mjs, which smoke.mjs imports."""
+        from tests import gui_mock
+        self.assertEqual(gui_mock.AREAS, AREAS)
+        for module, name in zip(gui_mock.load(), AREAS):
+            with self.subTest(area=name):
+                self.assertEqual(module.AREA, name)
+                self.assertTrue(module.__doc__ and "DESIGN" in module.__doc__)
+        smoke = (ROOT / "tests" / "gui" / "smoke.mjs").read_text(encoding="utf-8")
+        for name in ("home",) + AREAS:
+            with self.subTest(suite=name):
+                self.assertTrue((ROOT / "tests" / "gui" / f"{name}.mjs").is_file())
+                self.assertIn(f"import {{ run as {name}Suite }} from './{name}.mjs';", smoke)
+                self.assertIn(f"['{name}', {name}Suite]", smoke)
 
     def test_no_unsafe_html_sinks_in_app_js(self):
         js = strip_js_comments(read("app.js"))
@@ -169,6 +377,24 @@ class WebFilesTest(unittest.TestCase):
         proc = subprocess.run(["node", "--check", str(WEB / "app.js")], capture_output=True, text=True, timeout=60)
         self.assertEqual(proc.returncode, 0, proc.stderr)
 
+    def test_the_look_for_model_servers_runs_only_from_its_button(self):
+        """The look-around (POST /api/setup/look-around) is sent by lookAround() alone, and lookAround is wired to the
+        button's click only: nothing on page load, on a route change or on a timer asks for it, and no other file
+        names the route."""
+        js = strip_js_comments(read("app.js"))
+        self.assertEqual(js.count("/api/setup/look-around"), 1)
+        self.assertRegex(js, r"async function lookAround\(\) \{[^}]*api\('/api/setup/look-around', \{ method: 'POST'")
+        uses = [m.start() for m in re.finditer(r"\blookAround\b(?!Widget)", js)]
+        self.assertEqual(len(uses), 2, "its definition and the button's click listener")
+        self.assertIn("b.addEventListener('click', lookAround);", js)
+        # the one timer there (a refusal's Retry-After) only redraws: it never looks again
+        body = js[js.index("async function lookAround() {"):js.index("function lookAroundWidget() {")]
+        self.assertEqual(body.count("setTimeout("), 1)
+        self.assertRegex(body, r"setTimeout\(\(\) => \{ if \(L\.until === until\) \{ lookRefusalOver\(\); invalidate\('flow'\); \} \}")
+        self.assertIn("it sends no key and changes nothing", js)
+        for name in ["flows.js", *(f"views/{v.name}" for v in sorted((WEB / "views").glob("*.js")))]:
+            self.assertNotIn("/api/setup/look-around", strip_js_comments(read(name)), name)
+
     def test_reviewers_are_not_hardcoded(self):
         """DESIGN §22: the strip, the chips and Routing follow pipeline.reviewers; no four-name tables."""
         js = strip_js_comments(read("app.js"))
@@ -176,6 +402,16 @@ class WebFilesTest(unittest.TestCase):
         self.assertNotIn("REVIEWER_NAME", js)
         self.assertNotRegex(js, r"\[\s*'security'\s*,\s*'ux'\s*,\s*'ui'\s*,\s*'code'\s*\]")
         self.assertIn("function reviewerLabels", js)
+
+    @unittest.skipUnless(shutil.which("node"), "node not installed")
+    def test_a_saved_setting_runs_the_doctor_again(self):
+        """Found by tests/gui/e2e_real.mjs against the real server: the header's Doctor badge kept the checks it read at
+        page load, so after the setup wizard's Apply a fresh install's to-do list ("9 things to set up") became
+        "9 issues" in red while the server found 3. app.js's api() now runs Doctor again, once, after any saved
+        setting (config, a preset, a repository, a key) settles; never after a read, a refused save or other POSTs."""
+        proc = subprocess.run(["node", "-e", DOCTOR_HARNESS, str(WEB / "app.js")], capture_output=True, text=True, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("DOCTOR-OK", proc.stdout)
 
     @unittest.skipUnless(shutil.which("node"), "node not installed")
     def test_reviewer_labels_and_config_merge_patch(self):
@@ -324,6 +560,44 @@ const withPolicy = F.setupPlan(d, ctx, []).items.find((i) => i.id === 'output');
 eq(withPolicy.requests[0].body, { pipeline: { auto_merge: false } }, 'merge output (already the default): the merge policy goes with it');
 d.choices.output = 'folder';
 delete d.choices['merge-policy'];
+// This machine (GET /api/setup's host): the preset's key folder is not here, and servers listen on other ports.
+const sd2 = F.emptyDraft();
+sd2.choices.where = 'local';
+sd2.choices['local-servers'] = ['strata', 'tabby'];
+const there = Object.assign({}, ctx, { setup: { configured: false, host: { key_dirs: { '/etc/ai-stack': false }, listening: [5000, 5005, 18090] } } });
+const cards2 = F.optionsOf(F.stepOf(setup, 'local-servers'), sd2, there);
+eq(cards2.find((o) => o.id === 'tabby').sub, '127.0.0.1:5000 · something listens there', 'a listener on the usual port is said');
+eq(cards2.find((o) => o.id === 'strata').sub, '127.0.0.1:18080 · nothing listens there now', 'and its absence');
+eq(F.optionsOf(F.stepOf(setup, 'local-servers'), sd2, ctx).find((o) => o.id === 'strata').sub, '127.0.0.1:18080', 'not asked: nothing said');
+const groups2 = F.groupsOf(F.stepOf(setup, 'local-details'), sd2, there);
+const strata = groups2.find((g) => g.id === 'strata');
+ok(!/ai-stack/.test(strata.tip + JSON.stringify(strata.fields)), 'no tip or hint names a key folder this machine does not have: ' + strata.tip);
+eq(strata.fields.find((f) => f.id === 'strata.url').hint, 'Nothing listens on 127.0.0.1:18080 now. Ports in use here: 5000, 5005, 18090. Press “Look for model servers” above to see which of them is a model server.', 'the ports that do listen, and how to tell which is a model server');
+eq(groups2[0], { id: 'look-around', title: 'Model servers on this machine', widget: 'look-around', fields: [] }, 'the look-around button comes first, above the servers');
+eq(F.groupsOf(F.stepOf(setup, 'local-details'), F.emptyDraft(), there).map((g) => g.id), ['look-around'], 'it is there with no server picked yet');
+const lookedNone = Object.assign({}, ctx, { setup: { configured: false, host: Object.assign({}, there.setup.host, { model_servers: [], model_servers_at: '2026-10-26T09:00:00Z' }) } });
+eq(F.groupsOf(F.stepOf(setup, 'local-details'), sd2, lookedNone).find((g) => g.id === 'strata').fields.find((f) => f.id === 'strata.url').hint,
+  'Nothing listens on 127.0.0.1:18080 now. Ports in use here: 5000, 5005, 18090. None of them answered like a model server when you looked.', 'a look that found none says so');
+const lookedBroke = Object.assign({}, ctx, { setup: { configured: false, host: Object.assign({}, there.setup.host, { model_servers_error: 'PermissionError: denied', model_servers_at: '2026-10-26T09:00:00Z' }) } });
+eq(F.groupsOf(F.stepOf(setup, 'local-details'), sd2, lookedBroke).find((g) => g.id === 'strata').fields.find((f) => f.id === 'strata.url').hint,
+  'Nothing listens on 127.0.0.1:18080 now. Ports in use here: 5000, 5005, 18090. The last look for model servers did not work: press \u201cLook for model servers\u201d above to try again.', 'a look that broke is not one that found none');
+const longId = Object.assign({}, ctx, { setup: { configured: false, host: Object.assign({}, there.setup.host, { model_servers_at: '2026-10-26T09:00:00Z', model_servers: [{ url: 'http://127.0.0.1:5000/v1', port: 5000, status: 200, ids: ['a'.repeat(120)] }] }) } });
+eq(F.groupsOf(F.stepOf(setup, 'local-details'), sd2, longId).find((g) => g.id === 'strata').fields.find((f) => f.id === 'strata.url').hint,
+  'Nothing listens on 127.0.0.1:18080 now. Model servers answer here: http://127.0.0.1:5000/v1 (lists ' + 'a'.repeat(59) + '\u2026). If one of them is Strata, use its address.', 'a listener\u2019s long model id is cut at 60 characters');
+eq(F.idText('b'.repeat(60)), 'b'.repeat(60), 'an id of 60 characters is shown whole');
+// B.5.4: the model servers the owner's look found are offered by their address (the presets' ports are only the usual ones)
+const servers = Object.assign({}, ctx, { setup: { configured: false, host: { key_dirs: { '/etc/ai-stack': false }, listening: [5000, 5005, 18090], model_servers_at: '2026-10-26T09:00:00Z',
+  model_servers: [{ url: 'http://127.0.0.1:5000/v1', port: 5000, status: 200, ids: ['a', 'b', 'c', 'd'] }, { url: 'http://127.0.0.1:5005/v1', port: 5005, status: 401, ids: [] }] } } });
+eq(F.groupsOf(F.stepOf(setup, 'local-details'), sd2, servers).find((g) => g.id === 'strata').fields.find((f) => f.id === 'strata.url').hint,
+  'Nothing listens on 127.0.0.1:18080 now. Model servers answer here: http://127.0.0.1:5000/v1 (lists a, b, c, …); http://127.0.0.1:5005/v1 (wants a key). If one of them is Strata, use its address.', 'the model servers here, offered by address');
+ok(F.groupsOf(F.stepOf(setup, 'local-details'), sd2, servers).find((g) => g.id === 'tabby').fields.find((f) => f.id === 'tabby.url').hint === undefined, 'a server on its own port: no hint');
+ok(groups2.find((g) => g.id === 'tabby').fields.find((f) => f.id === 'tabby.url').hint === undefined, 'no hint where a server listens');
+ok(/ai-stack/.test(F.groupsOf(F.stepOf(setup, 'local-details'), sd2, ctx).find((g) => g.id === 'strata').tip), 'not asked: the preset\u2019s tip stays');
+F.setValue(sd2, 'local-details', 'strata.model', 'strata');
+F.setValue(sd2, 'local-details', 'tabby.model', 'qwen3.8-flash');
+const noFile = F.setupPlan(sd2, there, []).items.find((i) => i.id === 'models').requests[0].body;
+ok(!('api_key_file' in noFile.providers.strata), 'no key file a folder of this machine cannot hold: ' + JSON.stringify(noFile.providers.strata));
+ok('api_key_file' in F.setupPlan(sd2, ctx, []).items.find((i) => i.id === 'models').requests[0].body.providers.strata, 'not asked: as before');
 const roles = F.stepOf(setup, 'roles');
 const fresh = F.emptyDraft();
 fresh.choices.where = 'hybrid';
@@ -403,6 +677,37 @@ eq(mergeDiff({ x: { extra_body: { t: { type: 'enabled' } } } }, { x: { extra_bod
 eq(mergeDiff({ k: '***', n: 1 }, { k: '***', n: 2 }), { n: 2 }, 'an unchanged masked value is not sent');
 eq(mergeDiff({}, { y: { model: 'm' } }), { y: { model: 'm' } }, 'new entry');
 console.log('LOGIC-OK');
+"""
+
+
+DOCTOR_HARNESS = r"""
+const src = require('fs').readFileSync(process.argv[1], 'utf8');
+const i = src.indexOf('  async function api(path, opts) {');
+const j = src.indexOf('  const jobPath = ', i);
+if (i < 0 || j < 0) throw new Error('api() not found in app.js');
+let timers = [];
+const setTimeout = (fn) => { timers.push(fn); return timers.length; };
+const clearTimeout = (id) => { if (id) timers[id - 1] = null; };
+const flush = () => { const now = timers; timers = []; for (const fn of now) if (fn) fn(); };
+let runs = 0;
+function loadDoctor(manual) { runs++; if (manual !== false) throw new Error('a quiet run: loadDoctor(false)'); }
+class ApiError extends Error { constructor(status, msg, data) { super(msg); this.status = status; this.data = data; } }
+function onUnauthorized() {}
+const sleep = () => Promise.resolve();
+let status = 200;
+const fetch = async () => ({ status, ok: status < 400, statusText: '', headers: { get: () => 'application/json' }, json: async () => (status < 400 ? {} : { error: 'refused' }), text: async () => '{}' });
+const call = eval(src.slice(i, j) + '\n;api');
+const expect = (want, what) => { flush(); if (runs !== want) throw new Error(what + ': ' + runs + ' Doctor runs, wanted ' + want); runs = 0; };
+(async () => {
+  for (const path of ['/api/config', '/api/config/preset', '/api/repos', '/api/secrets']) { await call(path, { body: {} }); expect(1, 'POST ' + path); }
+  await call('/api/config'); expect(0, 'a read');
+  for (const path of ['/api/jobs', '/api/models/local/test', '/api/repos/app/scout', '/api/config/x']) { await call(path, { body: {} }); expect(0, 'POST ' + path); }
+  await call('/api/config', { body: { a: 1 } }); await call('/api/config', { body: { a: null } }); expect(1, 'two saves back to back (a Test entry added and removed)');
+  status = 400;
+  try { await call('/api/config', { body: {} }); } catch (e) { /* refused */ }
+  expect(0, 'a refused save');
+  console.log('DOCTOR-OK');
+})().catch((e) => { console.error(e && e.stack || e); process.exit(1); });
 """
 
 
@@ -546,8 +851,9 @@ class MockServerContractTest(unittest.TestCase):
             self.assertEqual(cfg["preset_names"], settings.list_presets())
         self.assertEqual(cfg["model_templates"], settings.MODEL_TEMPLATES)
         self.assertEqual(cfg["model_template_note"], settings.TEMPLATE_NOTE)
-        for agent in cfg["agent_list"]:  # settings._agent_summary
-            self.assertEqual(set(agent), {"name", "description", "model", "driver", "source", "tier", "color", "extra_body"})
+        base = {"name", "description", "model", "driver", "source", "tier", "color", "extra_body"}
+        for agent in cfg["agent_list"]:  # settings._agent_summary (a route's placement fields when it has them, §23)
+            self.assertTrue(base <= set(agent) <= base | {"effort", "escalate", "reason", "independent_alternate"}, sorted(agent))
             self.assertIn(agent["source"], ("builtin", "user", "repo"))
 
     def test_jobs_carry_the_orchestrator_routing_snapshot(self):
@@ -555,8 +861,10 @@ class MockServerContractTest(unittest.TestCase):
         _, _, raw = self.request("GET", "/api/state")
         job = next(j for j in json.loads(raw)["jobs"] if j["id"] == "002-rate-limit-signup-form")
         self.assertEqual(set(job["routing"]), {"spec-writer", "builder", "approver", *("reviewer-" + r for r in job["reviewers"])})
+        base = {"model", "driver", "provider", "model_id", "family", "extra_body", "model_entry", "provider_entry"}
+        placement = {"reason", "escalate", "independent_alternate", "builds", "overflow", "cli_model"}   # Factory._resolve_route
         for route in job["routing"].values():
-            self.assertEqual(set(route), {"model", "driver", "provider", "model_id", "extra_body", "model_entry", "provider_entry"})
+            self.assertTrue(base <= set(route) <= base | placement, sorted(route))
             self.assertEqual(set(route["model_entry"]), set(orchestrator.MODEL_FIELDS))
             self.assertEqual(set(route["provider_entry"]), set(orchestrator.PROVIDER_FIELDS) | {"headers"})
 
@@ -605,7 +913,7 @@ class MockServerContractTest(unittest.TestCase):
         _, _, raw = self.request("GET", "/api/plans")
         plans = json.loads(raw)["plans"]
         keys = {"id", "repo", "request", "stage", "reason", "failed_step", "base", "base_commit", "plan_dir", "jobs",
-                "reviews", "routing", "delivery", "usage", "created_at", "updated_at"}
+                "reviews", "routing", "delivery", "usage", "created_at", "updated_at", "profile", "cost"}
         self.assertTrue(plans and all(set(p) == keys for p in plans), [sorted(set(p) ^ keys) for p in plans])
         status, _, raw = self.request("GET", "/api/plans/my-app/P002-audit-log-v2")
         detail = json.loads(raw)
@@ -681,6 +989,39 @@ class MockServerContractTest(unittest.TestCase):
         self.assertIn(b"<h1>", raw)
         self.assertNotIn(b"<script", raw.lower())
 
+    def test_look_for_model_servers_only_when_asked(self):
+        """POST /api/setup/look-around as doctor.LookAround: GET /api/setup carries no model_servers until the owner
+        looks, then the last look with when it was taken; a second look too soon is 429 with Retry-After."""
+        self.request("POST", "/__mock/look-around", {"forget": True})
+        self.addCleanup(self.request, "POST", "/__mock/look-around", {"forget": True, "finds": self.mock.LOOK_FINDS})
+        host = json.loads(self.request("GET", "/api/setup")[2])["host"]
+        self.assertEqual(set(host), {"key_dirs", "listening"})
+        status, _, raw = self.request("POST", "/api/setup/look-around", {})
+        self.assertEqual(status, 200)
+        looked = json.loads(raw)
+        self.assertEqual(set(looked), {"at", "model_servers", "note"})
+        self.assertEqual([m["url"] for m in looked["model_servers"]], ["http://127.0.0.1:5000/v1", "http://127.0.0.1:5005/v1"])
+        self.assertIn("without a key", looked["note"])
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        conn.request("POST", "/api/setup/look-around", body=b"{}", headers={"Authorization": "Bearer test-token", "Content-Type": "application/json"})
+        again = conn.getresponse()
+        body = json.loads(again.read())
+        conn.close()
+        self.assertEqual(again.status, 429)
+        self.assertIn(again.getheader("Retry-After"), ("28", "29", "30"))
+        self.assertRegex(body["error"], r"You can look again in (28|29|30) seconds")
+        host = json.loads(self.request("GET", "/api/setup")[2])["host"]
+        self.assertEqual((host["model_servers"], host["model_servers_at"]), (looked["model_servers"], looked["at"]))
+        self.request("POST", "/__mock/look-around", {"finds": []})
+        self.assertEqual(json.loads(self.request("POST", "/api/setup/look-around", {})[2])["model_servers"], [])
+        # a look that broke (doctor.look_for_model_servers): its error alone, and the setup status says so
+        self.request("POST", "/__mock/look-around", {"error": "PermissionError: [Errno 13] Permission denied: '/proc/net/tcp'"})
+        broke = json.loads(self.request("POST", "/api/setup/look-around", {})[2])
+        self.assertEqual(set(broke), {"at", "error"})
+        host = json.loads(self.request("GET", "/api/setup")[2])["host"]
+        self.assertNotIn("model_servers", host)
+        self.assertEqual((host["model_servers_error"], host["model_servers_at"]), (broke["error"], broke["at"]))
+
     def test_delivery_modes(self):
         """DESIGN §25: merge.delivery in the config, per-job delivery (validated), delivered jobs and Merge it now."""
         _, _, raw = self.request("GET", "/api/config")
@@ -712,6 +1053,39 @@ class MockServerContractTest(unittest.TestCase):
         self.assertTrue(any(e["type"] == "agent.updated" and e["data"]["name"] == "reviewer-code" and e["data"]["agent"]["name"] == "reviewer-code"
                             for e in self.mock.BUS.since(0)))
         self.request("POST", "/api/agents/reviewer-code/reset", {})
+
+    def test_view_modules_are_served(self):
+        for name in AREAS:
+            status, ctype, raw = self.request("GET", f"/views/{name}.js")
+            self.assertEqual((status, ctype.split(";")[0]), (200, "text/javascript"))
+            self.assertEqual(raw, (VIEWS / f"{name}.js").read_bytes())
+        for bad in ("/views/../app.js", "/views/x.md", "/views/sub/x.js"):
+            self.assertEqual(self.request("GET", bad)[0], 404, bad)
+
+    def test_area_contracts(self):
+        """Each area's mock module checks its own shapes against swfactory/ (tests/gui_mock/<area>.py contract)."""
+        from tests import gui_mock
+        for module in gui_mock.load():
+            if hasattr(module, "contract"):
+                with self.subTest(area=module.AREA):
+                    module.contract(self)
+
+    def test_every_seeded_id_is_one_the_server_routes_accept(self):
+        """The areas seed chats, jobs and plans into one mock: each id must match the server's route patterns
+        (server.CHAT_ID_RE and friends), or a page asks the mock for what the real server would answer 404."""
+        from swfactory import server as real
+        rules = real._PARAM_RULES
+        with self.mock.LOCK:
+            jobs = list(self.mock.STATE["jobs"].values())
+            chats = list(self.mock.STATE["chats"].values())
+            plans = list(self.mock.STATE["plans"].values())
+        self.assertTrue(jobs and chats and plans)
+        for kind, rows in (("job", jobs), ("chat", chats), ("plan", plans)):
+            for row in rows:
+                with self.subTest(kind=kind, id=row["id"]):
+                    self.assertTrue(rules[kind][0].fullmatch(row["id"]), f"a {kind} id the server's routes accept")
+                    if row.get("repo"):
+                        self.assertTrue(rules["repo"][0].fullmatch(row["repo"]))
 
     def test_chat_delete_publishes_chat_removed_with_the_id(self):
         status, _, raw = self.request("POST", "/api/chats", {"repo": "docs-site", "mode": "repo"})

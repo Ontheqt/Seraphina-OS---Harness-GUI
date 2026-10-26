@@ -1,0 +1,329 @@
+{
+ "body": null,
+ "headers": {
+  "Connection": "close",
+  "Content-Type": "application/json"
+ },
+ "json": {
+  "active": [
+   {
+    "block_begin": 0,
+    "block_end": 500,
+    "block_idx": 186,
+    "blocks_count": 500,
+    "blocks_done": 187,
+    "command": "sync",
+    "cpu_usage": 0,
+    "elapsed_seconds": 1,
+    "error_data": 0,
+    "error_io": 0,
+    "error_soft": 0,
+    "eta_seconds": 0,
+    "health": "passed",
+    "high_command": "maintenance",
+    "log_file": "/var/log/20261025-150059-sync.log",
+    "messages": [
+     {
+      "level": "info",
+      "text": "Self-test..."
+     },
+     {
+      "level": "info",
+      "text": "Loading state from /var/content/snapraid.content..."
+     },
+     {
+      "level": "error",
+      "text": "WARNING! Content file '/var/content/snapraid.content' not found, attempting with another copy...",
+      "type": "soft"
+     },
+     {
+      "level": "info",
+      "text": "Loading state from /mnt/d1/snapraid.content..."
+     },
+     {
+      "level": "error",
+      "text": "WARNING! Content file '/mnt/d1/snapraid.content' not found, attempting with another copy...",
+      "type": "soft"
+     },
+     {
+      "level": "info",
+      "text": "Loading state from /mnt/d2/snapraid.content..."
+     },
+     {
+      "level": "info",
+      "text": "No content file found. Assuming empty."
+     },
+     {
+      "level": "info",
+      "text": "Scanning..."
+     },
+     {
+      "level": "info",
+      "text": "Scanned d1 in 0 seconds"
+     },
+     {
+      "level": "info",
+      "text": "Scanned d2 in 0 seconds"
+     },
+     {
+      "level": "info",
+      "text": "Applying..."
+     },
+     {
+      "level": "error",
+      "text": "WARNING! UUID is unsupported for disks: 'd1'msg:error: , 'd2'msg:error: . Not using inodes to detect move operations.",
+      "type": "soft"
+     },
+     {
+      "level": "verbose",
+      "text": "0 equal"
+     },
+     {
+      "level": "verbose",
+      "text": "364 added"
+     },
+     {
+      "level": "verbose",
+      "text": "0 removed"
+     },
+     {
+      "level": "verbose",
+      "text": "0 updated"
+     },
+     {
+      "level": "verbose",
+      "text": "0 moved"
+     },
+     {
+      "level": "verbose",
+      "text": "0 copied"
+     },
+     {
+      "level": "verbose",
+      "text": "0 relocated"
+     },
+     {
+      "level": "verbose",
+      "text": "0 restored"
+     },
+     {
+      "level": "info",
+      "text": "Using 0 MiB of memory for the file-system."
+     },
+     {
+      "level": "info",
+      "text": "Initializing..."
+     },
+     {
+      "level": "info",
+      "text": "Resizing..."
+     },
+     {
+      "level": "info",
+      "text": "Saving state to /var/content/snapraid.content..."
+     },
+     {
+      "level": "info",
+      "text": "Saving state to /mnt/d1/snapraid.content..."
+     },
+     {
+      "level": "info",
+      "text": "Saving state to /mnt/d2/snapraid.content..."
+     },
+     {
+      "level": "info",
+      "text": "Saved state in 0 seconds"
+     },
+     {
+      "level": "info",
+      "text": "Verifying..."
+     },
+     {
+      "level": "info",
+      "text": "Verified /var/content/snapraid.content in 0 seconds"
+     },
+     {
+      "level": "info",
+      "text": "Verified /mnt/d1/snapraid.content in 0 seconds"
+     },
+     {
+      "level": "info",
+      "text": "Verified /mnt/d2/snapraid.content in 0 seconds"
+     },
+     {
+      "level": "verbose",
+      "text": "364 files"
+     },
+     {
+      "level": "verbose",
+      "text": "0 hardlinks"
+     },
+     {
+      "level": "verbose",
+      "text": "0 symlinks"
+     },
+     {
+      "level": "verbose",
+      "text": "0 empty dirs"
+     },
+     {
+      "level": "info",
+      "text": "Using 48 MiB of memory for 64 cached blocks."
+     },
+     {
+      "level": "info",
+      "text": "Selecting..."
+     },
+     {
+      "level": "info",
+      "text": "Syncing..."
+     }
+    ],
+    "number": 5,
+    "progress": 37,
+    "scheduled_at": "2026-10-25T15:00:57",
+    "size_done_bytes": 4976240,
+    "speed_mbs": 0,
+    "started_at": "2026-10-25T15:00:59",
+    "status": "processing"
+   }
+  ],
+  "history": [
+   {
+    "command": "up",
+    "exit_code": 0,
+    "finished_at": "2026-10-25T15:00:58",
+    "health": "passed",
+    "high_command": "maintenance",
+    "log_file": "/var/log/20261025-150058-up.log",
+    "messages": [
+     {
+      "level": "info",
+      "text": "Spinup..."
+     },
+     {
+      "level": "info",
+      "text": "Spunup device '/dev/loop10' for disk 'd1' in 0 ms."
+     },
+     {
+      "level": "info",
+      "text": "Spunup device '/dev/loop11' for disk 'd2' in 0 ms."
+     },
+     {
+      "level": "info",
+      "text": "Spunup device '/dev/loop12' for disk 'parity' in 1 ms."
+     }
+    ],
+    "number": 4,
+    "scheduled_at": "2026-10-25T15:00:57",
+    "started_at": "2026-10-25T15:00:58",
+    "status": "terminated"
+   },
+   {
+    "command": "start",
+    "exit_code": 0,
+    "finished_at": "2026-10-25T15:00:57",
+    "health": "passed",
+    "high_command": "maintenance",
+    "messages": [],
+    "number": 3,
+    "scheduled_at": "2026-10-25T15:00:57",
+    "started_at": "2026-10-25T15:00:57",
+    "status": "terminated"
+   },
+   {
+    "command": "read",
+    "exit_code": 0,
+    "finished_at": "2026-10-25T15:00:41",
+    "health": "passed",
+    "high_command": "startup",
+    "log_file": "/var/log/20261025-150041-read.log",
+    "messages": [
+     {
+      "level": "info",
+      "text": "Loading state from /var/content/snapraid.content..."
+     },
+     {
+      "level": "error",
+      "text": "WARNING! Content file '/var/content/snapraid.content' not found, attempting with another copy...",
+      "type": "soft"
+     },
+     {
+      "level": "info",
+      "text": "Loading state from /mnt/d1/snapraid.content..."
+     },
+     {
+      "level": "error",
+      "text": "WARNING! Content file '/mnt/d1/snapraid.content' not found, attempting with another copy...",
+      "type": "soft"
+     },
+     {
+      "level": "info",
+      "text": "Loading state from /mnt/d2/snapraid.content..."
+     },
+     {
+      "level": "info",
+      "text": "No content file found. Assuming empty."
+     },
+     {
+      "level": "info",
+      "text": "Using 0 MiB of memory for the file-system."
+     }
+    ],
+    "number": 2,
+    "scheduled_at": "2026-10-25T15:00:40",
+    "started_at": "2026-10-25T15:00:41",
+    "status": "terminated"
+   },
+   {
+    "command": "probe",
+    "exit_code": 0,
+    "finished_at": "2026-10-25T15:00:40",
+    "health": "passed",
+    "high_command": "startup",
+    "log_file": "/var/log/20261025-150040-probe.log",
+    "messages": [],
+    "number": 1,
+    "scheduled_at": "2026-10-25T15:00:40",
+    "started_at": "2026-10-25T15:00:40",
+    "status": "terminated"
+   }
+  ],
+  "pending": [
+   {
+    "command": "report",
+    "health": "pending",
+    "health_reason": "Task is waiting to be executed",
+    "high_command": "maintenance",
+    "messages": [],
+    "number": 7,
+    "scheduled_at": "2026-10-25T15:00:57",
+    "status": "queued"
+   },
+   {
+    "command": "scrub",
+    "error_data": 0,
+    "error_io": 0,
+    "error_soft": 0,
+    "health": "pending",
+    "health_reason": "Task is waiting to be executed",
+    "high_command": "maintenance",
+    "messages": [],
+    "number": 6,
+    "scheduled_at": "2026-10-25T15:00:57",
+    "status": "queued"
+   }
+  ],
+  "pulse": {
+   "activity": 70,
+   "array": 29,
+   "config": 1,
+   "current_at": "2026-10-25T15:01:00",
+   "disks": 56,
+   "tasks": 68
+  }
+ },
+ "method": "GET",
+ "path": "/snapraid/v1/tasks",
+ "status": 200
+}

@@ -1,0 +1,33 @@
+version:13.0
+unixtime:1792928543
+time:2026-10-25 11:42:23
+command:probe
+argv:0:/usr/local/bin/snapraid
+argv:1:-c
+argv:2:/etc/snapraid.conf
+argv:3:-l
+argv:4:/var/lib/seraphina-snapraid/runs/J-1/snapraid.log
+argv:5:probe
+conf:file:/etc/snapraid.conf
+uuid:by-uuid:7:5: opendir(/dev/disk/by-uuid) failed, No such file or directory
+uuid:blkid:7:5:7e387000-0cc5-4f60-9c08-c27504b3227b: found /dev/loop5
+uuid:by-uuid:7:6: opendir(/dev/disk/by-uuid) failed, No such file or directory
+uuid:blkid:7:6:570f566e-dcf4-4c4a-9b8b-f33ac5c35ecb: found /dev/loop6
+uuid:by-uuid:7:7: opendir(/dev/disk/by-uuid) failed, No such file or directory
+uuid:blkid:7:7:49978a8b-220a-4ec8-ad0e-23d57ad6b79a: found /dev/loop7
+blocksize:65536
+data:d1:/mnt/disk1/
+data:d2:/mnt/disk2/
+data:d3:/mnt/disk3/
+mode:par2
+parity:0:/mnt/parity1/snapraid.parity
+2-parity:0:/mnt/parity2/snapraid.2-parity
+autosave:1000000000
+filter:exclude /lost+found/
+filter:exclude *.unrecoverable
+filter:exclude /seraphina-restored/
+filter:exclude /.seraphina-trash/
+resolve:sys:7:5:/dev/loop5: found
+msg:fatal: Failed to open '/sys/dev/block/7:5/../dev'.
+msg:fatal: Failed to expand device '7:5'.
+msg:fatal: Probe is unsupported in this platform.

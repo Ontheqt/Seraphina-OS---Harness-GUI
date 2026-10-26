@@ -9,10 +9,12 @@ import stat
 import sys
 import tempfile
 import threading
+import types
 import time
 import unittest
 import uuid
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 from swfactory.agentdefs import AgentDef
@@ -40,7 +42,7 @@ from swfactory.harness.sandbox import bwrap_available
 from swfactory.harness.tools import ToolPolicy, Toolset
 from swfactory.runners import RunContext
 from swfactory.skills import SkillIndex
-from tests.helpers import make_repo, run_git
+from tests.helpers import make_repo, outside_tmp, run_git
 from tests.mock_llm import MockLLM
 
 MOCK_MCP = Path(__file__).resolve().with_name("mock_mcp_server.py")
@@ -529,7 +531,8 @@ class LimitTests(LoopCase):
         self.assertEqual(run.error, "wall-clock limit reached (4s)")
         self.assertEqual(len(server.requests), 1, "the deadline came before the first model call answered")
         bash, write = [e["output"] for e in events.of("agent.tool_result")]
-        self.assertIn("[cancelled]", bash)
+        self.assertIn("[stopped part way (cancelled, or the run's time limit): what it did before that is unknown",
+                      bash)
         self.assertTrue(write.startswith("Not run: the run stopped (wall-clock limit"), write)
         self.assertFalse((self.worktree / "late.txt").exists())
         self.assertEqual([m["role"] for m in self.saved()["messages"]], ["user", "assistant", "tool", "tool"])
@@ -785,6 +788,47 @@ class ResumeTests(LoopCase):
         self.assertEqual(last["messages"][-1], {"role": "user", "content": "second"})
         self.assertEqual((self.saved()["turns"], self.saved()["usage"]["calls"]), (3, 3))
 
+    def test_a_crash_while_a_tool_runs_leaves_the_call_on_record_with_an_unknown_outcome(self) -> None:
+        """DESIGN §40: the assistant message that asked for a tool is saved before the tool runs. After a crash the
+        reloaded session gives that call a result saying its outcome is unknown, so the model is never asked
+        again on a history without the call; nothing is run again by itself."""
+
+        class Crash(BaseException):
+            pass
+
+        for fmt in ("openai", "anthropic"):
+            with self.subTest(fmt=fmt):
+                outside = self.tmp / f"outside-{fmt}.txt"
+                server = self.start_mock([
+                    {"tool_calls": [{"name": "Bash", "arguments": {"command": f"echo pushed >> {outside}"}}]},
+                    {"text": "I will check first."}])
+                toolset = self.toolset(["Bash"])
+                real = toolset.call
+                on_disk: list = []
+
+                def crashing(name: str, arguments: Any) -> Any:
+                    real(name, arguments)                            # the command ran: its effect is outside
+                    on_disk.append(self.saved(path)["messages"])     # what the session file holds now
+                    raise Crash()                                    # the server dies before the results
+
+                path = self.job_dir / "sessions" / f"crash-{fmt}.json"
+                toolset.call = crashing   # type: ignore[method-assign]
+                session, _ = self.session(server, fmt, toolset=toolset, path=path)
+                with self.assertRaises(Crash):
+                    session.send("Push the branch.")
+                self.assertEqual(on_disk[0][-1]["role"], "assistant", "the call is on disk while it runs")
+
+                toolset.call = real   # type: ignore[method-assign]
+                provider = make_provider(provider_cfg(server.base_url, fmt))
+                resumed = AgentSession.load(path, provider, model_cfg(provider.cfg), toolset, Limits(), Events(),
+                                            threading.Event())
+                run = resumed.send("Continue.")
+                self.assertTrue(run.ok, run.error)
+                text = json.dumps(server.requests[1]["messages"])
+                self.assertIn("its outcome is unknown", text)
+                self.assertIn("Check before you call it again", text)
+                self.assertEqual(outside.read_text().splitlines(), ["pushed"], "never run again by itself")
+
     def test_load_refuses_another_provider_type(self) -> None:
         server = self.start_mock([{"text": "hi"}])
         session, _ = self.session(server, "openai")
@@ -840,7 +884,7 @@ class SystemPromptTests(LoopCase):
         prompt = build_system_prompt(thin, self.ctx(thin, persona={"type": "openwebui", "name": "kate"}),
                                      SkillIndex([self.skills_dir]))
         self.assertTrue(prompt.startswith("## In this chat\n\nTHIN-NOTE\n\n# Harness"), prompt)
-        self.assertIn("Your own instructions come before this note", prompt)
+        self.assertIn("Your instructions come before this note", prompt)   # decision h: neutral wording
         self.assertIn("You have no tools in this chat", prompt)
         for coding in ("non-interactive coding agent", "Working directory", "reply with one short line", "OS: ",
                        "REPO-INSTRUCTIONS", time.strftime("%Y-%m-%d", time.gmtime())):
@@ -872,6 +916,25 @@ class SystemPromptTests(LoopCase):
                       "the fixed preamble keeps its own words")
         plain = build_system_prompt(agent, self.ctx(agent), SkillIndex([self.skills_dir]))
         self.assertIn('<factory-items job="001-greet" v="999">', plain, "a run without items is left as it was")
+
+    def test_a_bash_agent_hears_when_no_browser_can_start_in_its_sandbox(self) -> None:
+        """A host that allows no sandbox inside the sandbox (sandbox.nested_bwrap): the agent is told to check pages
+        with curl instead of retrying a browser; nothing is said without bwrap, without Bash, or where it works."""
+        agent = make_agent(tools=["Read", "Write", "Bash"])
+        with mock.patch.object(loop, "bwrap_available", return_value=True), \
+                mock.patch.object(loop, "nested_bwrap", return_value=(False, "bwrap: No permissions")):
+            prompt = build_system_prompt(agent, self.ctx(agent, sandbox="bwrap"), SkillIndex([self.skills_dir]))
+            self.assertIn(loop.NO_NESTED_SANDBOX, prompt)
+            self.assertLess(prompt.index(loop.NO_NESTED_SANDBOX), prompt.index("You are the BUILDER-BODY"))
+            self.assertNotIn(loop.NO_NESTED_SANDBOX, build_system_prompt(agent, self.ctx(agent, sandbox="none"),
+                                                                         SkillIndex([self.skills_dir])))
+            reader = make_agent(tools=["Read", "Grep"])
+            self.assertNotIn(loop.NO_NESTED_SANDBOX, build_system_prompt(reader, self.ctx(reader, sandbox="bwrap"),
+                                                                         SkillIndex([self.skills_dir])))
+        with mock.patch.object(loop, "bwrap_available", return_value=True), \
+                mock.patch.object(loop, "nested_bwrap", return_value=(True, "")):
+            self.assertNotIn(loop.NO_NESTED_SANDBOX, build_system_prompt(agent, self.ctx(agent, sandbox="bwrap"),
+                                                                         SkillIndex([self.skills_dir])))
 
     def test_sections_in_order(self) -> None:
         (self.worktree / "AGENTS.md").write_text("Run `make test` before committing.\n")
@@ -1300,8 +1363,8 @@ class McpTests(RunnerCase):
 class McpWriteTests(RunnerCase):
     """What an MCP tool may write: write_args get Write's checks; under bwrap the server is in the sandbox."""
 
-    def mock_server(self, **overrides) -> McpServerConfig:
-        return McpServerConfig(name="mock", command=sys.executable, args=[str(MOCK_MCP)], timeout=10,
+    def mock_server(self, program: Path = MOCK_MCP, **overrides) -> McpServerConfig:
+        return McpServerConfig(name="mock", command=sys.executable, args=[str(program)], timeout=10,
                                startup_timeout=10, **overrides)
 
     def write(self, path: str, text: str = "x") -> dict:
@@ -1332,7 +1395,7 @@ class McpWriteTests(RunnerCase):
                                                   self.write(str(victim), "pwned")]},
                                   {"text": "done"}])
         ctx, _ = self.ctx(model_cfg(provider_cfg(server.base_url)), agent=make_agent(tools=["Read"], mcp=["mock"]),
-                          mcp_servers={"mock": self.mock_server()}, sandbox="bwrap",
+                          mcp_servers={"mock": self.mock_server(outside_tmp(MOCK_MCP, self))}, sandbox="bwrap",
                           env={"GIT_CONFIG_GLOBAL": "/dev/null"})
         sandbox_cls = type("Sandbox", (_TmpVisibleSandbox,), {"root": self.tmp})
         with mock.patch.object(loop, "Sandbox", sandbox_cls):
@@ -1838,3 +1901,87 @@ class ItemsNoteTests(LoopCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CheckinTests(RunnerCase):
+    """A chat check-in (Wake & Messages §5.8, S41): a harness message, the Wake line, a background slot."""
+
+    def test_a_wake_message_is_never_folded_into_an_unanswered_user_message_and_shows_as_harness(self) -> None:
+        server = self.start_mock([{"text": "ok"}], error_sequence=[400])
+        session, _ = self.session(server)
+        self.assertFalse(session.send("Fix the bug.").ok)    # an unanswered user message
+        run = session.send("[Scheduled check-in] look at CI", origin="wake")
+        self.assertTrue(run.ok, run.error)
+        saved = self.saved()
+        self.assertEqual([m["role"] for m in saved["messages"]], ["user", "user", "assistant"])
+        self.assertEqual(saved["harness_origins"], {"1": "wake"})
+        self.assertEqual(transcript(saved), [
+            {"role": "user", "text": "Fix the bug.", "tools": []},
+            {"role": "harness", "kind": "wake", "text": "[Scheduled check-in] look at CI", "tools": []},
+            {"role": "assistant", "text": "ok", "tools": []},
+        ])
+        loaded = AgentSession.load(self.session_path, session.provider, session.model, self.toolset(), Limits(),
+                                   Events(), threading.Event())
+        self.assertEqual(loaded.harness_origins, {"1": "wake"}, "a resumed session keeps the origins")
+
+    def test_the_wake_line_only_with_a_context(self) -> None:
+        agent = make_agent(name="coder")
+        model = model_cfg(provider_cfg("http://127.0.0.1:1"))
+        skills = SkillIndex([])
+        without, _ = self.ctx(model, agent=agent)
+        with_wake, _ = self.ctx(model, agent=agent, wake=object())
+        self.assertNotIn(loop.WAKE_LINE, build_system_prompt(agent, without, skills))
+        self.assertIn(loop.WAKE_LINE, build_system_prompt(agent, with_wake, skills))
+
+    def test_a_checkin_run_has_only_the_checkin_tools_and_writes_nothing(self) -> None:
+        server = self.start_mock([{"text": "CI is green.", "usage": {"prompt_tokens": 10, "completion_tokens": 5}},
+                                  {"tool_calls": [{"name": "Glob", "arguments": {"pattern": "*.py"}}],
+                                   "usage": {"prompt_tokens": 10, "completion_tokens": 400}}])
+        model = model_cfg(provider_cfg(server.base_url))
+        ctx, _ = self.ctx(model, agent=make_agent(tools=FILE_TOOLS + ["Bash"]), write_paths=[], checkin=True,
+                          background=True, message_origin="wake", checkin_commands=[["git", "status"]],
+                          max_output_tokens=300)
+        result = self.runner.run(ctx, "[Scheduled check-in] look at CI")
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(tool_names(server.requests[0]), ["Read", "Glob", "Grep", "RunCheck"])
+        self.assertEqual(self.saved()["harness_origins"], {"0": "wake"})
+        again, _ = self.ctx(model, agent=make_agent(tools=FILE_TOOLS), write_paths=[], checkin=True,
+                            message_origin="wake", max_output_tokens=300,
+                            session_path=self.job_dir / "sessions" / "second.json")
+        self.assertEqual(self.runner.run(again, "[Scheduled check-in] again").error, "output-token limit reached (300)")
+
+    def test_the_background_slot_waits_for_people_and_gives_way(self) -> None:
+        model = model_cfg(provider_cfg("http://127.0.0.1:1", max_concurrency=1))
+        slots = loop.background_slots(model.provider.name, 1)
+        ctx, events = self.ctx(model)
+        slots._add_waiter(1)        # a person is waiting for the model: the check-in never starts
+        with loop._background(ctx, retry=0.01, wait=0.05) as taken:
+            self.assertFalse(taken)
+        slots._add_waiter(-1)
+        with loop._background(ctx, retry=0.01, wait=1) as taken:
+            self.assertTrue(taken)
+            self.assertTrue(slots.held())
+            slots._add_waiter(1)    # a person arrives mid-turn: the watcher cancels the run
+            self.assertTrue(wait_until(ctx.cancel.is_set, 5))
+            slots._add_waiter(-1)
+        self.assertFalse(slots.held(), "the slot is given back")
+        self.assertIn("gives way", json.dumps(events.of("log")))
+        other, _ = self.ctx(model)
+        with loop.active_run(model.provider.name):   # another harness run on the provider, between calls
+            with loop._background(other, retry=0.01, wait=0.05) as taken:
+                self.assertFalse(taken)
+
+    def test_a_check_in_stops_when_seraphina_is_stopped(self) -> None:
+        """S43: the WakeContext's stopped() (the PAUSED file) ends a check-in run, and one never starts."""
+        model = model_cfg(provider_cfg("http://127.0.0.1:1", max_concurrency=1))
+        stopped = threading.Event()
+        wake = types.SimpleNamespace(stopped=stopped.is_set)
+        ctx, events = self.ctx(model, wake=wake)
+        with loop._background(ctx, retry=0.01, wait=1) as taken:
+            self.assertTrue(taken)
+            stopped.set()
+            self.assertTrue(wait_until(ctx.cancel.is_set, 5))
+        self.assertIn("Seraphina was stopped", json.dumps(events.of("log")))
+        again, _ = self.ctx(model, wake=wake)
+        with loop._background(again, retry=0.01, wait=1) as taken:
+            self.assertFalse(taken, "a stopped Seraphina's check-in never takes the slot")

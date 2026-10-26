@@ -173,6 +173,27 @@ class HousekeepingManager:
                                  evidence=[{"kind": "wake", "ref": str(run), "detail": "the wake ran"}])
         return tracker.decorate(item or self.store().ledger().get(item_id), self.scope, now=utc_now())
 
+    def record_decline(self, persona: str, wake: str, run: str, item_id: str | None = None, *, title: Any = "",
+                       taint: Iterable[str] = ()) -> dict:
+        """A persona's considered refusal (Wake & Messages operator decision d), never a failure: the wake's own item
+        is verified with the run as its receipt and the note "declined"; a wake without one gets a decision item,
+        owned by the persona and closed the same way. Never served to an agent token (persona_written)."""
+        name = str(persona or "")
+        if not tracker.OWNER_RE.fullmatch(f"persona:{name}"):
+            raise ValueError(f"invalid persona name {persona!r}")
+        taint = sorted({str(t) for t in taint if t in tracker.TAINTS})
+        evidence = [{"kind": "wake", "ref": str(run), "detail": "declined: a considered refusal"}]
+        with self.transaction() as ledger:
+            if item_id is None:
+                item = ledger.add(tracker.FACTORY, title or f"{name} declined a request ({wake})", kind="decision",
+                                  owner=f"persona:{name}", verifier=tracker.CODE, status="open", taint=taint,
+                                  links={"wake": wake}, source={"type": "persona", "agent": f"persona:{name}",
+                                                                "wake": wake, "declined": True})
+                item_id = item["id"]
+            item = ledger.change(tracker.CODE, item_id, "verified", note="declined: a considered refusal",
+                                 evidence=evidence)
+        return tracker.decorate(item or self.store().ledger().get(item_id), self.scope, now=utc_now())
+
     def drop_wake_item(self, item_id: str, reason: str = "the persona cancelled its wake") -> dict:
         """The persona cancelled its own pending wake: code drops the item with the reason."""
         with self.transaction() as ledger:

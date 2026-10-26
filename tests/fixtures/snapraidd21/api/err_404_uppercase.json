@@ -1,0 +1,14 @@
+{
+ "body": null,
+ "headers": {
+  "Connection": "close",
+  "Content-Type": "application/json"
+ },
+ "json": {
+  "message": "REST endpoint paths must be lowercase",
+  "success": false
+ },
+ "method": "GET",
+ "path": "/snapraid/v1/STATE",
+ "status": 404
+}

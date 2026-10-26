@@ -50,8 +50,11 @@ Opus and Sonnet also use the server-side refusal fallback (`fallbacks:
 Needs `ANTHROPIC_API_KEY`.
 
 **nanogpt**: Claude through NanoGPT's OpenAI-format API, with one
-`NANOGPT_API_KEY`. The model ids are guesses (`claude-opus-5-5` and so on), so
-check them against `https://nano-gpt.com/api/v1/models`. Thinking knobs are
+`NANOGPT_API_KEY`. The model ids are the ones NanoGPT's public list
+(`https://nano-gpt.com/api/v1/models`) gives: `anthropic/claude-opus-5.5`,
+`anthropic/claude-sonnet-5.5` and `anthropic/claude-haiku-5.5` (read on
+2026-10-25; the dashed `claude-opus-5-5` form is not on it). Which of them your
+key may use is unchecked: `factory doctor` reads your key's list. Thinking knobs are
 left out because how NanoGPT maps them is unverified. If NanoGPT supports
 `reasoning_effort`, add it to `extra_body`.
 
@@ -100,7 +103,11 @@ DeepSeek V4 Pro, and the ux, ui and code reviewers use DeepSeek V4 Flash, so
 they run in parallel instead of queueing on the one local slot. VRAM is
 shared: you can run gpt-oss-120b or two small per-GPU models (the `mixed`
 preset), but not both at once. On vLLM or OpenRouter, use
-`extra_body: {"reasoning_effort": "high"}` instead.
+`extra_body: {"reasoning_effort": "high"}` instead. V4 Flash is the builder's
+DeepSeek family, so the code lens runs on gpt-oss-120b (its
+`independent_alternate`); the ux and ui lenses stay on V4 Flash, in parallel,
+by choice (`"independent_alternate": false`), and their runs say the shared
+family was accepted.
 
 **nanogpt-value**: all API, through NanoGPT with one `NANOGPT_API_KEY`, for
 value without economising the quality gates (DESIGN §23). Claude runs on
@@ -116,9 +123,12 @@ may reject it. Each placement carries its reason.
 | builder on CHANGES | `gpt-sol-high`, then `gpt-sol-xhigh` (GPT-6.1 Sol) | escalate, don't retry |
 | repo-scout | `mimo` (MiMo V2.6 Pro, $0.43/$0.87) | cost |
 | reviewer-security | `qwen-max` (Qwen3.8 Max) | stage fit: Qwen family, not the builder's |
-| reviewer-code | `gpt-sol-high` | stage fit: OpenAI family |
+| reviewer-code | `gpt-sol-high`; independent alternate `mimo` (MiMo V2.6 Pro, Xiaomi: no other lens's family) while the builder is on GPT | stage fit: OpenAI family |
 | reviewer-ux | `claude-sonnet` (Sonnet 5.5, effort medium) | stage fit: Anthropic family |
 | reviewer-ui | `gemini-argon` (Gemini 4 Argon) | stage fit: Google family |
+
+The approver's independent alternate is `gpt-sol-xhigh`, for a per-run route
+that puts the builder on Claude.
 
 **local-first**: the owner's agreed routing for their server. Servers are
 `127.0.0.1` placeholders: `tabby` (`:5000`, TabbyAPI, `kind: "tabby"`),
@@ -150,11 +160,12 @@ at a time, and the routing copes with whichever it is:
 | agent | model | reason |
 | ----- | ----- | ------ |
 | builder, coder, repo-scout | `flash-next` (local) | cost: the most tokens, free locally |
-| reviewer-security | `flash-next` (local) | stage fit: a security fine-tune, findings stay local |
-| reviewer-code | `gpt-sol-high` | stage fit |
+| reviewer-security | `flash-next` (local); `independent_alternate: false` (it shares the builder's model by choice) | stage fit: a security fine-tune, findings stay local |
+| reviewer-code | `gpt-sol-high`; independent alternate `muse-spark` (Muse Spark 1.3) while the builder is on GPT | stage fit |
 | reviewer-ux | `claude-sonnet` | stage fit |
 | reviewer-ui | `gemini-argon` | stage fit |
-| spec-writer, approver, lead | `claude-opus` (Opus 5.5 high) | capability |
+| approver | `claude-opus` (Opus 5.5 high); independent alternate `gpt-sol-xhigh` | capability |
+| spec-writer, lead | `claude-opus` (Opus 5.5 high) | capability |
 
 Needs `TABBY_API_KEY`, `STRATA_API_KEY` (or `/etc/ai-stack/strata.env`) and
 `NANOGPT_API_KEY`. The NanoGPT model ids are from NanoGPT's model pages where
@@ -172,19 +183,36 @@ used when a job or chat names none; `""` means no profile. A chat keeps the
 profile it was created with, and repo-scout always runs with the default
 profile, so a profile's `coder` and `repo-scout` placements apply to new chats
 and scouting once it is the default (or, for a chat, named when you create
-it). Each placement is `{model, effort?, escalate?, reason}`. None of them
-economises the gates: the spec, approver and lead stay on Opus 5.5 high, and
-the four lenses come from four model families.
+it). Each placement is `{model, effort?, escalate?, reason,
+independent_alternate?}`. None of them economises the gates: the spec and
+lead stay on Opus 5.5 high, the approver too except in `best`, where every
+model the builder runs on is Claude and the approver runs on its
+independent alternate, GPT-6.1 Sol xhigh, every round; and the four lenses
+come from four model families.
 
-The independence has one limit, which the agreed lists accept: once the
-builder escalates, its rung can be a judge's model. In `local-first`,
-`balanced`, `thrifty` (its third rung) and `nanogpt-value` the rung is
-GPT-6.1 Sol, the code lens, which then reviews code it wrote; in `best` the
-rung is Opus 5.5, which also approves. In `local-first` and `thrifty` the
-security lens is the builder's own Flash-Next (its security fine-tune, a
-stage-fit choice). `fastest` keeps every judge off the builder's models.
-DESIGN §23 has the table; route the code lens (or `best`'s approver)
-elsewhere if you want independence on every round.
+**The independence guard.** Escalation, an overflow or a profile can put the
+builder on a judge's model family (a judge is a reviewer or the approver).
+When it does, that judge runs on its `independent_alternate` for the round:
+in `local-first`, `balanced` and `thrifty` the code lens moves to Muse Spark
+1.3 (Meta) while the builder is on GPT-6.1 Sol, in `balanced` the security
+lens (Qwen3.8 Max) moves to Muse Spark 1.3 while the builder is on the local
+Qwen, in `best` the approver moves to GPT-6.1 Sol xhigh while the builder is
+on Claude, and in `nanogpt-value` the code lens moves to MiMo V2.6 Pro, a
+family no other lens uses, so the four lenses stay four families. The
+approver is compared with every round's builder (it decides on the whole
+branch), a reviewer with its own round's, and a chat hand-off's code with
+the models the chat ran on. In `local-first`, `thrifty` and `hybrid` the
+security lens keeps the builder's own Flash-Next (its security fine-tune, a
+stage-fit choice: findings stay local) with `"independent_alternate":
+false`, so those rounds run with the shared family accepted, and the job,
+the run and its event say so (`independence: "accepted"`, naming the shared
+model); `"reduced"` is kept for a judge with no way out that nobody chose.
+`fastest` keeps every judge off the builder's families. A family is a model
+entry's `family` label, else the model name in its model id (`openai/…` is
+openai, `claude-…` anthropic, a `…Qwen3.8…` fine-tune qwen, and
+`hf.co/<user>/Qwen2.5-…-GGUF` qwen: a hub or quantizer namespace is not a
+family); label an entry whose id names no family (such as `strata`). DESIGN
+§23 has the table.
 
 | profile (local-first) | what changes |
 | --------------------- | ------------ |

@@ -96,7 +96,7 @@ from typing import IO, Any, Callable, Iterable
 
 from ..config import deep_merge
 from ..events import env_secret_values, redact, truncate
-from ..harness.sandbox import is_secret_name
+from ..harness.sandbox import is_secret_name, without_new_privileges
 from ..runners import AgentRun, RunContext, Runner
 
 OUTPUT_LINE_CHARS = 2000
@@ -420,8 +420,9 @@ class CliRunner(Runner):
                 argv = [*argv, *self._hook_settings(ctx)]
             except (OSError, ValueError) as exc:   # the run goes on without its hooks
                 ctx.emit("agent.output", {"line": f"[factory] item hooks not set: {type(exc).__name__}: {exc}"})
+        started = without_new_privileges(argv, env.get("PATH"), ctx.cwd)   # outside bwrap: no setuid rights (§17)
         try:
-            proc = subprocess.Popen(argv, cwd=str(ctx.cwd), env=env, stdin=subprocess.DEVNULL,
+            proc = subprocess.Popen(started, cwd=str(ctx.cwd), env=env, stdin=subprocess.DEVNULL,
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     start_new_session=True)
         except FileNotFoundError:

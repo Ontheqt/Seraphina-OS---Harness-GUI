@@ -10,6 +10,7 @@
   "conventions": {
     "variables": {
       "MF": "Model Factory tool home on the machine, e.g. /opt/seraphina/model-factory (venvs/, llama.cpp/, exllamav3/, tabbyAPI/, recipes/, locks/, help/)",
+      "SF": "the harness checkout (this repository), where bin/factory is",
       "MFS": "the factory's gate and step scripts (prototypes listed under 'prototypes'; to be ported into the Harness)",
       "LLAMA": "$MF/llama.cpp (source tree: convert_hf_to_gguf.py, convert_lora_to_gguf.py, scripts/, models/templates/)",
       "LCPP": "$MF/llama.cpp/build-cuda/bin on GPU machines, $MF/llama.cpp/build/bin on CPU",
@@ -1692,7 +1693,7 @@
         "python3 -I $MFS/probe_toolcall.py --base-url http://127.0.0.1:18431/v1 --model $NAME-q4km --repeats 3 --min-pass 0.9 --out $WORK/probe.json",
         "python3 -I $MFS/server_probe.py --base-url http://127.0.0.1:18431 --model $NAME-q4km --tool-probe --min-tps 20 --json $WORK/probe-tps.json",
         "python3 -I $MFS/probe.py http://127.0.0.1:18931 $WORK/probe-full.json   # feasibility probe: /health, /v1/models, plain chat, /apply-template, tools at temperature 0, tool-result round trip",
-        "FACTORY_CONFIG=$WORK/cand-config.json /home/user/software-factory/bin/factory models test <key>   # plain + tool-call probe; exit 1 unless it answers AND calls the probe tool",
+        "FACTORY_CONFIG=$WORK/cand-config.json $SF/bin/factory models test <key>   # plain + tool-call probe; exit 1 unless it answers AND calls the probe tool",
         "python3 $LLAMA/scripts/tool_bench.py run --n 10 --temp 0 --temp 1 ...   # llama.cpp's heatmap benchmark (needs uv + pytest/pandas/matplotlib; not run)"
       ],
       "inputs": [
@@ -1775,12 +1776,12 @@
       "title": "Agentic end-to-end: the Software Factory's own todo job on the candidate",
       "plain": "The most realistic test for this owner: route the Software Factory's agents to the candidate and have it complete the same small 'clear completed todos' feature that the factory's scripted end-to-end test uses. It passes only if the job finishes, the tests pass and the tool protocol stays clean.",
       "tool": "software-factory bin/factory (run, logs) with a provider config pointing at the candidate",
-      "tool_version": "/home/user/software-factory (v1 tree)",
+      "tool_version": "the harness checkout, $SF (v1 tree)",
       "commands": [
-        "FACTORY_CONFIG=$WORK/cand-config.json /home/user/software-factory/bin/factory doctor",
-        "FACTORY_CONFIG=$WORK/cand-config.json /home/user/software-factory/bin/factory run todo-fixture 'Add clearCompleted() to src/todo.js with a test, and a Clear completed button' --delivery branch",
+        "FACTORY_CONFIG=$WORK/cand-config.json $SF/bin/factory doctor",
+        "FACTORY_CONFIG=$WORK/cand-config.json $SF/bin/factory run todo-fixture 'Add clearCompleted() to src/todo.js with a test, and a Clear completed button' --delivery branch",
         "git -C <fixture> checkout <job-branch> && node --test",
-        "FACTORY_CONFIG=$WORK/cand-config.json /home/user/software-factory/bin/factory logs <job>"
+        "FACTORY_CONFIG=$WORK/cand-config.json $SF/bin/factory logs <job>"
       ],
       "inputs": [
         "the todo fixture (tests/e2e/harness.py FIXTURE_FILES: src/todo.js, test/todo.test.js, index.html, src/app.js, package.json)",
@@ -2431,7 +2432,7 @@
       "title": "Offer to route agents to the new model (Harness config + Test probes)",
       "plain": "A model only helps once agents can use it. The factory adds a provider and a model entry to the Harness config through the same validated save path the GUI uses, runs the factory's own Test probes (a plain reply and a tool call), and only then offers the user 'route agents to it'. Tiers and agents move only after the user accepts and both probes pass.",
       "tool": "Software Factory settings.update_config + `factory models test` + `factory doctor --probe`",
-      "tool_version": "/home/user/software-factory (run read-only here with FACTORY_CONFIG pointing at a scratch config)",
+      "tool_version": "the harness checkout, $SF (run read-only here with FACTORY_CONFIG pointing at a scratch config)",
       "commands": [
         "FACTORY_CONFIG=~/.config/software-factory/config.json python3 - <<'EOF'\nfrom swfactory.config import Config\nfrom swfactory.settings import update_config\nupdate_config(Config.load(), {\"providers\": {\"mf-gpu0\": {\"type\": \"openai\", \"base_url\": \"http://127.0.0.1:18081/v1\", \"api_key_env\": \"LLAMA_KEY\", \"api_key_file\": \"/etc/ai-stack/llama.env\", \"max_concurrency\": 1, \"concurrency_scope\": \"run\", \"timeout\": 1800}}, \"models\": {\"<key>\": {\"provider\": \"mf-gpu0\", \"model\": \"<served id>\", \"max_tokens\": 16384, \"context_tokens\": 262144, \"keep_reasoning\": false, \"stream\": true, \"extra_body\": {}}}})\nEOF",
         "factory models            # key, local/api, provider/model, ctx",
@@ -2577,7 +2578,7 @@
         "exported merged-16bit / gguf / lora folders",
         "sha256 of the dry-run resolved config (provenance)"
       ],
-      "resources": "Unsloth docs minimum VRAM (from search results; the page could not be fetched): QLoRA 7B ~5 GB, 8B ~6 GB, 70B ~41 GB, 405B ~237 GB; LoRA 16-bit 7B ~19 GB, 8B ~22 GB, 70B ~164 GB; more with longer context or batch. On 2x3090: QLoRA up to about 32B on one card; 70B QLoRA only split over both; 16-bit LoRA at 8B or below. Not measured here.",
+      "resources": "Unsloth docs minimum VRAM (from search results; the page could not be fetched): QLoRA 7B ~5 GB, 8B ~6 GB, 14B ~8.5 GB, 32B ~26 GB, 70B ~41 GB, 405B ~237 GB; LoRA 16-bit 7B ~19 GB, 8B ~22 GB, 14B ~33 GB, 32B ~76 GB, 70B ~164 GB; more with longer context or batch (the 14B and 32B rows read from search results on 2026-10-25). On 2x3090: QLoRA up to about 14B on one card with room to spare; a dense 27B may fit on one card (Unsloth's guide: 24 GB), but the sources conflict and a dry run on the box decides (docs/model-factory/LINEAGE.md section 7.2); 32B and 70B QLoRA only split over both; 16-bit LoRA at 8B or below on one card. MoE: docs/model-factory/LINEAGE.md section 7.2. Not measured here.",
       "checks": [
         "`unsloth train --dry-run` exit 0; sha256 of the printed resolved YAML stored",
         "`unsloth doctor --gpus` exit 0 before the run",
@@ -3606,7 +3607,7 @@
       "what": "The PASS path of the tool-call probe and the agentic todo job with the owner's real instruct models, to set realistic pass-rate floors",
       "commands": [
         "python3 -I $MFS/probe_toolcall.py --base-url <url> --model <id> --repeats 3 --min-pass 0.9",
-        "FACTORY_CONFIG=<cand-config.json> /home/user/software-factory/bin/factory run todo-fixture '<feature>' --delivery branch"
+        "FACTORY_CONFIG=<cand-config.json> $SF/bin/factory run todo-fixture '<feature>' --delivery branch"
       ],
       "pass": "real models pass; quants drop no more than 10 points vs base",
       "steps": [

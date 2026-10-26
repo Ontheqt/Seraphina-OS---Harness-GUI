@@ -10,6 +10,7 @@ import http.client
 import io
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -21,6 +22,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+from swfactory import personas
 from swfactory import server as srv
 from swfactory.agentdefs import AgentDef
 from swfactory.config import Config
@@ -1586,6 +1588,31 @@ class PathValidationTest(ServerTestCase):
                 self.assert_error(response, 400, "invalid")
         self.assertEqual(self.factory.calls, [])
 
+    def test_view_modules_are_served_from_web_views(self) -> None:
+        """The GUI's view modules (web/views/<area>.js, loaded by index.html) are served like app.js; only
+        JavaScript, only one level, never a symlink and never a views folder that is itself a symlink."""
+        views = self.web / "views"
+        views.mkdir()
+        (views / "tracker.js").write_text("SF.registerView({});")
+        (views / "notes.md").write_text("not served")
+        (views / "deep").mkdir()
+        (views / "deep" / "x.js").write_text("deep")
+        os.symlink(self.tmp / "secret.js", views / "link.js")
+        response = self.request("GET", "/views/tracker.js")
+        self.assertEqual((response.status, response.headers["Content-Type"]), (200, "text/javascript; charset=utf-8"))
+        self.assertEqual(response.text, "SF.registerView({});")
+        self.assertNotEqual(response.headers["Content-Security-Policy"], HTML_CSP)
+        self.assertEqual(self.request("GET", "/views/tracker.js", token=None).status, 200, "assets are public, like app.js")
+        for path in ("/views/notes.md", "/views/deep/x.js", "/views/link.js", "/views/../secret.js", "/views/%2e%2e/secret.js",
+                     "/views/..%2Fsecret.js", "/views/", "/views", "/views/.hidden.js", "/other/tracker.js", "/views/index.html"):
+            with self.subTest(path=path):
+                response = self.request("GET", path)
+                self.assertEqual(response.status, 404, response.body[:200])
+                self.assertNotIn(b"secret", response.body)
+        shutil.rmtree(views)
+        os.symlink(self.tmp, views)   # a views folder that points elsewhere is not followed
+        self.assertEqual(self.request("GET", "/views/secret.js").status, 404)
+
     def test_static_paths_stay_in_the_web_folder(self) -> None:
         for path in ("/..%2Fsecret.js", "/../secret.js", "/%2e%2e/secret.js", "/.hidden", "/link.js",
                      "/notes.md", "/sub/style.css", "/server.py", "/index.html%00", "/style.css/", "/a..css"):
@@ -1663,6 +1690,14 @@ class StaticTest(ServerTestCase):
         for script in srv._INLINE_SCRIPT_RE.findall(login.body):  # the login page's own script may run
             digest = base64.b64encode(hashlib.sha256(script).digest()).decode()
             self.assertIn(f"'sha256-{digest}'", login.headers["Content-Security-Policy"])
+        # Every script and stylesheet the page loads is served, the view modules in web/views/ included.
+        assets = re.findall(r'<(?:script|link)[^>]+(?:src|href)="(/[^"]+)"', response.text)
+        self.assertIn("/views/tracker.js", assets)
+        for path in assets:
+            with self.subTest(asset=path):
+                asset = self.request("GET", path, port=server.server_port)
+                self.assertEqual(asset.status, 200, asset.body[:200])
+                self.assertEqual(asset.body, (srv.WEB_DIR / path[1:]).read_bytes())
 
 
 class EventStreamTest(ServerTestCase):
@@ -2305,6 +2340,77 @@ class TrackerRefinementRoutesTest(RealFactoryCase):
         self.assertEqual(done.json()["item"]["status"], "done")
 
 
+class LookAroundRoutesTest(RealFactoryCase):
+    """The look-around for model servers runs only when the owner asks: GET /api/setup and GET /api/doctor (what
+    the GUI reads on load, every 15 s on the Grid and for the Doctor badge) never call listeners.model_servers;
+    POST /api/setup/look-around calls it exactly once per request, for the master token only, and not again too
+    soon (429 with Retry-After)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.calls: list[set] = []
+
+        def finder(skip_ports=frozenset(), *args: Any, **kwargs: Any) -> list[dict]:
+            self.calls.append(set(skip_ports))
+            return [{"address": "127.0.0.1", "port": 5005, "status": 200, "ids": ["qwen3.8-flash"]}]
+        patcher = mock.patch("swfactory.listeners.model_servers", finder)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.moment = [1000.0]
+        self.factory.clock = lambda: self.moment[0]
+        with socket.socket() as sock:   # a configured local server that is down: the doctor used to look then
+            sock.bind(("127.0.0.1", 0))
+            down = sock.getsockname()[1]
+        patched = self.request("POST", "/api/config", {
+            "providers": {"tabby": {"type": "openai", "base_url": f"http://127.0.0.1:{down}/v1", "api_key_env": None}},
+            "models": {"sonnet": {"provider": "tabby", "model": "x"}}})
+        self.assertEqual(patched.status, 200, patched.body)
+
+    def test_reading_the_setup_status_and_the_doctor_never_looks(self) -> None:
+        for _ in range(3):
+            host = self.request("GET", "/api/setup").json()["host"]
+            self.assertEqual(set(host), {"key_dirs", "listening"})
+        doctor_checks = {c["name"]: c for c in self.request("GET", "/api/doctor").json()["checks"]}
+        self.assertIn("down: tabby", doctor_checks["local servers"]["detail"])
+        self.assertIn('press "Look for model servers" on the setup page', doctor_checks["local servers"]["detail"])
+        self.assertNotIn("model servers here", doctor_checks)
+        self.assertEqual(self.calls, [], "nothing the GUI reads by itself looks for model servers")
+
+    def test_the_owner_s_look_runs_once_per_request_and_is_rate_limited(self) -> None:
+        looked = self.request("POST", "/api/setup/look-around", {})
+        self.assertEqual(looked.status, 200, looked.body)
+        result = looked.json()
+        self.assertEqual(self.calls, [{8765, self.port}], "once, the harness's own ports skipped")
+        self.assertEqual(result["model_servers"], [{"url": "http://127.0.0.1:5005/v1", "port": 5005, "status": 200,
+                                                    "ids": ["qwen3.8-flash"]}])
+        self.assertIn("Sent one GET /v1/models, without a key, to each program listening on this machine",
+                      result["note"])
+        self.assertRegex(result["at"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+        self.moment[0] += 1
+        again = self.request("POST", "/api/setup/look-around", {})
+        self.assert_error(again, 429, "You can look again in 29 seconds")
+        self.assertEqual(again.headers["Retry-After"], "29")
+        self.assertEqual(len(self.calls), 1, "a double click looks once")
+        host = self.request("GET", "/api/setup").json()["host"]
+        self.assertEqual((host["model_servers"], host["model_servers_at"]), (result["model_servers"], result["at"]),
+                         "the setup status shows the owner's last look, with when it was taken")
+        self.request("GET", "/api/doctor")
+        self.assertEqual(len(self.calls), 1)
+        self.moment[0] += 29
+        self.assertEqual(self.request("POST", "/api/setup/look-around", {}).status, 200)
+        self.assertEqual(len(self.calls), 2, "a later ask looks again, once")
+        self.assert_error(self.request("GET", "/api/setup/look-around"), 405)
+        self.assert_error(self.request("POST", "/api/setup/look-around", {}, token=None), 401)
+        self.assertEqual(len(self.calls), 2)
+
+    def test_an_agent_token_cannot_look(self) -> None:
+        token = self.request("POST", "/api/agent-tokens", {"name": "qwen-code"}).json()["token"]
+        self.assert_error(self.request("POST", "/api/setup/look-around", {}, token=token), 403,
+                          "valid only for the item routes")
+        self.assert_error(self.request("GET", "/api/setup", token=token), 403)
+        self.assertEqual(self.calls, [])
+
+
 class RunServerTest(unittest.TestCase):
     """run_server in the main thread: SIGTERM/SIGINT stop it, stop the factory and close event streams."""
 
@@ -2372,3 +2478,308 @@ class RunServerTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MessagesRoutesTest(RealFactoryCase):
+    """Wake & Messages (DESIGN §34): the event-source routes' own authentication (S10), and the inbox, notify and
+    stop routes behind the master token."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.server.hook_fail_delay = 0.01
+
+    def add_hook(self, **body: Any) -> str:
+        response = self.request("POST", "/api/notify/hooks", {"name": "backup-script", "events": ["backup.failed",
+                                                                                                 "backup.ok"],
+                                                             "subjects": ["nightly"], **body})
+        self.assertEqual(response.status, 201, response.body)
+        return response.json()["token"]
+
+    def hook(self, body: Any, token: str | None, path: str = "/api/hooks/event", **kwargs: Any) -> Response:
+        return self.request("POST", path, body, token=token, **kwargs)
+
+    def test_a_hook_token_reports_an_event_and_only_its_digest_is_stored(self) -> None:
+        token = self.add_hook()
+        saved = self.config.path.read_text()
+        self.assertNotIn(token, saved)
+        self.assertIn(hashlib.sha256(token.encode()).hexdigest(), saved)
+        response = self.hook({"kind": "backup.failed", "subject": "nightly"}, token)
+        self.assertEqual(response.status, 202, response.body)
+        message = response.json()["message"]
+        self.assertRegex(message, r"^M-\d{6}$")
+        inbox = self.request("GET", "/api/messages").json()
+        self.assertEqual(inbox["messages"][0]["body"], "The nightly backup failed. See the cockpit for what to do.")
+        self.assertEqual(self.hook({"kind": "backup.failed", "subject": "nightly"}, token).json(),
+                         {"message": None, "deduped": True})
+
+    def test_the_master_token_a_query_token_and_unknown_tokens_are_refused(self) -> None:
+        self.add_hook()
+        self.assert_error(self.hook({"kind": "backup.failed"}, TOKEN), 401, "master token is not accepted")
+        self.assert_error(self.hook({"kind": "backup.failed"}, "wrong-token-" * 3), 401)
+        self.assert_error(self.hook({"kind": "backup.failed"}, None), 401)
+        self.assert_error(self.hook({"kind": "backup.failed"}, None, path="/api/hooks/event?token=abc"), 400,
+                          "never in the URL")
+        self.assertEqual(self.request("GET", "/api/hooks/event", token=None).status, 405)
+        notices = self.request("GET", "/api/messages?kind=notice").json()["messages"]
+        self.assertIn("wrong event-source token", notices[0]["body"])
+
+    def test_scope_size_budget_and_idempotency(self) -> None:
+        token = self.add_hook(per_minute=3)
+        self.assert_error(self.hook({"kind": "service.down"}, token), 403, "may not report service.down")
+        self.assert_error(self.hook(None, token, raw=b'{"kind": "backup.ok", "detail": "' + b"x" * 2100 + b'"}'), 413)
+        first = self.hook({"kind": "backup.failed"}, token, headers={"Idempotency-Key": "run-7"})
+        again = self.hook({"kind": "backup.failed"}, token, headers={"Idempotency-Key": "run-7"})
+        self.assertEqual(first.json(), again.json())
+        limited = self.hook({"kind": "backup.ok"}, token)
+        self.assertEqual(limited.status, 429)
+        self.assertGreaterEqual(int(limited.headers["Retry-After"]), 1)
+
+    def test_wrong_tokens_never_block_a_valid_one(self) -> None:
+        token = self.add_hook()
+        for _ in range(15):
+            self.hook({"kind": "backup.failed"}, "x" * 43)
+        self.assertEqual(self.hook({"kind": "backup.ok", "subject": "nightly"}, token).status, 202)
+
+    def test_the_host_check_still_applies(self) -> None:
+        token = self.add_hook()
+        self.assert_error(self.hook({"kind": "backup.failed"}, token, host="evil.example"), 403, "host not allowed")
+
+    def test_rotate_and_delete(self) -> None:
+        token = self.add_hook()
+        rotated = self.request("POST", "/api/notify/hooks/backup-script/rotate").json()
+        self.assertEqual(self.hook({"kind": "backup.failed"}, token).status, 401)
+        self.assertEqual(self.hook({"kind": "backup.failed"}, rotated["token"]).status, 202)
+        self.assertEqual(self.request("POST", "/api/notify/hooks/backup-script/delete").status, 200)
+        self.assertEqual(self.hook({"kind": "backup.failed"}, rotated["token"]).status, 401)
+        self.assertEqual(self.request("GET", "/api/notify/hooks").json()["hooks"], [])
+
+    def test_inbox_routes_need_the_session(self) -> None:
+        for method, path in (("GET", "/api/messages"), ("GET", "/api/notify"), ("POST", "/api/notify/events"),
+                             ("POST", "/api/wakes/control"), ("GET", "/api/notify/terms")):
+            self.assertEqual(self.request(method, path, {} if method == "POST" else None, token=None).status, 401,
+                             path)
+        self.assertEqual(self.request("GET", "/api/messages/M-12").status, 400)
+
+    def test_owner_event_ack_and_the_events_carry_no_text(self) -> None:
+        response = self.request("POST", "/api/notify/events", {"kind": "backup.failed", "subject": "nightly",
+                                                               "detail": "disk sdb1 is failing"})
+        self.assertEqual(response.status, 202)
+        message = response.json()["message"]
+        detail = self.request("GET", f"/api/messages/{message}").json()
+        self.assertIn("disk sdb1 is failing", detail["message"]["body"])
+        acked = self.request("POST", f"/api/messages/{message}/ack").json()["message"]
+        self.assertFalse(acked["unread"])
+        dumped = json.dumps([event.to_dict() for event in self.bus.since(0)])
+        self.assertIn("notify.queued", dumped)
+        self.assertNotIn("sdb1", dumped)
+
+    def test_stop_and_restart_and_the_acknowledgement(self) -> None:
+        self.assertIsNotNone(self.request("POST", "/api/wakes/control", {"action": "pause"}).json()["paused"])
+        self.assertTrue((self.data / "wakes" / "PAUSED").exists())
+        self.assertIsNone(self.request("POST", "/api/wakes/control", {"action": "resume"}).json()["paused"])
+        self.assert_error(self.request("POST", "/api/wakes/acknowledge", {"text": "ok"}), 400, "type exactly")
+        sentence = "I understand my AI agents can read my messages and send them anywhere"
+        self.assertTrue(self.request("POST", "/api/wakes/acknowledge", {"text": sentence}).json()["acknowledged_at"])
+        self.assertIsNone(self.request("POST", "/api/wakes/acknowledge", {"withdraw": True}).json()["acknowledged_at"])
+
+    def test_the_sensitive_words_need_the_sandbox_and_a_channel_needs_it_too(self) -> None:
+        self.assert_error(self.request("POST", "/api/notify/terms", {"text": "diabetes"}), 400, "sandbox")
+        self.assertTrue(self.request("POST", "/api/notify/terms", {"none": True}).json()["none_declared"])
+        patch = {"wakes": {"timezone": "Europe/London"},
+                 "notify": {"channels": {"telegram": {"type": "telegram", "token_env": "SERAPHINA_TELEGRAM_BOT_TOKEN",
+                                                      "model_text": "never"}}}}
+        self.assert_error(self.request("POST", "/api/config", patch), 400, "phone messages stay off")
+        self.assertEqual(self.request("POST", "/api/config", {**patch, "harness": {"sandbox": "bwrap"}}).status, 200)
+        channels = self.request("GET", "/api/notify/channels").json()["channels"]
+        self.assertEqual([(c["name"], c["privacy"]) for c in channels], [("telegram", "third_party")])
+
+
+class HookLimiterTest(unittest.TestCase):
+    def test_per_minute_and_per_day(self) -> None:
+        now = [1000.0]
+        day = ["2026-10-21"]
+        limiter = srv.HookLimiter(monotonic=lambda: now[0], today=lambda: day[0])
+        self.assertEqual([limiter.take("a", 2, 3) for _ in range(3)][:2], [None, None])
+        self.assertGreater(limiter.take("a", 2, 3) or 0, 0)
+        self.assertIsNone(limiter.take("b", 2, 3), "each source has its own budget")
+        now[0] += 61
+        self.assertIsNone(limiter.take("a", 2, 3))
+        self.assertEqual(limiter.take("a", 5, 3), 3600.0, "the day's budget is spent")
+        day[0] = "2026-10-22"
+        self.assertIsNone(limiter.take("a", 5, 3))
+
+
+class WakeRoutesTest(RealFactoryCase):
+    """Wake & Messages W2/W3: /api/hooks/wake (S10), the S46 sandbox precondition on the settings patch, and the
+    session on every new route."""
+
+    PATCH = {"harness": {"sandbox": "bwrap"},
+             "wakes": {"enabled": True, "timezone": "Europe/London", "time_sync": {"require": False},
+                       "personas": {"seraphina": {"enabled": True, "model": None}}}}
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.server.hook_fail_delay = 0.01
+
+    def enable(self) -> None:
+        response = self.request("POST", "/api/config", self.PATCH)
+        self.assertEqual(response.status, 200, response.body)
+
+    def add_hook(self, **body: Any) -> str:
+        response = self.request("POST", "/api/notify/hooks", {"name": "home-assistant", "may": ["wake"],
+                                                             "personas": ["seraphina"], **body})
+        self.assertEqual(response.status, 201, response.body)
+        return response.json()["token"]
+
+    def wake(self, body: Any, token: str | None, path: str = "/api/hooks/wake", **kwargs: Any) -> Response:
+        return self.request("POST", path, body, token=token, **kwargs)
+
+    def test_personas_need_the_sandbox_s46(self) -> None:
+        no_sandbox = {"wakes": self.PATCH["wakes"]}
+        self.assert_error(self.request("POST", "/api/config", no_sandbox), 400, "stay off")
+        chat_wakes = {"wakes": {"chat_wakes": {"enabled": True}}}
+        self.assert_error(self.request("POST", "/api/config", chat_wakes), 400, "stay off")
+        self.enable()
+
+    def test_local_attested_cannot_be_set_through_the_config(self) -> None:
+        self.enable()
+        patch = {"wakes": {"servers": {"local": {"local_attested": True}}}}
+        self.assertEqual(self.request("POST", "/api/config", patch).status, 400)
+        self.assertNotIn("local_attested", self.config.path.read_text())
+
+    def test_the_hook_wake_route_is_scoped_sized_and_idempotent(self) -> None:
+        self.enable()
+        token = self.add_hook()
+        self.assert_error(self.wake({"persona": "seraphina"}, TOKEN), 401, "master token is not accepted")
+        self.assert_error(self.wake({"persona": "seraphina"}, None, path="/api/hooks/wake?token=" + token), 400,
+                          "never in the URL")
+        self.assert_error(self.wake(None, token, raw=b'{"persona": "seraphina", "reason": "' + b"x" * 2100 + b'"}'),
+                          413)
+        self.assert_error(self.wake({"persona": "kate"}, token), 403, "may not wake that persona")
+        self.assert_error(self.wake({"persona": "seraphina", "approve": True}, token), 400, "the body is")
+        first = self.wake({"persona": "seraphina", "reason": "the front door opened"}, token,
+                          headers={"Idempotency-Key": "door-1"})
+        self.assertEqual(first.status, 202, first.body)
+        self.assertRegex(first.json()["wake"], r"^W-\d{6}$")
+        again = self.wake({"persona": "seraphina", "reason": "the front door opened"}, token,
+                          headers={"Idempotency-Key": "door-1"})
+        self.assertEqual(again.json(), first.json())
+        queue = self.request("GET", "/api/wakes").json()
+        self.assertIn(first.json()["wake"], json.dumps(queue))
+        dumped = json.dumps([event.to_dict() for event in self.bus.since(0)])
+        self.assertIn("wake.requested", dumped)
+        self.assertNotIn("front door", dumped, "a wake's reason is never in an event (S27)")
+        events_only = self.request("POST", "/api/notify/hooks", {"name": "backup-script", "events": ["backup.ok"]})
+        self.assert_error(self.wake({"persona": "seraphina"}, events_only.json()["token"]), 403,
+                          "may not wake a persona")
+
+    def test_every_new_route_needs_the_session(self) -> None:
+        routes = [("GET", "/api/wakes"), ("POST", "/api/wakes"), ("GET", "/api/wakes/reminders"),
+                  ("POST", "/api/wakes/reminders"), ("POST", "/api/wakes/reminders/R-000001/cancel"),
+                  ("POST", "/api/wakes/servers/local/attest"), ("POST", "/api/wakes/W-000001/cancel"),
+                  ("POST", "/api/personas/seraphina/soul"), ("POST", "/api/personas/seraphina/privacy"),
+                  ("POST", "/api/personas/seraphina/integrity/approve"), ("POST", "/api/personas/seraphina/memory"),
+                  ("POST", "/api/personas/seraphina/memory/rollback"),
+                  ("GET", "/api/personas/seraphina/memory/versions/1"),
+                  ("POST", "/api/personas/seraphina/consolidation/accept"),
+                  ("POST", "/api/personas/seraphina/journal/J-000001/retract"),
+                  ("POST", "/api/personas/seraphina/forget"), ("POST", "/api/personas/seraphina/messages"),
+                  ("POST", "/api/personas/seraphina/sound"), ("POST", "/api/personas/seraphina/reimport"),
+                  ("POST", "/api/personas/seraphina/reimport/accept"),
+                  ("GET", "/api/personas/seraphina/runs/01-wake"), ("GET", "/api/personas/seraphina/external"),
+                  ("GET", "/api/personas/seraphina/external/versions/" + "a" * 64),
+                  ("GET", "/api/personas/seraphina/external/diff"),
+                  ("POST", "/api/personas/seraphina/external/restore"),
+                  ("POST", "/api/personas/seraphina/external/erase"),
+                  ("POST", "/api/personas/seraphina/before-import"), ("GET", "/api/chats/c-1/wakes"),
+                  ("POST", "/api/chats/c-1/wakes"), ("GET", "/api/notify/rules"), ("POST", "/api/notify/rules")]
+        for method, path in routes:
+            with self.subTest(path=path, method=method):
+                self.assertEqual(self.request(method, path, {} if method == "POST" else None, token=None).status, 401)
+
+    def test_a_chat_s_check_in_switch_reads_back(self) -> None:
+        """GET /api/chats/<chat>/wakes says whether the chat may schedule check-ins (the owner's switch), so the
+        cockpit shows the switch as it is after a reload, not only in the answer to the POST that set it."""
+        created = self.request("POST", "/api/chats", {"repo": REPO})
+        self.assertEqual(created.status, 201, created.body)
+        chat = created.json()["chat"]["id"]
+        self.assertEqual(self.request("GET", f"/api/chats/{chat}/wakes").json(), {"chat": chat, "allow": False, "wakes": []})
+        on = self.request("POST", f"/api/chats/{chat}/wakes", {"allow": True})
+        self.assertEqual(on.json(), {"chat": chat, "allow": True, "wakes": []})
+        self.assertEqual(self.request("GET", f"/api/chats/{chat}/wakes").json(), {"chat": chat, "allow": True, "wakes": []})
+        self.request("POST", f"/api/chats/{chat}/wakes", {"allow": False})
+        self.assertIs(self.request("GET", f"/api/chats/{chat}/wakes").json()["allow"], False)
+
+    def test_the_read_ledger_routes(self) -> None:
+        """memory.external.ledger: list the versions per file, show one, diff two, prepare a restore; bad digests
+        are refused before anything is read, and nothing writes her store."""
+        self.enable()
+        root = self.tmp / "her-memory"
+        root.mkdir()
+        note = root / "pets.md"
+        store = self.factory._wake_manager().store
+        for text in ("Pip is 3.\n", "Pip is 4.\n"):
+            note.write_text(text)
+            record = store.external_read("seraphina", wake="W-000001")
+            personas.read_external_memory({"folder": str(root)}, 1000, roots=[root], record=record)
+            record.commit()
+        listing = self.request("GET", "/api/personas/seraphina/external").json()
+        self.assertEqual((listing["ledger"], listing["label"], listing["reads"]), (False, "private", 2))
+        newer, older = (row["sha256"] for row in listing["files"][0]["versions"])
+        shown = self.request("GET", f"/api/personas/seraphina/external/versions/{older}").json()
+        self.assertEqual((shown["text"], shown["names"]), ("Pip is 3.\n", ["pets.md"]))
+        diff = self.request("GET", f"/api/personas/seraphina/external/diff?from={older}&to={newer}").json()
+        self.assertIn("+Pip is 4.", diff["diff"])
+        restore = self.request("POST", "/api/personas/seraphina/external/restore", {"sha256": older}).json()
+        self.assertEqual((restore["restore"]["text"], restore["restore"]["current"]["sha256"]), ("Pip is 3.\n", newer))
+        self.assertEqual(note.read_text(), "Pip is 4.\n", "the harness never writes her store")
+        self.assert_error(self.request("GET", "/api/personas/seraphina/external/versions/" + "0" * 64), 404)
+        self.assert_error(self.request("GET", "/api/personas/seraphina/external/versions/nothex"), 400, "sha256")
+        self.assert_error(self.request("GET", "/api/personas/seraphina/external/diff?from=x&to=y"), 400, "sha256")
+        self.assert_error(self.request("POST", "/api/personas/seraphina/external/restore", {"sha256": "x"}), 400)
+        self.assert_error(self.request("POST", "/api/personas/seraphina/external/restore",
+                                       {"sha256": older, "file": 3}), 400, "file")
+        self.assert_error(self.request("GET", "/api/personas/ghost/external"), 404)
+        erased = self.request("POST", "/api/personas/seraphina/external/erase", {"sha256": older})
+        self.assertEqual(erased.status, 200, erased.body)
+        self.assertEqual((erased.json()["erased"]["sha256"], erased.json()["erased"]["copies"]), (older, 1))
+        self.assert_error(self.request("GET", f"/api/personas/seraphina/external/versions/{older}"), 404, "erased")
+        listing = self.request("GET", "/api/personas/seraphina/external").json()
+        self.assertEqual([row["sha256"] for row in listing["erased"]], [older])
+        self.assert_error(self.request("POST", "/api/personas/seraphina/external/erase", {"sha256": "x"}), 400)
+        self.assert_error(self.request("POST", "/api/personas/seraphina/external/erase", {"sha256": "2" * 64}), 404)
+        self.assertEqual(note.read_text(), "Pip is 4.\n", "erasing never touches her store")
+
+    def test_the_harness_s_own_writes_never_trip_the_settings_alarm(self) -> None:
+        """S47: a reminder, a clean confirmation and a rulebook change through the cockpit are the new baseline; a
+        hand edit of the rulebook afterwards is caught."""
+        self.enable()
+        notifier = self.factory._notify_manager()
+        notifier.start(threads=False)
+        self.addCleanup(notifier.stop)
+        added = self.request("POST", "/api/wakes/reminders", {"at": "2026-10-22T17:00:00Z", "text": "Call the plumber"})
+        self.assertEqual(added.status, 201, added.body)
+        reminder = added.json()["reminder"]["id"]
+        self.assertEqual(self.request("POST", f"/api/wakes/reminders/{reminder}/cancel").status, 200)
+        persona = self.request("GET", "/api/personas/seraphina").json()
+        sha = json.dumps(persona)
+        import re
+
+        file_sha = re.search(r'"file_sha256": "([0-9a-f]{64})"', sha).group(1)
+        confirmed = self.request("POST", "/api/personas/seraphina/privacy", {"what": "soul", "ref": file_sha})
+        self.assertEqual(confirmed.status, 200, confirmed.body)
+        self.assertEqual(self.request("POST", "/api/notify/rules", {"quiet_hours": "22:30-07:00"}).status, 200)
+        notifier.tick()
+        self.assertIsNone(self.factory.notify_tamper(), "the harness's own writes are not hand edits")
+        rules_file = self.config.path.parent / "notice-rules.json"
+        rules_file.write_text(rules_file.read_text().replace("22:30-07:00", "00:00-00:01"))
+        notifier.tick()
+        self.assertEqual(self.factory.notify_tamper()["what"], ["rules"])
+
+    def test_run_now_and_cancel_through_the_api(self) -> None:
+        self.enable()
+        wake = self.request("POST", "/api/wakes", {"persona": "seraphina", "reason": "check the backups"})
+        self.assertEqual(wake.status, 202, wake.body)
+        wake_id = wake.json()["wake"]["id"]
+        self.assertEqual(self.request("POST", f"/api/wakes/{wake_id}/cancel").status, 200)
+        self.assertNotIn(wake_id, json.dumps(self.request("GET", "/api/wakes").json().get("queue")))

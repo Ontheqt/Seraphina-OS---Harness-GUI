@@ -1,0 +1,137 @@
+{
+ "body": null,
+ "headers": {
+  "Connection": "close",
+  "Content-Type": "application/json"
+ },
+ "json": {
+  "active": [],
+  "history": [
+   {
+    "command": "report",
+    "exit_code": 0,
+    "finished_at": "2026-10-25T15:09:40",
+    "health": "passed",
+    "high_command": "maintenance",
+    "messages": [],
+    "number": 57,
+    "report_output": "INSTANCE: lab\nHOSTNAME: <host>\nHEALTH:  [pending]\nSTATUS: Pending\nBAD BLOCKS: 0\n\nDATA DISKS\nd1 [??]     -\nd2 [??]     -\n\nPARITY DISKS\nparity [??]     -\n\nSTART NOTIFICATION: Completed successfully\nDuration: 1s\n\nSYNC: FAILED (2)\n!! Too many files were updated (55, limit is 50). Sync aborted.\nDuration: 0s\nI/O Errs: 0\nData Errs: 0\nSoft Errors: 0\n\nERRORS:\n- WARNING! UUID is unsupported for disks: 'd1'msg:error: , 'd2'msg:error: . Not using inodes to detect move operations.\n- Too many files were updated (55, limit is 50). Sync aborted.\n\nSCRUB: CANCELED\n!! The preceding sync operation failed with exit code 2\nDuration: 0s\n\n",
+    "scheduled_at": "2026-10-25T15:09:37",
+    "started_at": "2026-10-25T15:09:40",
+    "status": "terminated"
+   },
+   {
+    "command": "scrub",
+    "error_data": 0,
+    "error_io": 0,
+    "error_soft": 0,
+    "exit_msg": "The preceding sync operation failed with exit code 2",
+    "finished_at": "2026-10-25T15:09:38",
+    "health": "passed",
+    "high_command": "maintenance",
+    "messages": [
+     {
+      "level": "error",
+      "text": "The preceding sync operation failed with exit code 2",
+      "type": "soft"
+     }
+    ],
+    "number": 56,
+    "scheduled_at": "2026-10-25T15:09:37",
+    "started_at": "2026-10-25T15:09:38",
+    "status": "canceled"
+   },
+   {
+    "block_begin": 0,
+    "block_end": 0,
+    "block_idx": 0,
+    "blocks_count": 0,
+    "blocks_done": 0,
+    "command": "sync",
+    "cpu_usage": 0,
+    "elapsed_seconds": 0,
+    "error_data": 0,
+    "error_io": 0,
+    "error_soft": 0,
+    "eta_seconds": 0,
+    "exit_code": 2,
+    "finished_at": "2026-10-25T15:09:39",
+    "health": "passed",
+    "high_command": "maintenance",
+    "log_file": "/var/log/20261025-150939-sync.log",
+    "messages": [
+     {
+      "level": "info",
+      "text": "Self-test..."
+     },
+     {
+      "level": "info",
+      "text": "Loading state from /var/content/snapraid.content..."
+     },
+     {
+      "level": "info",
+      "text": "Loaded state in 0 seconds"
+     },
+     {
+      "level": "fatal",
+      "text": "Too many files were updated (55, limit is 50). Sync aborted.",
+      "type": "soft"
+     },
+     {
+      "level": "info",
+      "text": "Omitted 1 errors, 7 informational messages, and 12 verbose messages"
+     }
+    ],
+    "number": 55,
+    "progress": 0,
+    "scheduled_at": "2026-10-25T15:09:37",
+    "size_done_bytes": 0,
+    "speed_mbs": 0,
+    "started_at": "2026-10-25T15:09:39",
+    "status": "terminated"
+   },
+   {
+    "command": "up",
+    "exit_code": 0,
+    "finished_at": "2026-10-25T15:09:38",
+    "health": "passed",
+    "high_command": "maintenance",
+    "log_file": "/var/log/20261025-150938-up.log",
+    "messages": [
+     {
+      "level": "info",
+      "text": "Spinup..."
+     },
+     {
+      "level": "info",
+      "text": "Spunup device '/dev/loop11' for disk 'd2' in 1 ms."
+     },
+     {
+      "level": "info",
+      "text": "Spunup device '/dev/loop10' for disk 'd1' in 1 ms."
+     },
+     {
+      "level": "info",
+      "text": "Omitted 0 errors, 1 informational messages, and 0 verbose messages"
+     }
+    ],
+    "number": 54,
+    "scheduled_at": "2026-10-25T15:09:37",
+    "started_at": "2026-10-25T15:09:38",
+    "status": "terminated"
+   }
+  ],
+  "pending": [],
+  "pulse": {
+   "activity": 885,
+   "array": 177,
+   "config": 4,
+   "current_at": "2026-10-25T15:09:38",
+   "disks": 246,
+   "tasks": 810
+  }
+ },
+ "method": "GET",
+ "path": "/snapraid/v1/tasks?limit_history=4&limit_messages=3",
+ "status": 200
+}

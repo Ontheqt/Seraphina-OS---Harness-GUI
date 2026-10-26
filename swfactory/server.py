@@ -15,11 +15,18 @@ An outside agent's token (``Authorization: Bearer sfi_…``, made on the agent-t
 routes; DESIGN.md section 32) is accepted on the item routes only (AGENT_TOKEN_ROUTES):
 it lists only its own items (system scope and follow-ups), adds items there as
 ``agent:<name>`` and updates its own items; anything else is 403.
+
+The event-source routes under ``/api/hooks/`` (DESIGN.md section 34, Wake & Messages S10) are
+handled before the master-token check and take only their own tokens, stored as sha256 digests:
+POST only, a token in the query string is refused (400), the master token and unknown tokens get
+401 after a fixed delay (counted into one inbox notice a day), a valid token is limited only by
+its own budget (429 with Retry-After), bodies are at most 2 KB (413).
 """
 
 from __future__ import annotations
 
 import base64
+import contextlib
 import copy
 import dataclasses
 import hashlib
@@ -48,6 +55,7 @@ from . import __version__, gitops
 from .agentdefs import AGENT_NAME_RE
 from .items import OWNER_RE
 from .config import expand_path, sanitize_repo_name
+from .driftsources import NAME_RE as DRIFT_SOURCE_RE
 from .jobs import JOB_ID_RE, REPO_NAME_RE, JobStore
 
 if TYPE_CHECKING:
@@ -67,6 +75,21 @@ ITEM_SCOPES = ("job", "chat", "plan", "followups", "system")
 ITEM_ACTIONS = ("accept", "dismiss", "verify", "reopen", "drop", "defer", "assign", "block", "unblock", "make-job",
                 "update")
 AGENT_TOKEN_PREFIX = "sfi_"
+HOOK_BODY_BYTES = 2048
+HOOK_FAIL_DELAY = 0.25           # seconds before a wrong event-source token hears 401
+CHANNEL_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$", re.ASCII)
+MESSAGE_RE = re.compile(r"^M-\d{6,9}$", re.ASCII)
+INBOUND_RE = re.compile(r"^I-\d{6,9}$", re.ASCII)
+WAKE_RE = re.compile(r"^W-\d{6,9}$", re.ASCII)
+ENTRY_RE = re.compile(r"^J-\d{6,9}$", re.ASCII)
+REMINDER_RE = re.compile(r"^R-\d{6,9}$", re.ASCII)
+RUN_RE = re.compile(r"^\d{1,6}-wake$", re.ASCII)
+SNAPRAID_JOB_RE = re.compile(r"^J-[0-9]{1,9}$", re.ASCII)      # a run of the disk protection reader (DESIGN §41)
+SNAPRAID_GUARD_RE = re.compile(r"^G-[0-9]{1,9}$", re.ASCII)
+SNAPRAID_APPROVAL_RE = re.compile(r"^A-[0-9]{1,9}$", re.ASCII)   # an approval of a SnapRAID Daemon action
+SNAPRAID_RUN_RE = re.compile(r"^[0-9]{1,9}$", re.ASCII)         # a daemon task's number
+VERSION_RE = re.compile(r"^\d{1,9}$", re.ASCII)
+PROVIDER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$", re.ASCII)
 TOKEN_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}", re.ASCII)
 MAX_EVIDENCE = 10
 PING_INTERVAL = 15.0
@@ -79,9 +102,11 @@ PLAN_ID_RE = re.compile(r"^P\d{3}-[a-z0-9]+(-[a-z0-9]+)*$", re.ASCII)
 MODEL_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@+-]*$", re.ASCII)
 WRITABLE_AGENT_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$", re.ASCII)
 PERSONA_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$", re.ASCII)   # personas.PERSONA_NAME_RE
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$", re.ASCII)
 PROVIDER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$", re.ASCII)
 PRESET_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$", re.ASCII)
 STATIC_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)+$", re.ASCII)
+VIEWS_DIR = "views"   # web/views/<area>.js: the GUI's view modules, the one folder served below web/
 LOG_FILE_RE = re.compile(r"^logs/([A-Za-z0-9][A-Za-z0-9._-]*\.jsonl)$", re.ASCII)
 _INLINE_SCRIPT_RE = re.compile(rb"<script>(.*?)</script>", re.DOTALL | re.IGNORECASE)
 _PORT_RE = re.compile(r"^\d{1,5}$", re.ASCII)
@@ -140,7 +165,24 @@ _PARAM_RULES: dict[str, tuple[re.Pattern[str], str]] = {
     "model": (MODEL_KEY_RE, "model key"),
     "map": (re.compile(r"[a-z0-9][a-z0-9-]{0,63}"), "map id"),
     "persona": (PERSONA_RE, "persona name"),
+    "source": (DRIFT_SOURCE_RE, "drift source name"),
+    "sjob": (SNAPRAID_JOB_RE, "disk protection run"),
+    "guard": (SNAPRAID_GUARD_RE, "guard report"),
+    "approval": (SNAPRAID_APPROVAL_RE, "approval id"),
+    "srun": (SNAPRAID_RUN_RE, "run step number"),
     "token_name": (TOKEN_NAME_RE, "agent token name"),
+    "message": (MESSAGE_RE, "message id"),
+    "channel": (CHANNEL_RE, "channel name"),
+    "hook": (CHANNEL_RE, "event source name"),
+    "inbound": (INBOUND_RE, "inbound id"),
+    "wake": (WAKE_RE, "wake id"),
+    "entry": (ENTRY_RE, "journal entry id"),
+    "reminder": (REMINDER_RE, "reminder id"),
+    "run": (RUN_RE, "run log"),
+    "version": (VERSION_RE, "memory version"),
+    "provider": (PROVIDER_RE, "provider name"),
+    "receipt": (re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,95}"), "receipt id"),
+    "sha256": (SHA256_RE, "sha256"),
 }
 MAX_CONFIRM_LINES = 200          # lines one POST .../confirm may name
 
@@ -424,6 +466,36 @@ class ApiRequest:
         return value
 
 
+class HookLimiter:
+    """Each event source's own budget (S10): per_minute in any 60 s and per_day per UTC day. Failures of other
+    callers never count against a valid token."""
+
+    def __init__(self, monotonic: Callable[[], float] = time.monotonic,
+                 today: Callable[[], str] = lambda: time.strftime("%Y-%m-%d", time.gmtime())) -> None:
+        self._monotonic = monotonic
+        self._today = today
+        self._lock = threading.Lock()
+        self._minute: dict[str, list[float]] = {}
+        self._day: dict[str, tuple[str, int]] = {}
+
+    def take(self, name: str, per_minute: int, per_day: int) -> float | None:
+        """Record one request and return None, or the seconds to wait when the budget is spent (not recorded)."""
+        now, today = self._monotonic(), self._today()
+        with self._lock:
+            recent = [t for t in self._minute.get(name, []) if now - t < 60.0]
+            day, count = self._day.get(name, (today, 0))
+            if day != today:
+                day, count = today, 0
+            if count >= per_day:
+                return 3600.0
+            if len(recent) >= per_minute:
+                return max(1.0, 60.0 - (now - recent[0]))
+            recent.append(now)
+            self._minute[name] = recent
+            self._day[name] = (day, count + 1)
+            return None
+
+
 class FactoryHTTPServer(ThreadingHTTPServer):
     """The factory's HTTP server; call serve_forever(), then shutdown() and server_close()."""
 
@@ -448,6 +520,8 @@ class FactoryHTTPServer(ThreadingHTTPServer):
         self._streams_lock = threading.Lock()
         self._streams_closed = threading.Event()   # replaced by each close_streams() call
         self.repos_lock = threading.Lock()
+        self.hooks = HookLimiter()
+        self.hook_fail_delay = HOOK_FAIL_DELAY
         self.address_family = socket.AF_INET6 if ":" in host else socket.AF_INET
         super().__init__((host, port), FactoryRequestHandler)
 
@@ -559,6 +633,8 @@ class FactoryRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/login":
             self._require_method("POST")
             return self._login_post()
+        if path.startswith("/api/hooks/"):   # event sources: their own tokens, never the master token (S10)
+            return self._hook(path, query)
         if path.startswith("/api/"):
             self.agent: str | None = None
             if not self._authenticated():
@@ -636,25 +712,26 @@ class FactoryRequestHandler(BaseHTTPRequestHandler):
     def _media_type(self) -> str:
         return self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
 
-    def _read_body(self) -> bytes:
+    def _read_body(self, limit: int = MAX_BODY_BYTES) -> bytes:
         if self.headers.get("Transfer-Encoding"):
             raise HttpError(411, "send the body with a Content-Length")
         raw = self.headers.get("Content-Length", "").strip() or "0"
         if not _INT_RE.fullmatch(raw):
             raise HttpError(400, "invalid Content-Length")
         length = int(raw)
-        if length > MAX_BODY_BYTES:
-            raise HttpError(413, "request body too large (limit 1 MB)")
+        if length > limit:
+            raise HttpError(413, "request body too large (limit 1 MB)" if limit == MAX_BODY_BYTES
+                            else f"request body too large (limit {limit} bytes)")
         data = self.rfile.read(length) if length else b""
         if len(data) != length:
             raise HttpError(400, "incomplete request body")
         self._body_pending = False
         return data
 
-    def _read_json(self) -> dict:
+    def _read_json(self, limit: int = MAX_BODY_BYTES) -> dict:
         if self._media_type() != JSON_TYPE:
             raise HttpError(415, "Content-Type must be application/json")
-        data = self._read_body()
+        data = self._read_body(limit)
         if not data.strip():
             return {}
         try:
@@ -725,19 +802,69 @@ class FactoryRequestHandler(BaseHTTPRequestHandler):
         return json_reply({"ok": True}, headers=self._cookie_header())
 
     def _read_static(self, name: str) -> bytes:
+        folder = name.rpartition("/")[0]
+        if folder:   # views/<name>.js: the folder itself must be a real directory, not a symlink out of web_dir
+            base = self.server.web_dir / folder
+            if base.is_symlink() or not base.is_dir():
+                raise FileNotFoundError("not found")
         with _open_regular(self.server.web_dir / name) as handle:
             return handle.read()
 
     def _static(self, path: str) -> Reply:
         self._require_method("GET")
         name = "index.html" if path == "/" else path[1:]
-        content_type = CONTENT_TYPES.get(os.path.splitext(name)[1].lower()) if STATIC_NAME_RE.fullmatch(name) else None
+        folder, _, leaf = name.rpartition("/")
+        if folder:   # only the GUI's view modules live one level down (web/views/<area>.js)
+            ok = folder == VIEWS_DIR and leaf.endswith(".js") and STATIC_NAME_RE.fullmatch(leaf) is not None
+            content_type = CONTENT_TYPES[".js"] if ok else None
+        else:
+            content_type = CONTENT_TYPES.get(os.path.splitext(name)[1].lower()) if STATIC_NAME_RE.fullmatch(name) else None
         if content_type is None:
             raise HttpError(404, "not found")
         # Pages need the token; assets (CSS, JS, icons) are public so the login page can use them.
         if content_type == HTML_TYPE and not self._authenticated():
             return self._login_page(200)
         return Reply(200, self._read_static(name), content_type)
+
+    # -- event sources (/api/hooks/*, S10) ----------------------------------------------
+
+    def _hook(self, path: str, query: dict[str, list[str]]) -> Reply:
+        """An event source's request: its own token first (no lockout), then its own budget, then the body."""
+        self._require_method("POST")
+        if any(key.lower() in ("token", "access_token", "key") for key in query):
+            raise HttpError(400, "send the token in an Authorization: Bearer header, never in the URL")
+        scheme, _, value = self.headers.get("Authorization", "").strip().partition(" ")
+        token = value.strip() if scheme.lower() == "bearer" else ""
+        name = None
+        if token and not self._token_matches(token):   # the master token is never an event source's
+            name = self._call("hook_for_token", token)
+        if name is None:
+            time.sleep(self.server.hook_fail_delay)
+            with contextlib.suppress(Exception):
+                self._call("hook_auth_failed")
+            raise HttpError(401, "unknown event-source token (the master token is not accepted here)")
+        raw = self.headers.get("Content-Length", "").strip() or "0"
+        if _INT_RE.fullmatch(raw) and int(raw) > HOOK_BODY_BYTES:
+            raise HttpError(413, f"request body too large (limit {HOOK_BODY_BYTES} bytes)")
+        per_minute, per_day = self._call("hook_limits", name)
+        retry = self.server.hooks.take(name, per_minute, per_day)
+        if retry is not None:
+            raise HttpError(429, "this event source has used its budget; try again later",
+                            {"Retry-After": str(int(retry + 0.999))})
+        if path not in ("/api/hooks/event", "/api/hooks/wake"):
+            raise HttpError(404, "no such hook route (/api/hooks/event or /api/hooks/wake)")
+        body = self._read_json(HOOK_BODY_BYTES)
+        key = self.headers.get("Idempotency-Key")
+        try:
+            result = self._call("hook_wake" if path == "/api/hooks/wake" else "hook_event", name, body,
+                                key.strip() if key else None)
+        except Exception as exc:
+            status = getattr(exc, "status", None)
+            if type(exc).__name__ == "HookRefused" and isinstance(status, int):
+                raise HttpError(status, str(exc), {"Retry-After": str(int(exc.retry_after))}
+                                if getattr(exc, "retry_after", None) else None) from None
+            raise
+        return json_reply(result, 202)
 
     # -- API routing --------------------------------------------------------------
 
@@ -1019,6 +1146,21 @@ class FactoryRequestHandler(BaseHTTPRequestHandler):
     def api_persona_card(self, req: ApiRequest) -> Reply:
         return json_reply(self._call("persona_card", req.params["persona"]))
 
+    def api_persona_before_import(self, req: ApiRequest) -> Reply:
+        """POST /api/personas/<persona>/before-import {attach?: [receipt ids], detach?: [receipt ids], by?: owner |
+        operator} → {import}: the operator's receipts attached by id as the changes before the import (unknown
+        ids are refused; nothing is chosen by a receipt's text)."""
+        lists = {}
+        for key in ("attach", "detach"):
+            value = req.body.get(key, [])
+            if not isinstance(value, list) or len(value) > 200 or not all(isinstance(x, str) for x in value):
+                raise HttpError(400, f"'{key}' must be a list of receipt ids")
+            lists[key] = value
+        by = req.body.get("by", "owner")
+        if by not in ("owner", "operator"):
+            raise HttpError(400, "'by' must be owner or operator")
+        return json_reply(self._call("persona_before_import", req.params["persona"], by=by, **lists))
+
     def api_persona_import(self, req: ApiRequest) -> Reply:
         """POST /api/personas/import {export: [records], model_id?, snapshot?} or {source: "openwebui", model_id,
         provider?, snapshot?} → 201 {card, path, unavailable, unknown_variables, fingerprint, snapshot}."""
@@ -1028,6 +1170,185 @@ class FactoryRequestHandler(BaseHTTPRequestHandler):
         """POST /api/personas/check {persona?} → {checked: [...]}: the drift check, now."""
         persona = req.name("persona", PERSONA_RE, "persona name", required=False)
         return json_reply(self._call("persona_check", persona))
+
+    # operator personas: receipts and activity (section 36)
+
+    def api_operator(self, req: ApiRequest) -> Reply:
+        """GET /api/operator → {operators, marked, several, problem, receipts_dir, label, scan}."""
+        return json_reply(self._call("operator_state"))
+
+    def api_operator_receipts(self, req: ApiRequest) -> Reply:
+        """GET /api/operator/receipts?limit=&since=&until=&rescan= → {receipts, refused, scan} (newest first)."""
+        limit = req.int_arg("limit") if req.arg("limit") else 200
+        if not 1 <= limit <= MAX_ITEMS_LIMIT:
+            raise HttpError(400, f"limit must be from 1 to {MAX_ITEMS_LIMIT}")
+        since, until = req.arg("since") or None, req.arg("until") or None
+        for value in (since, until):
+            if value is not None and len(value) > 64:
+                raise HttpError(400, "since and until are times such as 2026-10-22T08:00:00Z or spans such as 24h")
+        return json_reply(self._call("operator_receipts", limit=limit, since=since, until=until,
+                                     rescan=_flag(req.arg("rescan"))))
+
+    def api_operator_receipt(self, req: ApiRequest) -> Reply:
+        """GET /api/operator/receipts/<receipt id> → {receipt (with before and after), duplicates}."""
+        return json_reply(self._call("operator_receipt", req.params["receipt"]))
+
+    def api_operator_scan(self, req: ApiRequest) -> Reply:
+        """POST /api/operator/receipts/scan → the scan's summary: read the operator's receipts directory now."""
+        return json_reply({"scan": self._call("operator_scan")})
+
+    def api_activity(self, req: ApiRequest) -> Reply:
+        """GET /api/activity?agent=&since=&until=&limit=&after= → {agent, operator, since, until, entries, count,
+        truncated, next_after, sources, errors}: what an agent or persona did, oldest first, each entry with its
+        evidence; after=next_after continues a cut list."""
+        agent = req.arg("agent", required=True) or ""
+        if len(agent) > 80:
+            raise HttpError(400, "invalid agent name")
+        limit = req.int_arg("limit") if req.arg("limit") else 500
+        since, until = req.arg("since") or None, req.arg("until") or None
+        for value in (since, until):
+            if value is not None and len(value) > 64:
+                raise HttpError(400, "since and until are times such as 2026-10-22T08:00:00Z or spans such as 24h")
+        after = req.arg("after") or None
+        if after is not None and len(after) > 4096:
+            raise HttpError(400, "after must be the next_after value an activity query returned")
+        return json_reply(self._call("activity", agent, since=since, until=until, limit=limit, after=after))
+
+    # GPU custody and drift sources (sections 37 and 38)
+
+    def api_custody(self, req: ApiRequest) -> Reply:
+        """GET /api/custody?refresh=1 → {providers: [...]}: each provider under GPU custody, its register's last
+        residency, the leases this harness holds and a short history (DESIGN §37); refresh=1 reads residency now."""
+        return json_reply(self._call("custody", refresh=req.arg("refresh") in ("1", "true")))
+
+    def api_drift_sources(self, req: ApiRequest) -> Reply:
+        """GET /api/drift-sources → {sources: [...]} (DESIGN §38; never a token)."""
+        return json_reply({"sources": self._call("drift_sources")})
+
+    def api_drift_check(self, req: ApiRequest) -> Reply:
+        """POST /api/drift-sources/<source>/check → the check's result (status, detail, findings opened, reopened
+        and closed)."""
+        return json_reply(self._call("check_drift_source", req.params["source"]))
+
+    def api_drift_manifest(self, req: ApiRequest) -> Reply:
+        """GET /api/drift-sources/<source>/manifest → {manifest}: the generated role manifest, null before one."""
+        return json_reply({"manifest": self._call("drift_manifest", req.params["source"])})
+
+    # disk protection with SnapRAID (section 41; phase P1: read-only)
+
+    def api_snapraid(self, req: ApiRequest) -> Reply:
+        """GET /api/snapraid → the card: {phase, state, installed, helper, enabled, allowed, light, sentences,
+        undo_line, facts, disks, job, guard, schedule, scrub_plan, not_covered, ...} (counts and codes only)."""
+        return json_reply(self._call("snapraid_view"))
+
+    def api_snapraid_refresh(self, req: ApiRequest) -> Reply:
+        """POST /api/snapraid/refresh {what: status|health|diff, wait?} → 202 {refreshing} (diff runs a guard report,
+        which only reads); with wait true, 200 and the card once it is done. {busy: true} while one runs."""
+        what = req.body.get("what", "status")
+        if what not in ("status", "health", "diff") or set(req.body) - {"what", "wait"}:
+            raise HttpError(400, "give {what: status|health|diff} (and wait: true to wait for it)")
+        wait = req.body.get("wait") is True
+        result = self._call("snapraid_refresh", what, wait=wait)
+        return json_reply(result, 200 if wait or result.get("busy") else 202)
+
+    def api_snapraid_jobs(self, req: ApiRequest) -> Reply:
+        """GET /api/snapraid/jobs → {jobs}: the reader's latest run records (no file names)."""
+        return json_reply(self._call("snapraid_jobs"))
+
+    def api_snapraid_job(self, req: ApiRequest) -> Reply:
+        """GET /api/snapraid/jobs/<J-n>?log=1&offset=N → {job, log?}: one run, and with log=1 a page of its human
+        output (which names files: shown to the owner, never kept by the harness)."""
+        return json_reply(self._call("snapraid_job", req.params["sjob"], log=_flag(req.arg("log")),
+                                     offset=req.int_arg("offset")))
+
+    def api_snapraid_guard(self, req: ApiRequest) -> Reply:
+        """GET /api/snapraid/guard/<G-n>?disk=&kind=&dir=&q=&offset= → {guard, page}: the report and one page of its
+        change list, live from the reader."""
+        fields = {key: req.arg(key) for key in ("disk", "kind", "dir", "q")}
+        for key, value in fields.items():
+            if value is not None and len(value) > 4096:
+                raise HttpError(400, f"{key} is too long")
+        return json_reply(self._call("snapraid_guard", req.params["guard"], disk=fields["disk"], kind=fields["kind"],
+                                     folder=fields["dir"], q=fields["q"], offset=req.int_arg("offset")))
+
+    def api_snapraid_files(self, req: ApiRequest) -> Reply:
+        """GET /api/snapraid/files?disk=&dir=&q=&offset= → one page of the last good run's file index."""
+        fields = {key: req.arg(key) for key in ("disk", "dir", "q")}
+        for key, value in fields.items():
+            if value is not None and len(value) > 4096:
+                raise HttpError(400, f"{key} is too long")
+        return json_reply(self._call("snapraid_files", disk=fields["disk"], folder=fields["dir"], q=fields["q"],
+                                     offset=req.int_arg("offset")))
+
+    def api_snapraid_setup(self, req: ApiRequest) -> Reply:
+        """GET /api/snapraid/setup → {blocks, removal, staged, setup_dir, release_sha256, wizard}."""
+        return json_reply(self._call("snapraid_setup"))
+
+    def api_snapraid_setup_action(self, req: ApiRequest) -> Reply:
+        """POST /api/snapraid/setup/<stage|check>: stage the files for the copy blocks, or ask the reader's info."""
+        return json_reply(self._call("snapraid_setup_action", req.params["action"]))
+
+    def api_snapraid_action_new(self, req: ApiRequest) -> Reply:
+        """POST /api/snapraid/actions {action, paths?, enabled?} → 201 a preview {approval, shows, sends, binding,
+        shown_sha256, expires_at, typed} (BACKUPS_SNAPRAID.md §6.1). 400 with the refusal's words."""
+        body = req.body
+        if set(body) - {"action", "paths", "enabled"} or not isinstance(body.get("action"), str):
+            raise HttpError(400, "give {action: stop|hold_off|maintenance|accept|undelete|heal} (paths for undelete, "
+                                 "enabled for hold_off)")
+        fields = {key: body[key] for key in ("paths", "enabled") if key in body}
+        if "enabled" in fields and not isinstance(fields["enabled"], bool):
+            raise HttpError(400, "enabled must be true or false")
+        return json_reply(self._call("snapraid_action_preview", body["action"], **fields), 201)
+
+    def api_snapraid_action_approve(self, req: ApiRequest) -> Reply:
+        """POST /api/snapraid/actions/<A-n>/approve {shown_sha256, typed?} → {outcome, state, run?, ...}: one send;
+        409 {error: changed} when a bound fact no longer holds (nothing was sent)."""
+        from .snapraidd import Changed
+
+        body = req.body
+        if set(body) - {"shown_sha256", "typed"} or not isinstance(body.get("shown_sha256"), str):
+            raise HttpError(400, "give {shown_sha256} (and typed: the count, when asked)")
+        typed = body.get("typed")
+        if typed is not None and (not isinstance(typed, int) or isinstance(typed, bool)):
+            raise HttpError(400, "typed must be a whole number")
+        try:
+            return json_reply(self._call("snapraid_action_approve", req.params["approval"], body["shown_sha256"],
+                                         typed))
+        except Changed as exc:
+            return json_reply({"error": "changed", "words": str(exc)}, 409)
+
+    def api_snapraid_action_cancel(self, req: ApiRequest) -> Reply:
+        """POST /api/snapraid/actions/<A-n>/cancel: drop an unsent approval."""
+        return json_reply(self._call("snapraid_action_cancel", req.params["approval"]))
+
+    def api_snapraid_actions(self, req: ApiRequest) -> Reply:
+        """GET /api/snapraid/actions → {actions}: approval records, their outcomes and runs (no file names)."""
+        return json_reply(self._call("snapraid_actions"))
+
+    def api_snapraid_action(self, req: ApiRequest) -> Reply:
+        return json_reply(self._call("snapraid_action", req.params["approval"]))
+
+    def api_snapraid_review(self, req: ApiRequest) -> Reply:
+        """GET /api/snapraid/review?disk=&change=&q=&offset= → one page of the last scan's change list, live from
+        the daemon through the link, with per-disk counts; never stored."""
+        fields = {key: req.arg(key) for key in ("disk", "change", "q")}
+        for key, value in fields.items():
+            if value is not None and len(value) > 200:
+                raise HttpError(400, f"{key} is too long")
+        return json_reply(self._call("snapraid_review", disk=fields["disk"], change=fields["change"], q=fields["q"],
+                                     offset=req.int_arg("offset")))
+
+    def api_snapraid_fixes(self, req: ApiRequest) -> Reply:
+        """GET /api/snapraid/fixes?offset= → one page of the files an undelete or heal brought back, live."""
+        return json_reply(self._call("snapraid_fixes", req.int_arg("offset")))
+
+    def api_snapraid_runs(self, req: ApiRequest) -> Reply:
+        """GET /api/snapraid/runs → {runs}: the daemon's recent runs (typed fields)."""
+        return json_reply(self._call("snapraid_runs"))
+
+    def api_snapraid_run(self, req: ApiRequest) -> Reply:
+        """GET /api/snapraid/runs/<number> → {task, messages}: one daemon task, its messages as text, live."""
+        return json_reply(self._call("snapraid_run", int(req.params["srun"])))
 
     def api_openwebui_models(self, req: ApiRequest) -> Reply:
         """GET /api/openwebui/models?provider= → {provider, open_webui_version, models}."""
@@ -1299,10 +1620,292 @@ class FactoryRequestHandler(BaseHTTPRequestHandler):
         self.server.current_config().repo(req.params["repo"])
         return self._add_item(f"repo:{req.params['repo']}", req, ("title", "detail", "due"))
 
+    # messages and phone channels (section 34)
+
+    def api_messages(self, req: ApiRequest) -> Reply:
+        """GET /api/messages?persona=&state=&channel=&kind=&unread=1&before=M-…&limit=100 → {messages, unread}."""
+        filters: dict[str, Any] = {}
+        for key, pattern in (("persona", PERSONA_RE), ("channel", CHANNEL_RE), ("before", MESSAGE_RE),
+                             ("state", re.compile(r"^[a-z]{2,12}$")), ("kind", re.compile(r"^[a-z][a-z._]{1,40}$"))):
+            value = req.arg(key)
+            if value:
+                if not pattern.fullmatch(value):
+                    raise HttpError(400, f"invalid {key}")
+                filters[key] = value
+        if _flag(req.arg("unread")):
+            filters["unread"] = True
+        limit = req.int_arg("limit")
+        if limit:
+            filters["limit"] = min(limit, 500)
+        return json_reply(self._call("messages", **filters))
+
+    def api_message(self, req: ApiRequest) -> Reply:
+        return json_reply(self._call("message", req.params["message"]))
+
+    def api_message_action(self, req: ApiRequest) -> Reply:
+        minutes = req.body.get("minutes")
+        if minutes is not None and (isinstance(minutes, bool) or not isinstance(minutes, int)):
+            raise HttpError(400, "'minutes' must be a whole number")
+        return json_reply({"message": self._call("message_action", req.params["message"], req.params["action"],
+                                                 minutes)})
+
+    def api_notify(self, req: ApiRequest) -> Reply:
+        return json_reply(self._call("notify_state"))
+
+    def api_notify_channels(self, req: ApiRequest) -> Reply:
+        return json_reply({"channels": self._call("notify_channels")})
+
+    def _channel(self, req: ApiRequest, query: bool = False) -> str:
+        value = req.arg("channel", required=True) if query else req.name("channel", CHANNEL_RE, "channel name")
+        if not CHANNEL_RE.fullmatch(value or ""):
+            raise HttpError(400, "invalid channel name")
+        return str(value)
+
+    def api_notify_test(self, req: ApiRequest) -> Reply:
+        return json_reply({"message": self._call("notify_test", self._channel(req))}, 202)
+
+    def api_notify_prepare(self, req: ApiRequest) -> Reply:
+        """The ntfy setup: tokens into the env file, the phone's passphrase (in this answer only) and the copy
+        blocks that install the staged files with sudo."""
+        return json_reply(self._call("notify_prepare", self._channel(req)))
+
+    def api_notify_check(self, req: ApiRequest) -> Reply:
+        return json_reply(self._call("notify_check", self._channel(req, query=True)))
+
+    def api_notify_pair(self, req: ApiRequest) -> Reply:
+        return json_reply(self._call("notify_pair", self._channel(req)))
+
+    def api_notify_pair_status(self, req: ApiRequest) -> Reply:
+        return json_reply(self._call("notify_pair_status", self._channel(req, query=True)))
+
+    def api_notify_pair_confirm(self, req: ApiRequest) -> Reply:
+        return json_reply(self._call("notify_pair_confirm", self._channel(req), req.text("code")))
+
+    def api_notify_unpair(self, req: ApiRequest) -> Reply:
+        account = req.body.get("chat_id")
+        if isinstance(account, bool) or not isinstance(account, (int, str)):
+            raise HttpError(400, "'chat_id' must be the paired account's numeric id")
+        return json_reply(self._call("notify_unpair", self._channel(req), account))
+
+    def api_notify_channel_action(self, req: ApiRequest) -> Reply:
+        token = req.text("token", required=False)
+        return json_reply(self._call("notify_channel_action", req.params["channel"], req.params["action"], token))
+
+    def api_notify_lost_phone(self, req: ApiRequest) -> Reply:
+        return json_reply(self._call("notify_lost_phone"))
+
+    def api_notify_event(self, req: ApiRequest) -> Reply:
+        """POST /api/notify/events {kind, subject?, detail?}: the owner reports an event (`factory notify event`)."""
+        return json_reply(self._call("notify_event", req.body), 202)
+
+    def api_notify_terms(self, req: ApiRequest) -> Reply:
+        return json_reply(self._call("notify_terms"))
+
+    def api_notify_set_terms(self, req: ApiRequest) -> Reply:
+        """POST /api/notify/terms {text} or {none: true} ("I have none")."""
+        if req.body.get("none") is True:
+            return json_reply(self._call("notify_set_terms", None, none=True))
+        return json_reply(self._call("notify_set_terms", req.text("text", required=False) or ""))
+
+    def api_notify_inbound(self, req: ApiRequest) -> Reply:
+        kind = req.arg("kind")
+        if kind is not None and not re.fullmatch(r"[a-z]{2,12}", kind):
+            raise HttpError(400, "invalid kind")
+        return json_reply({"inbound": self._call("notify_inbound", min(req.int_arg("limit") or 100, 1000), kind)})
+
+    def api_notify_apply_inbound(self, req: ApiRequest) -> Reply:
+        return json_reply(self._call("notify_apply_inbound", req.params["inbound"]))
+
+    def api_notify_hooks(self, req: ApiRequest) -> Reply:
+        return json_reply({"hooks": self._call("notify_state").get("hooks", [])})
+
+    def api_notify_hook_add(self, req: ApiRequest) -> Reply:
+        """POST /api/notify/hooks {name, may?, events?, subjects?} → 201 {hook, token, snippets}: the token is
+        in this answer only (the config keeps its sha256)."""
+        return json_reply(self._call("notify_hook_add", req.body), 201)
+
+    def api_notify_hook_action(self, req: ApiRequest) -> Reply:
+        return json_reply(self._call("notify_hook_action", req.params["hook"], req.params["action"]))
+
+    def api_wake_control(self, req: ApiRequest) -> Reply:
+        """POST /api/wakes/control {action: pause | resume}: stop or restart Seraphina (the PAUSED file)."""
+        action = req.text("action")
+        persona = req.name("persona", PERSONA_RE, "persona name", required=False)
+        until = req.text("until", required=False)
+        return json_reply(self._call("wake_control", action, by="human", via="cockpit", persona=persona,
+                                     until=until or None))
+
+    def api_wake_acknowledge(self, req: ApiRequest) -> Reply:
+        """POST /api/wakes/acknowledge {text} (the sentence of S46) or {withdraw: true}."""
+        if req.body.get("withdraw") is True:
+            return json_reply(self._call("wake_acknowledge", None, withdraw=True))
+        return json_reply(self._call("wake_acknowledge", req.text("text")))
+
+    def api_wake_review(self, req: ApiRequest) -> Reply:
+        return json_reply(self._call("wake_review", req.params["action"]))
+
+    # personas that wake themselves (Wake & Messages W2, W3)
+
+    def api_wakes(self, req: ApiRequest) -> Reply:
+        return json_reply(self._call("wakes"))
+
+    def api_wake_run_now(self, req: ApiRequest) -> Reply:
+        """POST /api/wakes {persona, reason?}: the owner's Run now (a wake through the gate like any other)."""
+        persona = req.name("persona", PERSONA_RE, "persona name")
+        return json_reply({"wake": self._call("wake_run_now", persona, req.text("reason", required=False))}, 202)
+
+    def api_wake_cancel(self, req: ApiRequest) -> Reply:
+        return json_reply(self._call("wake_cancel", req.params["wake"]))
+
+    def api_reminders(self, req: ApiRequest) -> Reply:
+        return json_reply({"reminders": self._call("reminders")})
+
+    def api_add_reminder(self, req: ApiRequest) -> Reply:
+        """POST /api/wakes/reminders {at, text, persona?, show_on?: [private channel names]}."""
+        show_on = req.body.get("show_on") or []
+        if not isinstance(show_on, list) or not all(isinstance(x, str) and CHANNEL_RE.fullmatch(x) for x in show_on):
+            raise HttpError(400, "'show_on' must be a list of channel names")
+        persona = req.name("persona", PERSONA_RE, "persona name", required=False)
+        return json_reply(self._call("add_reminder", req.text("at"), req.text("text"), persona=persona,
+                                     show_on=show_on), 201)
+
+    def api_cancel_reminder(self, req: ApiRequest) -> Reply:
+        return json_reply(self._call("cancel_reminder", req.params["reminder"]))
+
+    def api_wake_attest(self, req: ApiRequest) -> Reply:
+        local = req.body.get("local")
+        if not isinstance(local, bool):
+            raise HttpError(400, "'local' must be true or false")
+        return json_reply(self._call("wake_attest", req.params["provider"], local))
+
+    def api_persona_soul(self, req: ApiRequest) -> Reply:
+        return json_reply(self._call("persona_soul", req.params["persona"], req.text("text"), req.text("base_sha256")))
+
+    def api_persona_privacy(self, req: ApiRequest) -> Reply:
+        what = req.text("what")
+        ref = req.body.get("ref")
+        clean = req.body.get("clean", True)
+        if not isinstance(clean, bool):
+            raise HttpError(400, "'clean' must be true or false")
+        return json_reply(self._call("persona_privacy", req.params["persona"], what, ref, clean))
+
+    def api_persona_integrity(self, req: ApiRequest) -> Reply:
+        return json_reply(self._call("persona_integrity", req.params["persona"], req.params["action"]))
+
+    def api_persona_memory(self, req: ApiRequest) -> Reply:
+        base = req.body.get("base_version")
+        clean = req.body.get("clean", False)
+        if isinstance(base, bool) or not isinstance(base, int) or not isinstance(clean, bool):
+            raise HttpError(400, "'base_version' must be the version you edited, 'clean' true or false")
+        text = req.body.get("text")
+        if not isinstance(text, str):
+            raise HttpError(400, "'text' must be a string")
+        return json_reply(self._call("persona_memory", req.params["persona"], text, base, clean))
+
+    def api_persona_memory_rollback(self, req: ApiRequest) -> Reply:
+        version = req.body.get("version")
+        if isinstance(version, bool) or not isinstance(version, int):
+            raise HttpError(400, "'version' must be a memory version")
+        return json_reply(self._call("persona_memory_rollback", req.params["persona"], version))
+
+    def api_persona_memory_version(self, req: ApiRequest) -> Reply:
+        return json_reply(self._call("persona_memory_version", req.params["persona"], int(req.params["version"])))
+
+    def api_persona_consolidation(self, req: ApiRequest) -> Reply:
+        return json_reply(self._call("persona_consolidation", req.params["persona"], req.params["action"]))
+
+    def api_persona_retract(self, req: ApiRequest) -> Reply:
+        return json_reply(self._call("persona_retract", req.params["persona"], req.params["entry"]))
+
+    def api_persona_forget(self, req: ApiRequest) -> Reply:
+        return json_reply(self._call("persona_forget", req.params["persona"], req.text("before")))
+
+    def api_persona_message(self, req: ApiRequest) -> Reply:
+        return json_reply(self._call("persona_send", req.params["persona"], req.text("text")), 202)
+
+    def api_persona_sound(self, req: ApiRequest) -> Reply:
+        return json_reply(self._call("persona_sound", req.params["persona"]))
+
+    def api_persona_reimport(self, req: ApiRequest) -> Reply:
+        return json_reply(self._call("persona_reimport", req.params["persona"], req.body), 201)
+
+    def api_persona_reimport_decide(self, req: ApiRequest) -> Reply:
+        return json_reply(self._call("persona_reimport_decide", req.params["persona"], req.params["action"]))
+
+    def api_persona_external(self, req: ApiRequest) -> Reply:
+        """GET /api/personas/<persona>/external → the read ledger of her external memory: the versions per file,
+        the database's row hashes and the newest manifests (all private)."""
+        return json_reply(self._call("persona_external", req.params["persona"]))
+
+    def api_persona_external_version(self, req: ApiRequest) -> Reply:
+        return json_reply(self._call("persona_external_version", req.params["persona"], req.params["sha256"]))
+
+    def api_persona_external_diff(self, req: ApiRequest) -> Reply:
+        """GET /api/personas/<persona>/external/diff?from=<sha256>&to=<sha256> → {from, to, diff, label}."""
+        older, newer = req.arg("from", required=True) or "", req.arg("to", required=True) or ""
+        if not SHA256_RE.fullmatch(older) or not SHA256_RE.fullmatch(newer):
+            raise HttpError(400, "from and to are versions' sha256 (64 hex characters)")
+        return json_reply(self._call("persona_external_diff", req.params["persona"], older, newer))
+
+    def api_persona_external_restore(self, req: ApiRequest) -> Reply:
+        """POST /api/personas/<persona>/external/restore {sha256, file?} → {restore}: the earlier text for the owner
+        or her own tools to apply; the harness writes nothing in her store."""
+        digest = req.text("sha256")
+        if not SHA256_RE.fullmatch(digest):
+            raise HttpError(400, "'sha256' must be a version's sha256 (64 hex characters)")
+        file = req.body.get("file")
+        if file is not None and (not isinstance(file, str) or not file or len(file) > 255):
+            raise HttpError(400, "'file' must be the name of a file the ledger read")
+        return json_reply(self._call("persona_external_restore", req.params["persona"], digest, file))
+
+    def api_persona_external_erase(self, req: ApiRequest) -> Reply:
+        """POST /api/personas/<persona>/external/erase {sha256} → {erased: {sha256, erased, copies, entries}}: the
+        owner erases one version from the read ledger (its copy goes; its manifest entries keep the sha256 only).
+        Her own store is not touched."""
+        digest = req.text("sha256")
+        if not SHA256_RE.fullmatch(digest):
+            raise HttpError(400, "'sha256' must be a version's sha256 (64 hex characters)")
+        return json_reply(self._call("persona_external_erase", req.params["persona"], digest))
+
+    def api_persona_run(self, req: ApiRequest) -> Reply:
+        return json_reply({"run": req.params["run"], "lines": self._call("persona_run_log", req.params["persona"],
+                                                                         req.params["run"])})
+
+    def api_chat_wakes(self, req: ApiRequest) -> Reply:
+        """GET /api/chats/<chat>/wakes → {chat, allow, wakes}: the owner's switch as it stands, and the chat's
+        pending and running check-ins."""
+        chat = req.params["chat"]
+        return json_reply({"chat": chat, "allow": self._call("chat_wake_allowed", chat),
+                           "wakes": self._call("chat_wakes", chat)})
+
+    def api_chat_wake_allow(self, req: ApiRequest) -> Reply:
+        allow = req.body.get("allow")
+        if not isinstance(allow, bool):
+            raise HttpError(400, "'allow' must be true or false")
+        return json_reply(self._call("chat_wake_allow", req.params["chat"], allow))
+
+    def api_notify_rules(self, req: ApiRequest) -> Reply:
+        return json_reply(self._call("notify_rules"))
+
+    def api_notify_set_rules(self, req: ApiRequest) -> Reply:
+        return json_reply(self._call("notify_set_rules", req.body))
+
     # setup, secrets and docs
 
     def api_setup(self, req: ApiRequest) -> Reply:
         return json_reply(self._call("setup_status"))
+
+    def api_look_around(self, req: ApiRequest) -> Reply:
+        """POST /api/setup/look-around → {at, model_servers, note}: the owner's look for model servers, run once now
+        (Factory.look_around, which skips this server's own port; the master token only). Asked again too soon or
+        while one runs: 429 with Retry-After (doctor.LookAroundRefused, matched by name)."""
+        try:
+            return json_reply(self._call("look_around", self.server.server_address[1]))
+        except Exception as exc:
+            if type(exc).__name__ != "LookAroundRefused":
+                raise
+            retry = float(getattr(exc, "retry_after", 1.0) or 1.0)
+            raise HttpError(429, str(exc), {"Retry-After": str(max(1, int(retry + 0.999)))}) from None
 
     def api_secrets(self, req: ApiRequest) -> Reply:
         return json_reply(self._call("secret_status"))
@@ -1442,7 +2045,34 @@ _ROUTES: list[tuple[str, re.Pattern[str], Handler]] = [
         ("POST", "/api/personas/check", _H.api_persona_check),
         ("GET", "/api/personas/{persona}", _H.api_persona),
         ("GET", "/api/personas/{persona}/card", _H.api_persona_card),
+        ("POST", "/api/personas/{persona}/before-import", _H.api_persona_before_import),
         ("GET", "/api/openwebui/models", _H.api_openwebui_models),
+        ("GET", "/api/operator", _H.api_operator),
+        ("GET", "/api/operator/receipts", _H.api_operator_receipts),
+        ("POST", "/api/operator/receipts/scan", _H.api_operator_scan),
+        ("GET", "/api/operator/receipts/{receipt}", _H.api_operator_receipt),
+        ("GET", "/api/activity", _H.api_activity),
+        ("GET", "/api/custody", _H.api_custody),
+        ("GET", "/api/drift-sources", _H.api_drift_sources),
+        ("POST", "/api/drift-sources/{source}/check", _H.api_drift_check),
+        ("GET", "/api/drift-sources/{source}/manifest", _H.api_drift_manifest),
+        ("GET", "/api/snapraid", _H.api_snapraid),
+        ("POST", "/api/snapraid/refresh", _H.api_snapraid_refresh),
+        ("GET", "/api/snapraid/jobs", _H.api_snapraid_jobs),
+        ("GET", "/api/snapraid/jobs/{sjob}", _H.api_snapraid_job),
+        ("GET", "/api/snapraid/guard/{guard}", _H.api_snapraid_guard),
+        ("GET", "/api/snapraid/files", _H.api_snapraid_files),
+        ("GET", "/api/snapraid/setup", _H.api_snapraid_setup),
+        ("POST", "/api/snapraid/setup/{action:stage|check|link-stage|link-check}", _H.api_snapraid_setup_action),
+        ("POST", "/api/snapraid/actions", _H.api_snapraid_action_new),
+        ("GET", "/api/snapraid/actions", _H.api_snapraid_actions),
+        ("GET", "/api/snapraid/actions/{approval}", _H.api_snapraid_action),
+        ("POST", "/api/snapraid/actions/{approval}/approve", _H.api_snapraid_action_approve),
+        ("POST", "/api/snapraid/actions/{approval}/cancel", _H.api_snapraid_action_cancel),
+        ("GET", "/api/snapraid/review", _H.api_snapraid_review),
+        ("GET", "/api/snapraid/fixes", _H.api_snapraid_fixes),
+        ("GET", "/api/snapraid/runs", _H.api_snapraid_runs),
+        ("GET", "/api/snapraid/runs/{srun}", _H.api_snapraid_run),
         ("GET", "/api/config", _H.api_config),
         ("POST", "/api/config", _H.api_update_config),
         ("POST", "/api/config/preset", _H.api_preset),
@@ -1466,6 +2096,7 @@ _ROUTES: list[tuple[str, re.Pattern[str], Handler]] = [
         ("POST", "/api/agent-tokens", _H.api_create_agent_token),
         ("POST", "/api/agent-tokens/{token_name}/revoke", _H.api_revoke_agent_token),
         ("GET", "/api/setup", _H.api_setup),
+        ("POST", "/api/setup/look-around", _H.api_look_around),
         ("GET", "/api/secrets", _H.api_secrets),
         ("POST", "/api/secrets", _H.api_set_secret),
         ("GET", "/api/docs/procedures", _H.api_procedures),
@@ -1474,6 +2105,61 @@ _ROUTES: list[tuple[str, re.Pattern[str], Handler]] = [
         ("GET", r"/api/docs/maps/{map}\.mmd", _H.api_map_source),
         ("GET", "/api/jobs/{repo}/{job}/assumptions", _H.api_assumptions),
         ("POST", "/api/jobs/{repo}/{job}/confirm", _H.api_confirm),
+        ("GET", "/api/messages", _H.api_messages),
+        ("GET", "/api/messages/{message}", _H.api_message),
+        ("POST", "/api/messages/{message}/{action:ack|snooze|retry|resend}", _H.api_message_action),
+        ("GET", "/api/notify", _H.api_notify),
+        ("GET", "/api/notify/channels", _H.api_notify_channels),
+        ("POST", "/api/notify/test", _H.api_notify_test),
+        ("POST", "/api/notify/ntfy/prepare", _H.api_notify_prepare),
+        ("GET", "/api/notify/ntfy/check", _H.api_notify_check),
+        ("POST", "/api/notify/pair", _H.api_notify_pair),
+        ("GET", "/api/notify/pair", _H.api_notify_pair_status),
+        ("POST", "/api/notify/pair/confirm", _H.api_notify_pair_confirm),
+        ("POST", "/api/notify/unpair", _H.api_notify_unpair),
+        ("POST", "/api/notify/channels/{channel}/{action:rotate|leaked|disable}", _H.api_notify_channel_action),
+        ("POST", "/api/notify/lost-phone", _H.api_notify_lost_phone),
+        ("POST", "/api/notify/events", _H.api_notify_event),
+        ("GET", "/api/notify/terms", _H.api_notify_terms),
+        ("POST", "/api/notify/terms", _H.api_notify_set_terms),
+        ("GET", "/api/notify/inbound", _H.api_notify_inbound),
+        ("POST", "/api/notify/inbound/{inbound}/apply", _H.api_notify_apply_inbound),
+        ("GET", "/api/notify/hooks", _H.api_notify_hooks),
+        ("POST", "/api/notify/hooks", _H.api_notify_hook_add),
+        ("POST", "/api/notify/hooks/{hook}/{action:rotate|delete}", _H.api_notify_hook_action),
+        ("GET", "/api/wakes", _H.api_wakes),
+        ("POST", "/api/wakes", _H.api_wake_run_now),
+        ("GET", "/api/wakes/reminders", _H.api_reminders),
+        ("POST", "/api/wakes/reminders", _H.api_add_reminder),
+        ("POST", "/api/wakes/reminders/{reminder}/cancel", _H.api_cancel_reminder),
+        ("POST", "/api/wakes/servers/{provider}/attest", _H.api_wake_attest),
+        ("POST", "/api/wakes/{wake}/cancel", _H.api_wake_cancel),
+        ("POST", "/api/personas/{persona}/soul", _H.api_persona_soul),
+        ("POST", "/api/personas/{persona}/privacy", _H.api_persona_privacy),
+        ("POST", "/api/personas/{persona}/integrity/{action:approve|restore}", _H.api_persona_integrity),
+        ("POST", "/api/personas/{persona}/memory", _H.api_persona_memory),
+        ("POST", "/api/personas/{persona}/memory/rollback", _H.api_persona_memory_rollback),
+        ("GET", "/api/personas/{persona}/memory/versions/{version}", _H.api_persona_memory_version),
+        ("POST", "/api/personas/{persona}/consolidation/{action:accept|reject}", _H.api_persona_consolidation),
+        ("POST", "/api/personas/{persona}/journal/{entry}/retract", _H.api_persona_retract),
+        ("POST", "/api/personas/{persona}/forget", _H.api_persona_forget),
+        ("POST", "/api/personas/{persona}/messages", _H.api_persona_message),
+        ("POST", "/api/personas/{persona}/sound", _H.api_persona_sound),
+        ("POST", "/api/personas/{persona}/reimport", _H.api_persona_reimport),
+        ("POST", "/api/personas/{persona}/reimport/{action:accept|reject}", _H.api_persona_reimport_decide),
+        ("GET", "/api/personas/{persona}/runs/{run}", _H.api_persona_run),
+        ("GET", "/api/personas/{persona}/external", _H.api_persona_external),
+        ("GET", "/api/personas/{persona}/external/versions/{sha256}", _H.api_persona_external_version),
+        ("GET", "/api/personas/{persona}/external/diff", _H.api_persona_external_diff),
+        ("POST", "/api/personas/{persona}/external/restore", _H.api_persona_external_restore),
+        ("POST", "/api/personas/{persona}/external/erase", _H.api_persona_external_erase),
+        ("GET", "/api/chats/{chat}/wakes", _H.api_chat_wakes),
+        ("POST", "/api/chats/{chat}/wakes", _H.api_chat_wake_allow),
+        ("GET", "/api/notify/rules", _H.api_notify_rules),
+        ("POST", "/api/notify/rules", _H.api_notify_set_rules),
+        ("POST", "/api/wakes/control", _H.api_wake_control),
+        ("POST", "/api/wakes/acknowledge", _H.api_wake_acknowledge),
+        ("POST", "/api/wakes/review/{action:accept|restart}", _H.api_wake_review),
     ]
 ]
 

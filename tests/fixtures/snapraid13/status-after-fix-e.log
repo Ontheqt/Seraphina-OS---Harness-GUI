@@ -1,0 +1,103 @@
+version:13.0
+unixtime:1792928573
+time:2026-10-25 11:42:53
+command:status
+argv:0:/usr/local/bin/snapraid
+argv:1:-c
+argv:2:/etc/snapraid.conf
+argv:3:-l
+argv:4:/var/lib/seraphina-snapraid/runs/J-1/snapraid.log
+argv:5:status
+selftest:
+msg:progress: Self test...
+conf:file:/etc/snapraid.conf
+blocksize:65536
+data:d1:/mnt/disk1/
+data:d2:/mnt/disk2/
+data:d3:/mnt/disk3/
+mode:par2
+parity:0:/mnt/parity1/snapraid.parity
+2-parity:0:/mnt/parity2/snapraid.2-parity
+autosave:1000000000
+filter:exclude /lost+found/
+filter:exclude *.unrecoverable
+filter:exclude /seraphina-restored/
+filter:exclude /.seraphina-trash/
+content:/var/snapraid/snapraid.content
+msg:progress: Loading state from /var/snapraid/snapraid.content...
+msg:verbose:       32 files
+msg:verbose:        0 hardlinks
+msg:verbose:        0 symlinks
+msg:verbose:        4 empty dirs
+memory:used:326927
+memory:block:17
+memory:extent:88
+memory:file:192
+memory:link:88
+memory:dir:80
+msg:progress: Using 0 MiB of memory for the file-system.
+summary:block_size:65536
+summary:parity_block_count:345
+summary:parity_block_total:parity:895
+summary:parity_block_free:parity:549
+summary:parity_block_total:2-parity:895
+summary:parity_block_free:2-parity:549
+summary:parity_block_free_min:549
+summary:disk_file_count:d1:12
+summary:disk_block_count:d1:345
+summary:disk_fragmented_file_count:d1:1
+summary:disk_excess_fragment_count:d1:1
+summary:disk_zerosubsecond_file_count:d1:0
+summary:disk_file_size:d1:22003200
+summary:disk_block_allocated:d1:345
+summary:disk_block_total:d1:895
+summary:disk_block_free:d1:558
+summary:disk_block_max_by_space:d1:903
+summary:disk_block_max_by_parity:d1:894
+summary:disk_block_max:d1:894
+summary:disk_space_wasted:d1:589824
+summary:disk_file_count:d2:14
+summary:disk_block_count:d2:246
+summary:disk_fragmented_file_count:d2:0
+summary:disk_excess_fragment_count:d2:0
+summary:disk_zerosubsecond_file_count:d2:0
+summary:disk_file_size:d2:15326500
+summary:disk_block_allocated:d2:246
+summary:disk_block_total:d2:895
+summary:disk_block_free:d2:660
+summary:disk_block_max_by_space:d2:906
+summary:disk_block_max_by_parity:d2:894
+summary:disk_block_max:d2:894
+summary:disk_space_wasted:d2:786432
+summary:disk_file_count:d3:6
+summary:disk_block_count:d3:195
+summary:disk_fragmented_file_count:d3:1
+summary:disk_excess_fragment_count:d3:2
+summary:disk_zerosubsecond_file_count:d3:0
+summary:disk_file_size:d3:12415100
+summary:disk_block_allocated:d3:195
+summary:disk_block_total:d3:895
+summary:disk_block_free:d3:705
+summary:disk_block_max_by_space:d3:900
+summary:disk_block_max_by_parity:d3:894
+summary:disk_block_max:d3:894
+summary:disk_space_wasted:d3:393216
+summary:file_count:32
+summary:file_block_count:786
+summary:fragmented_file_count:2
+summary:excess_fragment_count:3
+summary:zerosubsecond_file_count:0
+summary:file_size:49744800
+summary:parity_size:22609920
+summary:parity_size_max:58589184
+summary:hash:spooky2
+summary:prev_hash:undefined
+summary:best_hash:spooky2
+block_count:345
+summary:has_unsynced:0
+summary:has_unscrubbed:1
+summary:has_rehash:0
+summary:has_bad:1:13:13
+info_count:345
+info_time:1792928544:1:new
+info_time:1792928568:344:scrubbed

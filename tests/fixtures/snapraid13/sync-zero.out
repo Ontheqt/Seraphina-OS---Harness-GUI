@@ -1,0 +1,9 @@
+Self test...
+Loading state from /var/snapraid/snapraid.content...
+Scanning...
+Scanned d3 in 0 seconds
+Scanned d1 in 0 seconds
+The file '/mnt/disk2/media/photos/img5.jpg' has unexpected zero size!
+It's possible that after a kernel crash this file was lost,
+and you can use 'snapraid fix -f /media/photos/img5.jpg' to recover it.
+If this an expected condition you can 'sync' anyway using 'snapraid --force-zero sync'

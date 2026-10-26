@@ -24,6 +24,14 @@ Options:
   --data-dir DIR   where jobs, worktrees and logs go (only when this run writes
                    the token; default ~/.local/share/software-factory)
   --systemd-user   install the systemd user unit ~/.config/systemd/user/factory.service
+  --credential NAME:PATH
+                   with --systemd-user: add LoadCredential=NAME:PATH to the unit
+                   (repeatable), for a setting with "token_credential": "NAME"
+                   (NAME: letters, digits and _ . @ + -; PATH: an absolute path).
+                   The unit's credential lines are kept when you run it again;
+                   a NAME given again gets the new PATH
+  --drop-credential NAME
+                   with --systemd-user: remove the unit's credential line NAME
   --start          with --systemd-user: enable and start it now
   --uninstall      remove the link and the user unit (never the config or data)
   -h, --help       show this help
@@ -55,6 +63,8 @@ data_dir=
 systemd_user=0
 start=0
 uninstall=0
+credentials=()
+drops=()
 while [ $# -gt 0 ]; do
   case $1 in
     --preset) [ $# -ge 2 ] || die "--preset needs a name"; preset=$2; preset_given=1; shift 2 ;;
@@ -62,6 +72,10 @@ while [ $# -gt 0 ]; do
     --data-dir) [ $# -ge 2 ] || die "--data-dir needs a directory"; data_dir=$2; shift 2 ;;
     --data-dir=*) data_dir=${1#*=}; shift ;;
     --systemd-user) systemd_user=1; shift ;;
+    --credential) [ $# -ge 2 ] || die "--credential needs NAME:PATH"; credentials+=("$2"); shift 2 ;;
+    --credential=*) credentials+=("${1#*=}"); shift ;;
+    --drop-credential) [ $# -ge 2 ] || die "--drop-credential needs a NAME"; drops+=("$2"); shift 2 ;;
+    --drop-credential=*) drops+=("${1#*=}"); shift ;;
     --start) start=1; shift ;;
     --uninstall) uninstall=1; shift ;;
     -h | --help) usage; exit 0 ;;
@@ -71,6 +85,30 @@ done
 if [ "$start" -eq 1 ] && [ "$systemd_user" -eq 0 ]; then
   die "--start needs --systemd-user"
 fi
+if [ "${#credentials[@]}" -gt 0 ] && [ "$systemd_user" -eq 0 ]; then
+  die "--credential needs --systemd-user"
+fi
+if [ "${#drops[@]}" -gt 0 ] && [ "$systemd_user" -eq 0 ]; then
+  die "--drop-credential needs --systemd-user"
+fi
+credential_re='^[A-Za-z0-9_][A-Za-z0-9_.@+-]{0,127}$'
+for credential in "${credentials[@]+"${credentials[@]}"}"; do
+  # NAME is a plain file name, checked as token_credential is; PATH one absolute path with nothing a
+  # unit file would split, unquote or expand.
+  name=${credential%%:*}
+  path=${credential#*:}
+  if [ "$name" = "$credential" ] || ! [[ $name =~ $credential_re ]] || [[ $name == *..* ]]; then
+    die "--credential $credential: NAME must be a credential name such as register-token (letters, digits and _ . @ + -)"
+  fi
+  case $path in
+    /*) ;;
+    *) die "--credential $credential: PATH must be an absolute path" ;;
+  esac
+  case $path in
+    *[[:space:]]* | *[[:cntrl:]]* | *\\* | *\"* | *\'* | *%* | *\$*)
+      die "--credential $credential: PATH must not hold spaces, quotes, backslashes, % or \$" ;;
+  esac
+done
 
 check_requirements() {
   have "$python" || die "$python not found: sudo apt install python3 (or set FACTORY_PYTHON)"
@@ -194,11 +232,39 @@ substitute() {  # substitute LINE PLACEHOLDER VALUE: every PLACEHOLDER replaced 
   printf '%s\n' "$out$rest"
 }
 
+listed() {  # listed NAME ITEM...: whether NAME is one of the items, or the NAME before an item's first ":"
+  local name=$1 item
+  shift
+  for item in "$@"; do
+    [ "$name" = "${item%%:*}" ] && return 0
+  done
+  return 1
+}
+
+credential_lines() {  # the unit's LoadCredential lines: the installed unit's (kept), then the ones given now
+  local line name drop
+  if [ -f "$unit" ]; then
+    # Kept as they are (systemd read them before), except a NAME given again or dropped.
+    while IFS= read -r line; do
+      name=${line#*=}
+      name=${name%%:*}
+      if listed "$name" "${drops[@]+"${drops[@]}"}" || listed "$name" "${credentials[@]+"${credentials[@]}"}"; then
+        continue
+      fi
+      printf '%s\n' "$line"
+    done < <(grep -E '^LoadCredential(Encrypted)?=' "$unit" || true)
+  fi
+  for credential in "${credentials[@]+"${credentials[@]}"}"; do
+    printf 'LoadCredential=%s\n' "$credential"
+  done
+}
+
 render_unit() {
   local line bin
   bin=$(unit_escape "$launcher")
   bin=${bin//\$/\$\$}  # ExecStart= expands $NAME; "$$" is a literal "$"
   printf '# Written by %s from systemd/factory.service; run it again to update.\n' "$repo_dir/install.sh"
+  printf '# Running it again keeps the LoadCredential lines below (--drop-credential NAME removes one).\n'
   while IFS= read -r line || [ -n "$line" ]; do
     if [ "$line" = "@ENVIRONMENT@" ]; then
       printf 'Environment="PATH=%s"\n' "$(unit_escape "$PATH")"
@@ -208,17 +274,40 @@ render_unit() {
       if [ -n "${FACTORY_CONFIG:-}" ]; then
         printf 'Environment="FACTORY_CONFIG=%s"\n' "$(unit_escape "$FACTORY_CONFIG")"
       fi
+    elif [ "$line" = "@CREDENTIALS@" ]; then
+      printf '%s' "$lines"
     else
       substitute "$line" @FACTORY_BIN@ "$bin"
     fi
   done <"$repo_dir/systemd/factory.service"
 }
 
+unit_credential_names() {  # the NAMEs of the installed unit's credential lines, one per line
+  local line name
+  [ -f "$unit" ] || return 0
+  while IFS= read -r line; do
+    name=${line#*=}
+    printf '%s\n' "${name%%:*}"
+  done < <(grep -E '^LoadCredential(Encrypted)?=' "$unit" || true)
+}
+
 install_unit() {
+  local lines line drop names
+  names=$(unit_credential_names)
+  for drop in "${drops[@]+"${drops[@]}"}"; do
+    if ! grep -qxF -- "$drop" <<<"$names"; then
+      warn "--drop-credential $drop: the unit has no credential line $drop"
+    fi
+  done
+  lines=$(credential_lines)   # render_unit puts them in place of @CREDENTIALS@
+  [ -z "$lines" ] || lines+=$'\n'
   mkdir -p "$unit_dir"
   render_unit >"$unit.tmp"
   mv -f "$unit.tmp" "$unit"
   say "wrote $unit"
+  while IFS= read -r line; do
+    [ -z "$line" ] || say "  with $line"
+  done <<<"$lines"
   if ! have systemctl; then
     warn "systemctl not found: the unit is written but not loaded"
   elif ! systemctl --user daemon-reload; then

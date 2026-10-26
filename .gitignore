@@ -5,3 +5,6 @@ node_modules/
 
 # Owner-specific server material (never published)
 private/
+
+# Release zips built by scripts/package.py
+dist/

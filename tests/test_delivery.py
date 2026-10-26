@@ -134,6 +134,26 @@ class ExportTest(RepoTestCase):
         self.assertIn("**APPROVE**: It works.", report)
         self.assertNotIn("nothing", report)
         self.assertIn("Not in `files/`: `l` (symlink).", report)
+        self.assertNotIn("Independence", report, "every judge was independent")
+
+    def test_the_report_says_when_independence_was_reduced(self) -> None:
+        """DESIGN §23: a folder delivery is read outside the GUI, so its report carries the badge's record."""
+        job = self.job()
+        job.update(independence="reduced", shared_models=[
+            {"round": 1, "agent": "reviewer-security", "model": "flash-next", "model_id": "qwen-x", "family": "qwen",
+             "builder_model": "flash-next", "accepted": True},
+            {"round": 2, "agent": "reviewer-code", "model": "sol", "model_id": "openai/sol", "family": "openai",
+             "builder_model": "sol"}])
+        report = delivery.report_markdown(job, tip="a" * 40, written=[], skipped=[], deleted=[], patch_bytes=1)
+        reviews, decision = report.split("## Reviews", 1)[1].split("## Decision", 1)
+        self.assertIn("Independence reduced: a judge ran on a model family the builder ran on, with no way out.",
+                      reviews)
+        self.assertIn("- round 1: reviewer-security on `flash-next` (qwen family), like the builder's `flash-next` "
+                      "(accepted by the routing)", reviews)
+        self.assertIn("- round 2: reviewer-code on `sol` (openai family), like the builder's `sol`\n", reviews)
+        job.update(independence="unknown", shared_models=[])
+        report = delivery.report_markdown(job, tip="a" * 40, written=[], skipped=[], deleted=[], patch_bytes=1)
+        self.assertIn("Independence unknown: the code it judged was written in a chat", report)
 
 
 if __name__ == "__main__":

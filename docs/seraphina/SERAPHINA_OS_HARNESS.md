@@ -4,6 +4,12 @@
 by four critics (novice, safety, feasibility, completeness); Appendix D logs
 every issue and what was done with it. Nothing here ships until the phase in §10
 that names it. The first slice (§10.1) is built inside today's Software Factory.
+Revised on 2026-10-25 after a read-only capture of the reference server, made
+by its owner's assistant, showed that Cosmos is gone and an owner-built login
+gateway (nginx, Dex, oauth2-proxy) stands in its place, that a sandbox inside a
+sandbox fails there, and that its backup disk no longer holds the old backups
+(§3, §5, §6.3, §7.2-§7.5, §9.2; facts from it are labelled **observed**;
+Appendix D's capture round lists every change).
 
 **What it serves.** DESIGN.md §31, the owner's decisions, is the requirement. This
 document keeps to DESIGN.md §17 and §25-§30. Where it deliberately differs, the
@@ -96,7 +102,10 @@ and anything personal are left out on purpose.
    Agent processes run as their own Unix user; the gate that signs bundles runs
    as another; a small root executor checks every caller's identity. Approvals
    are given on a page the executor serves itself, so the web core can neither
-   see nor forge them.
+   see nor forge them. This is a guarantee about the harness's own agents. An
+   operator persona the owner marks (DESIGN.md §36) holds root and acts through
+   her own tools: her own actions are outside the executor's guarantees, and the
+   harness records them as she reports them (§9.2).
 10. **First contact needs one terminal line** (§9.9): the owner pastes it,
     scans two QR codes with a phone, and the rest is a step-by-step wizard. If
     Seraphina itself breaks, a watchdog rolls it back and the server's own
@@ -453,6 +462,16 @@ These are the cards under **Your server**.
 
 #### Apps
 
+> **On a server without Cosmos** (as the owner's now is: Dockge runs the
+> containers and Tailscale sidecars give each app its address), the launcher
+> follows [YOUR_SERVER.md](YOUR_SERVER.md) instead of the Cosmos parts below:
+> apps are grouped from Dockge stacks, Compose folders and native services,
+> each Open address is found from the sidecars' Tailscale serve config and
+> confirmed once by the owner, Seraphina installs nothing and is never in
+> the request path, and numbers come from cgroup files and a narrow root
+> helper, never the Docker socket. YOUR_SERVER.md Appendix A1 lists the
+> differences.
+
 - **Novice sees.** The **launcher**: one card per *application* with an
   **Open** button that opens the app in one tap, plus a QR code and "Add to home
   screen" per app, so nobody has to remember an address or a port. An
@@ -683,6 +702,16 @@ GUI toggle: the executor refuses a class whose unlock is missing.
 ---
 ## 3. Relationship to Cosmos Cloud
 
+**Update, 25 Oct (observed).** The reference server no longer runs Cosmos.
+Dockge runs its containers, and the owner put his own login gateway on the
+ports Cosmos's proxy used: nginx with its own certificate, Dex as the sign-in
+service (with Postgres), and two oauth2-proxy instances, one for the home
+network and one for the tailnet, all in one Dockge stack. The pluggable-backend
+decision stands; on such a server the native backend applies, the Cosmos rows
+below do not, and YOUR_SERVER.md designs the launcher and the gateway reading
+(its §1.2, §2.3 and §5). Where this section says Cosmos owns routes, logins or
+SnapRAID, read "the owner's own tools" on a server without Cosmos.
+
 ### 3.1 The decision: pluggable backend, Cosmos adapter first
 
 | Option | For | Against | Verdict |
@@ -726,7 +755,8 @@ surfaces may read; only the owner writes.
 | Image retention | Seraphina | A verified `docker save` tarball of the previous image on the backup disk is the copy that counts; a keeper container is only a fast path (§5.2). A tag protects nothing: `docker image prune -a` removes every image no container uses, tagged or not ([pruning](https://github.com/docker/docs/blob/a356e2a/content/manuals/engine/manage-resources/pruning.md)) |
 | Data backups and restore drills | Seraphina | Runs its own restic repositories. Uses Cosmos's restic only if it is licensed and native and the owner chooses it. Drills are always Seraphina's |
 | Alert policy | Seraphina | Writes Cosmos alerts only for simple local reactions, `notification` action only. Keeps "Anti Crypto-Miner" and "Anti Memory Leak" off for GPU and model containers (L57) |
-| Storage pools (mergerFS, SnapRAID) and their schedules | Cosmos | Reads; puts the parity sync and scrub on the maintenance calendar so they never collide with a window |
+| Storage pools (mergerFS, SnapRAID) and their schedules | whichever route the owner chooses (BACKUPS_SNAPRAID.md): on a Cosmos machine Cosmos; otherwise a host install run by Seraphina's helper, a SnapRAID daemon Seraphina drives, or an app Seraphina only reads; never nobody, and never two schedulers at once | Reads; puts the parity sync and scrub on the maintenance calendar so they never collide with a window |
+| Reverse-proxy routes and sign-in on a machine without Cosmos (an owner's own nginx, Dex and oauth2-proxy) | the owner, through that gateway's stack | Reads its route table's shape only (YOUR_SERVER §6.3 `ingress`); never writes it, and never sits behind it unless the owner decides (YOUR_SERVER D25) |
 | Host OS: packages, units, netplan, firewall | read-only until adopted; then the Seraphina executor | Like an app, the host OS is adopted explicitly, one area at a time (packages, units, network, firewall), so on day one Seraphina owns nothing. Cockpit stays available; a change made there is recorded as out-of-band and becomes a tracker item to adopt or revert |
 | Blueprint, registry, ledger, windows, broker, model-server profiles | Seraphina | — |
 | Containers created by Dockge or the Compose CLI | that surface (a recipe folder) | Reads the recipe as a plain file; adopts it only through §3.3 |
@@ -1298,7 +1328,7 @@ One per consumer. Same small interface, stdlib Python, no root:
 
 ```python
 class Adapter:
-    kind: str                                   # "openwebui", "tabbyapi", "llamacpp", "dsh", "qwen", "factory", "cosmos"
+    kind: str                                   # "openwebui", "tabbyapi", "llamacpp", "dsh", "qwen", "factory", "cosmos", "dockge", "gateway"
     def probe(self) -> Probe: ...               # reachable? auth ok? version / build / commit
     def read(self) -> Snapshot: ...             # raw, redacted copy of everything relevant, with provenance
     def extract(self, snap) -> list[Observed]: ...   # normalised (fact path, value, where, how sure, observed|configured)
@@ -1328,10 +1358,18 @@ different settings files.
 | **Open WebUI** | `/api/version`, `/api/v1/configs/export` (keys fingerprinted on arrival), `/openai/config`, `/api/v1/models/export`, `/api/v1/functions/export`, `/api/v1/tools/export`. Without an API key: the executor verb `adapter.read openwebui --tables` copies only the `config`, `model`, `function` and `tool` tables into memory with the SQLite backup API, fingerprints secrets, deletes the copy within the same call and never returns any other table (chats, files and users are never read) | **Typed executor actions**, each a read-modify-write inside one executor verb so keys never leave the executor: `owui.connection.patch {match_url, fields}` re-reads `/openai/config`, refuses unless the live list's fingerprints equal the bundle's before-capture, changes only the named fields of the matching entry, and posts the whole lists back in their existing order (`POST /openai/config/update` stores exactly the lists it is sent, [routers/openai.py at v0.12.3](https://github.com/open-webui/open-webui/blob/v0.12.3/backend/open_webui/routers/openai.py)). `owui.model.patch {id, set: {path: value}}` re-reads the model and always sends the **full** `params` object, because `/api/v1/models/import` merges `meta` but replaces `params` with what it is sent ([routers/models.py at v0.12.3](https://github.com/open-webui/open-webui/blob/v0.12.3/backend/open_webui/routers/models.py)). `/api/v1/configs/import` for listed keys only. **Never** `/models/sync` or `/functions/sync`, which delete what they are not sent | Environment values are read only on first start, then the database wins (`ConfigVar`), so editing the compose file changes nothing ([env-configuration](https://github.com/open-webui/docs/blob/main/docs/reference/env-configuration.mdx)); `OPENAI_API_CONFIGS` is keyed by URL position; API keys are off by default since 0.6.37; `params` (system prompt and curated config) are stripped for read-only callers (routers/models.py), so a non-admin read shows no instruction copies. A contract test checks that every untouched key, list entry and `params` field is byte-identical after any write |
 | **TabbyAPI** | `/v1/model`, `/props`, `/v1/models` (admin key lists every folder), `/v1/model/load_config`, `/v1/sampling/overrides`, `/v1/templates`; its YAML files; git commit and exllamav3 version | edit `tabby_config.yml` or a preset (line edits, below), then `POST /v1/model/load`, then read `/v1/model` again; a runtime "switch" call always paired with the same change in a file | No server-side system prompt store; serves the loaded model whatever name is asked for unless `inline_model_loading` is on ([common_.py](https://github.com/theroyallab/tabbyAPI/blob/main/endpoints/OAI/utils/common_.py)); the sample preset caps `max_tokens` at 150; EXL2 removed on 2026-07-14 |
 | **llama.cpp** | unit file or compose args (from the Blueprint), preset INI, `/props` first (it carries `is_sleeping`; `/props?model=` in router mode), then `/slots` and `/v1/models` only when awake, `build_info`, `/metrics` when enabled | edit the preset INI then `GET /models?reload=1`, or a unit override plus restart | With `--sleep-idle-seconds`, only `GET /health`, `/props`, `/models` and `/metrics` do not wake a sleeping model ([server README, "Sleeping on Idle"](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md)), so the adapter never calls `/slots` or `POST /apply-template` on a sleeping or unloaded model and records "not checked: asleep"; `/slots` can be turned off with `--no-slots`; command line beats model section beats `[*]`; defaults move between builds (`--jinja`, slots, unified KV); `POST /apply-template` checks template identity exactly |
-| **DeepSeek Harness** | as the owning user with no network: `dsh --profile <p> --dump-config` and `--dump-default-config` (the difference is the user layer), `--dump-config-schema`, `$DSH_HOME/AGENTS.md`, whether `.credentials.yaml` exists (never its contents). These are **configured** values: `--dump-config` composes the files on disk, not what the running `dsh web` process loaded | rewrite the complete row in `profiles/<p>/cordis.patch.yml` (rows replace, they do not merge), validated against the schema, after checking that the file's hash still equals the read-capture (the DSH web UI writes the same file with no lock; a mismatch refuses the write); then `--dump-config` again, then a "restart `dsh web` to apply" step and a check after it | developer preview with breaking changes ([README](https://github.com/deepseek-ai/deepseek-harness/blob/master/README.md)); `--from-default-profile` deletes its target since 0.2.1-alpha.2; strict `{{variables}}`; the `headless` profile ignores the credential store since 0.2.1-alpha.2 (ai-stack-drift.md §2.4) |
+| **DeepSeek Harness** | as the owning user with no network: `dsh --profile <p> --dump-config` and `--dump-default-config` (the difference is the user layer), `--dump-config-schema`. On the reference server the host has no Node and DSH's runtime is bind-mounted into a container (observed), so `dsh` cannot run on the host: the read runs with `docker exec` as the container's own uid (1000 there) with networking off for that call, or with the harness's own pinned Node against the same files, never as root; `$DSH_HOME/AGENTS.md`, whether `.credentials.yaml` exists (never its contents). These are **configured** values: `--dump-config` composes the files on disk, not what the running `dsh web` process loaded | rewrite the complete row in `profiles/<p>/cordis.patch.yml` (rows replace, they do not merge), validated against the schema, after checking that the file's hash still equals the read-capture (the DSH web UI writes the same file with no lock; a mismatch refuses the write); then `--dump-config` again, then a "restart `dsh web` to apply" step and a check after it | developer preview with breaking changes ([README](https://github.com/deepseek-ai/deepseek-harness/blob/master/README.md)); `--from-default-profile` deletes its target since 0.2.1-alpha.2; strict `{{variables}}`; the `headless` profile ignores the credential store since 0.2.1-alpha.2 (ai-stack-drift.md §2.4) |
 | **Qwen Code** | as the owning user: every settings layer (system defaults, user, project, system, `.env`), `QWEN.md` hierarchy, agents, skills, `$version` | rewrite the complete `modelProviders[...]` entry with the full `generationConfig` (the layer is sealed), preserving the file's owner, group and mode, checked afterwards | without `contextWindowSize`, Qwen guesses the context from the model name ([settings](https://github.com/QwenLM/qwen-code/blob/main/docs/users/configuration/settings.md)); `mcpServers.<name>.command` and `ui.statusLine.command` run commands ([settings at a0e4149](https://github.com/QwenLM/qwen-code/blob/a0e4149/docs/users/configuration/settings.md)), so settings files are access-controlling (§5.8) |
 | **Software Factory** | `Config.load()`: providers, models, drivers | `Config.save()` | its doctor already checks reachability and keys (DESIGN.md §20) |
-| **Cosmos** | the inventory of §3.4 | route and container edits through §3.5 | routes and container definitions are one more consumer (a route whose target no longer exists) |
+| **Cosmos** (only where Cosmos runs) | the inventory of §3.4 | route and container edits through §3.5 | routes and container definitions are one more consumer (a route whose target no longer exists) |
+| **Dockge and the owner's login gateway** (where there is no Cosmos) | Dockge's stacks as plain files and the containers' Compose labels, the recipe named by `com.docker.compose.project.config_files` (it may be `compose.json`); the gateway's route table through YOUR_SERVER's `ingress` verb, its shape only | nothing: both are read-only consumers until an adopt step for Dockge stacks exists; the gateway is never written | a route whose upstream no longer exists is one more drift; Dockge has no API, so nothing is driven through it (observed: Dockge and the gateway replaced Cosmos on the reference server) |
+
+**Open WebUI's version map is keyed on what runs, not on `/api/version`.** A
+local, customised build can report an upstream version while running other
+code: the reference server's Open WebUI loads a code file through a bind from
+its own writable data folder (observed). So the map's key is the image ID, the
+hashes of the code binds under `/app/backend/open_webui` and the Compose config
+hash (BROWSER_AND_CODEX §3.10), and an unknown key makes the adapter read-only.
 
 **YAML.** TabbyAPI and DSH keep YAML files and the harness has no YAML parser.
 **Decision:** a small vendored reader for the block-style subset these files use
@@ -1342,7 +1380,9 @@ test checks that the diff of every write is exactly the intended lines. A file
 that uses anything outside the subset (anchors, multiple documents, complex
 flow style) is read through the server's JSON views instead (`load_config`,
 `--dump-config`), and its writes become a diff a person applies. The
-machine-parseability of `--dump-config` output is **UNVERIFIED**.
+machine-parseability of `--dump-config` output is **UNVERIFIED**. The reader's
+tests include a round trip and a timing test on a profile of about 2 MB, the
+size of the reference server's live DSH web profile (observed: 1.97 MB).
 
 ### 4.8 The drift detector
 
@@ -1602,8 +1642,8 @@ so the keys cannot live only on the server (§5.3).
 
 | Layer | Engine | Notes |
 | ----- | ------ | ----- |
-| Data (versioned, encrypted) | **restic 0.19.1** (default) or **borg 1.4.5**; borg 2 is beta and its README says not to use it in production ([borg README](https://github.com/borgbackup/borg/blob/45f8b17/README.rst)) | run by the executor; written through restic's **rest-server in `--append-only` mode** on the backup disk, so new backups can be added but nothing on the machine can delete or change old ones ([rest-server README](https://github.com/restic/rest-server/blob/master/README.md)); offsite only with consent, on immutable or object-locked storage |
-| Data, existing tools | Kopia or another existing repository: a read-only adapter (last success, last attempt, snapshot list) | Seraphina does not take over an existing tool without an adopt step |
+| Data (versioned, encrypted) | **restic 0.19.1** (default; Ubuntu 26.04's main archive carries 0.18.1, and rest-server has no apt package there, observed, so the installer pins an upstream release of each by checksum, or uses 0.18.1 after its contract tests pass) or **borg 1.4.5**; borg 2 is beta and its README says not to use it in production ([borg README](https://github.com/borgbackup/borg/blob/45f8b17/README.rst)) | run by the executor; written through restic's **rest-server in `--append-only` mode** on the backup disk, so new backups can be added but nothing on the machine can delete or change old ones ([rest-server README](https://github.com/restic/rest-server/blob/master/README.md)); offsite only with consent, on immutable or object-locked storage |
+| Data, existing tools | Kopia or another existing repository: a read-only adapter (last success, last attempt, snapshot list) | Seraphina does not take over an existing tool without an adopt step. On the reference server Kopia is gone and the backup disk appears empty (observed), so phase B adopts nothing there and starts fresh, after the owner says whether the disk was emptied on purpose |
 | Data, Cosmos | Cosmos restic only when licensed, native, and chosen | repositories are standard restic, restorable without Cosmos |
 | Snapshots | ZFS datasets, btrfs subvolumes, LVM (thick or thin) | a per-service dataset snapshot is the cheapest "undo by restore" there is; it protects against mistakes, not against the disk failing (§5.3) |
 | Databases | stdlib `sqlite3.Connection.backup()` (never a bare copy of a WAL database), `pg_dump -Fc`, `mariadb-dump --single-transaction` | taken before every change to that app |
@@ -2257,7 +2297,12 @@ real-server-lessons.md). So:
   <wake time>`) and records the boot cause on the next start. A storage parity
   check or scrub becomes a hold instead of a special case. The machine's
   existing shutdown timer and guard are replaced through an adopt step, and
-  until then they are listed as an updater (§6.5). While a kernel trial is
+  until then they are listed as an updater (§6.5). On the reference server the
+  existing power-off script interrupts a running parity job with SIGINT, waits
+  up to 10 minutes and never kills, but reads no holds registry, and
+  `poweroff.target` forces the power-off 30 minutes after it starts (observed);
+  so until the adopt step a hold cannot delay that power-off, and any wait cap
+  inside it stays below 30 minutes. While a kernel trial is
   pending (§5.8), the default boot entry stays the known-good one, so a wake
   never boots an unchecked kernel.
 - **Reboot-class work needs a person awake and near the machine** when there is
@@ -2539,9 +2584,12 @@ flowchart LR
   `127.0.0.1:8765` stays for Software-Factory-only installs (DESIGN.md §17); the
   SSH break-glass forwards to the socket (`ssh -L
   8765:/run/seraphina/web.sock`). The harness must never run inside the
-  container engine it supervises, nor behind a self-updating reverse proxy
-  (L71): backups, engine upgrades and daemon crashes stop that engine exactly
-  when the restore tool is needed. On the reference server every remote route,
+  container engine it supervises, nor behind any proxy that runs in that engine
+  (L71, widened on 25 Oct from "a self-updating reverse proxy"): backups, engine
+  upgrades and daemon crashes stop that engine exactly when the restore tool is
+  needed. An owner's own login gateway in containers (observed on the reference
+  server) is such a proxy, so Seraphina is never one of its upstreams
+  (YOUR_SERVER N11, D25). On the reference server every remote route,
   including the admin console's, ran in containers and vanished whenever the
   engine stopped.
 - **A host-native tailscaled in userspace mode** (`--tun=userspace-networking`)
@@ -2708,12 +2756,22 @@ endpoint, not one lock per app (L16). A chain record:
 ```json
 {"kind": "endpoint_chain", "host": "local", "app": "notes-app", "entry": {"scope": "owner-tailnet", "name": "<app node name>:443"},
  "hops": [{"layer": "tls", "by": "tailscale serve (app node)", "depends_on": ["docker.service"]},
-          {"layer": "auth", "by": "cosmos login", "mfa_required": true},
+          {"layer": "auth", "by": "oauth2-proxy (tailnet) with the sign-in service", "mfa_required": "unverified"},
           {"layer": "app", "listen": "loopback:<port>", "shares_loopback_with_containers": 0}],
  "sibling_chains": ["lan-direct:<port>", "tailnet-loopback-forward:<port>"],
  "weakest_chain": "lan-direct:<port> (app login only, plain HTTP)",
  "external_reachability": "unverified: router forwards, UPnP and tailnet policy not checked"}
 ```
+
+**Chains on a server without Cosmos** (observed on the reference server, 25
+Oct): client, then nginx with its own certificate, then oauth2-proxy (the
+home-network or the tailnet instance) with the sign-in service (Dex, backed by
+Postgres), then the app; and, listed separately, the direct ports that bypass
+the gateway (several apps answer on their own ports, some without any login).
+A Cosmos chain (client, Cosmos's proxy and login, then the app) applies only
+where Cosmos runs. Whether the sign-in service asks for a second factor cannot
+be read from the host (YOUR_SERVER §8.3), so `mfa_required` stays `unverified`
+until the owner confirms it.
 
 The model is computed for proposed states too: the gate runs it on the state a
 bundle would produce and sets `opens_access` when a new or wider way in would
@@ -2746,6 +2804,7 @@ accepted and never proposes removing them.
 | D4. Userspace sidecars on the host network | containers with `NetworkMode=host` whose process list or image runs `tailscaled` in userspace mode | they forward the host's loopback to their own tailnet address in the same way (§7.1) | high; critical with an unauthenticated loopback listener |
 | E. UPnP / NAT-PMP | tailscaled's own mapping is expected (`TS_DISABLE_PORTMAPPER=1` turns it off); from the LAN, `upnpc -l` (tool name **UNVERIFIED** here) | any other mapping | high |
 | F. Cosmos | each route's `WhitelistInboundIPs`, `AdminWhitelistIPs`, `AdminConstellationOnly`; Constellation state; the host firewall's rules for Cosmos's ports | Cosmos answers on the LAN (it binds `0.0.0.0` and cannot be told otherwise); Constellation on without a deliberate decision. **Fix:** interface-scoped rules generated from the endpoint registry: drop new connections to Cosmos's ports that arrive on the LAN interface or a global IPv6 address, accept loopback and the sidecars' bridge networks. Never tailnet source CIDRs: userspace sidecars, socket relays and Serve all connect from loopback or the server's own address, and Cosmos saw every tailnet visitor as the server itself (§3.3 rule 2 of the lessons), so a CIDR whitelist either blocks every sidecar route into Cosmos or, once loopback is added back, admits everything. The chain model runs on the proposed rules; the change uses the auto-reverting firewall action of §7.7 | high |
+| F2. Login gateway | the gateway's routes (YOUR_SERVER `ingress`), their listen addresses and whether each asks for the sign-in; the apps' own published ports | a route that listens on a home-network address is **LAN exposure**, like a direct port, even behind the sign-in; a route with no `auth_request`; an app that also answers on a direct port that bypasses the gateway | high (no sign-in) / medium (behind the sign-in, LAN) |
 | G. Cockpit | `cockpit.socket` | `ListenStream=9090` (all addresses). Cockpit on the LAN is also what still works when the engine is down (§8.1 of the lessons), so the owner chooses: keep it as an accepted LAN break-glass entry, or move it to its own tailnet node. It is never bound to loopback and served on the harness's name. Any change runs under §7.7, and its precondition lists every existing route that targets port 9090 (Cosmos routes, sidecar serve configs) and refuses if one would break; when Cockpit sits behind a proxy, `Origins` and `ProtocolHeader = X-Forwarded-Proto` in `cockpit.conf` ([cockpit.conf](https://github.com/cockpit-project/cockpit/blob/4bc7d15/doc/modules/man/pages/cockpit.conf.5.adoc)) | high |
 | H. What the server cannot see | the guided outside check of §2.3 Security: the router's pages, a web port checker opened from the home Wi-Fi, screenshots uploaded; for experts, `nmap -Pn` from a VPS and a passive lookup on Shodan or Censys | never done, or older than 90 days or than the last router change; a person closes it | low (stale) / critical (reachable) |
 
@@ -2985,7 +3044,9 @@ tool-call probes through the real server; performance: tokens/s, time to first
 token and VRAM at the target context) → WAIT FOR ALL → approver → gate → package
 with a provenance manifest → deploy (executor, previous model kept) → benchmark →
 offer to route agents. Fine-tune, merge and distil are side branches that rejoin
-at convert.
+at convert. The persona lineage line, which imprints a persona's own corpus onto
+a pristine base for that persona's decision, is designed in
+[LINEAGE.md](../model-factory/LINEAGE.md).
 
 What this design adds to it: deploying writes **one model profile** to the
 registry and reconciles every consumer binding in the same bundle (§4.9); a
@@ -3139,6 +3200,17 @@ each repository's `.git`), and its CLI drivers use logins kept in the owner's
 - **Phase A1 acceptance:** a factory job on an existing repository still merges
   after the move.
 
+**CLI agents that bring their own sandbox** (Codex, Claude Code) cannot run
+inside the runner's bwrap with their sandbox on: their sandbox is a second user
+namespace inside the first, and on the reference server a sandbox inside a
+sandbox fails ("No permissions to create a new namespace"; observed). Two shapes
+were weighed: (a) run them unwrapped by the runner, as their own Unix user,
+inside their own first-level sandbox (as BROWSER_AND_CODEX §3.11 does for
+Codex), with the runner's other limits (user, data paths, egress by uid); or
+(b) wrap them in the runner's bwrap with their own sandbox off, which needs
+`danger-full-access` and so conflicts with BROWSER_AND_CODEX §3.11. **Chosen:
+(a).** The runner never nests a CLI agent's sandbox inside its own.
+
 **DSH is not a CLI driver today.** `swfactory/drivers/cli.py` has presets for
 `claude`, `qwen` and `codex` only; adding a DSH preset is a v1.y task whose
 headless flags are **UNVERIFIED**.
@@ -3157,7 +3229,14 @@ alias of a mounted filesystem is covered (the reference server mounted every
 data disk under two names, L6), and the doctor checks that a canary file under
 each alias is unreadable by the core and by the agent user. The agent runner
 gets the same hardening without `LoadCredential=`. Do not set
-`RestrictNamespaces=` on the runner, which would stop bwrap.
+`RestrictNamespaces=` on the runner, which would stop bwrap. While Seraphina's
+narrow sudo helpers exist ahead of the executor (BACKUPS_SNAPRAID's
+`sf-snapraid`, YOUR_SERVER's `sf-system`, BROWSER_AND_CODEX's
+`sf-codex-launch`), the core's unit leaves out `NoNewPrivileges=yes`, which
+stops any setuid sudo, classic or sudo-rs, and the helpers run their verbs
+through `systemd-run` from PID 1, because a program started through sudo stays
+in the caller's mount namespace and would not see past `TemporaryFileSystem=`
+(YOUR_SERVER §6.1).
 
 **bwrap on Ubuntu.** v1's bwrap command binds `/` read-only (DESIGN.md §12), so in
 v2 every sandbox also masks Seraphina's state, the sockets and the credentials
@@ -3167,11 +3246,29 @@ profile from `apparmor-profiles` copied into `/etc/apparmor.d/` and loaded, whil
 25.04 and later ship it in the `apparmor` package
 ([VS Code issue #316046](https://github.com/microsoft/vscode/issues/316046),
 [Ubuntu discourse](https://discourse.ubuntu.com/t/understanding-apparmor-user-namespace-restriction/58007);
-community sources, **UNVERIFIED** against each release). The installer sets this
-up and the doctor checks it; it never turns the restriction off globally.
+community sources, **UNVERIFIED** against each release). On 26.04 the profile
+ships in `apparmor` and works: on the reference server (apparmor 5.0.2, the
+restriction on) one level of bwrap ran, under no-new-privileges too (observed).
+So on 26.04 the installer's step is a presence check, and the doctor checks it;
+it never turns the restriction off globally.
 
 **Agents never hold root** (DESIGN.md §27) **and never hold a write-capable
 credential.**
+
+This guarantee, and those that follow from it (changes only through the
+executor, approval codes on the executor's own page, the build phases), apply to
+the harness's own agents and to the executor. The owner may also mark one
+persona as the **operator** (DESIGN.md §36): an agent the owner trusts with root,
+who acts through her own tools outside the harness. The harness never gates an
+operator's own actions and gives her no power inside it; it is her toolkit
+(records, the tracker, drift checks). Her own actions are outside the
+executor's guarantees: the harness records them as reported, from the change
+receipt she writes for each change, labelled "reported by the operator", never
+as pre-authorised or enforced. What she reports as not verified becomes a
+tracker item a person sees, and an empty list of checks never reads as success.
+Her own rule for herself is to tell the owner before anything irreversible and
+to keep a rollback for everything she touches; the harness keeps the record,
+not the rule.
 
 ### 9.3 The executor
 
@@ -4847,3 +4944,14 @@ against the research notes or the sources in Appendix B.
 
 Totals: 118 issues; 118 accepted (11 of them with a changed fix or a corrected
 piece of the critic's evidence, as marked), 0 rejected.
+
+**Capture round** (2026-10-25, from a read-only capture of the reference server;
+facts labelled observed in the text):
+
+| # | Finding | Decision |
+| - | ------- | -------- |
+| K1 | medium: CLI agents that bring their own bwrap cannot nest inside the runner's | Accepted: shape (a), unwrapped as their own user in their own first-level sandbox; the AppArmor step is a presence check on 26.04 (§9.2) |
+| K2 | medium: Cosmos is gone and an owner-built gateway (nginx, Dex, oauth2-proxy) replaced it | Accepted: the §3 update note; chains through the gateway with direct ports listed apart (§7.4); L71 widened to any proxy in the container engine (§7.2); gateway routes on the LAN are LAN exposure (§7.5 F2) |
+| K3 | medium: SnapRAID's owner, the backups to adopt, and the power-off's holds | Accepted: SnapRAID belongs to the owner's chosen route, never Cosmos or nobody (§3.2); Kopia gone and the backup disk empty, so phase B starts fresh; restic and rest-server versions on 26.04 (§5.2); the existing power-off reads no holds registry (§6.3) |
+| K4 | medium: adapters assumed a host Node for DSH, a Cosmos row and `/api/version` for Open WebUI | Accepted: DSH read through `docker exec` or the harness's own Node; Dockge and gateway row; Open WebUI's version map keyed on the image ID and code binds; a 2 MB YAML test (§4.7) |
+| K5 | high: the unit hardening named `NoNewPrivileges=yes` while sudo helpers exist | Accepted: left out while they exist, and helper verbs run through `systemd-run` (§9.2) |

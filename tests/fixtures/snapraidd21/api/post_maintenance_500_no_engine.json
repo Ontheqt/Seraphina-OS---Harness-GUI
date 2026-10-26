@@ -1,0 +1,14 @@
+{
+ "body": {},
+ "headers": {
+  "Connection": "close",
+  "Content-Type": "application/json"
+ },
+ "json": {
+  "message": "SnapRAID executable not found",
+  "success": false
+ },
+ "method": "POST",
+ "path": "/snapraid/v1/maintenance",
+ "status": 500
+}

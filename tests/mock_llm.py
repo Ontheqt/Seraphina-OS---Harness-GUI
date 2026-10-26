@@ -49,7 +49,7 @@ Reply dict keys (all optional):
                          does when a preset's Stream Chat Response is on
 
 ``error_sequence`` lists responses served before normal replies, one per request:
-an HTTP status, ``{"status": 429, "retry_after": "3", "body": {...} or "text"}``, or
+an HTTP status, ``{"status": 429, "retry_after": "3", "body": {...} or "text", "headers": {...}}``, or
 ``{"disconnect": True}`` (close the connection without answering).
 ``require_reasoning_passback=True`` emulates DeepSeek: an OpenAI-format request with
 ``tools`` whose history has an assistant message with ``tool_calls`` but no
@@ -277,6 +277,8 @@ class _RequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         if spec.get("retry_after") is not None:
             self.send_header("Retry-After", str(spec["retry_after"]))
+        for name, value in (spec.get("headers") or {}).items():   # e.g. {"x-request-id": "req-1"}
+            self.send_header(str(name), str(value))
         self.end_headers()
         self.wfile.write(data)
 

@@ -1,0 +1,38 @@
+Self test...
+Loading state from /var/snapraid/snapraid.content...
+Using 0 MiB of memory for the file-system.
+Initializing...
+Scrub plan: auto. 100% of the array, older than 0 days, will be checked.
+Using 56 MiB of memory for 128 cached blocks.
+Selecting...
+Scrubbing...
+0%, 0 MB
+100% completed, 50 MB accessed in 0:00
+Saving state to /var/snapraid/snapraid.content...
+Saving state to /mnt/disk1/.snapraid/snapraid.content...
+Saving state to /mnt/disk2/.snapraid/snapraid.content...
+Verifying...
+Verified /var/snapraid/snapraid.content in 0 seconds
+Verified /mnt/disk1/.snapraid/snapraid.content in 0 seconds
+Verified /mnt/disk2/.snapraid/snapraid.content in 0 seconds
+DANGER! Unexpected data errors! The failing blocks are now marked as bad!
+Use 'snapraid status' to list the bad blocks.
+Use 'snapraid -e fix' to recover them.
+Use 'snapraid -p bad scrub' to recheck after fixing to clear the bad state.
+
+       d1  0% | 
+       d2  0% | 
+       d3 15% | *********
+   parity 39% | *************************
+ 2-parity  7% | ****
+     raid 16% | **********
+     hash 15% | **********
+    sched 11% | *******
+     misc  0% | 
+              |__________________________________________________________________
+                               wait time (total, less is better)
+
+
+       0 file errors
+       0 io errors
+       1 data errors

@@ -911,3 +911,206 @@ class AgentOverrideTest(SettingsTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WakesNotifySettingsTest(SettingsTestCase):
+    """settings._check_wakes and _check_notify (Wake & Messages §5.4): shape and bounds only."""
+
+    PHONE = {"type": "ntfy", "publish_url": "unix:/run/ntfy/ntfy.sock",
+             "public_url": "https://host.tail0123.ts.net:8445", "token_env": "SERAPHINA_NTFY_TOKEN",
+             "reply_token_env": "SERAPHINA_NTFY_REPLY_TOKEN", "model_text": "clean_only"}
+
+    def save(self, patch: dict) -> Config:
+        return settings.update_config(self.make_config(), patch)
+
+    def refused(self, patch: dict, fragment: str) -> None:
+        with self.assertRaises(ValueError) as caught:
+            self.save(patch)
+        self.assertIn(fragment, str(caught.exception))
+
+    def test_defaults_validate_and_a_channel_saves(self) -> None:
+        saved = self.save({"wakes": {"timezone": "Europe/London"}, "notify": {"channels": {"phone": self.PHONE}}})
+        self.assertEqual(saved.raw["notify"]["channels"]["phone"]["model_text"], "clean_only")
+        self.assertEqual(saved.raw["notify"]["routes"]["needs_you"], ["*"])
+        self.assertEqual(saved.raw["wakes"]["power"]["off"], "23:00")
+
+    def test_bounds_and_shapes(self) -> None:
+        self.refused({"notify": {"phone_max_per_day": 500}}, "notify.phone_max_per_day must be an integer from 0 to 200")
+        self.refused({"notify": {"inbound": {"stale_minutes": 0}}}, "notify.inbound.stale_minutes")
+        self.refused({"notify": {"quiet_hours": "late"}}, "notify.quiet_hours must be auto or a window")
+        self.refused({"notify": {"rule_priority": {"job.failed": "loud"}}}, "notify.rule_priority.job.failed")
+        self.refused({"notify": {"quiet_breakthrough": ["everything"]}}, "notify.quiet_breakthrough")
+        self.refused({"notify": {"digests": {"midday": "noon"}}}, "notify.digests.midday")
+        self.refused({"notify": {"safe_repos": ["ghost"]}}, "notify.safe_repos")
+        self.refused({"notify": {"cockpit_url": "https://evil.example"}}, "notify.cockpit_url")
+        self.refused({"wakes": {"timezone": "Mars/Olympus"}}, "wakes.timezone")
+        self.refused({"wakes": {"power": {"off": "25:00"}}}, "wakes.power.off")
+        self.refused({"wakes": {"power": {"off": "07:00", "wake": "07:00"}}}, "must differ")
+        self.refused({"wakes": {"retention": {"text_days": 0}}}, "wakes.retention.text_days")
+        self.save({"notify": {"quiet_hours": "22:00-07:30", "cockpit_url": "https://cockpit.tail0123.ts.net",
+                              "digests": {"midday": "12:30"}}})
+
+    def test_channels(self) -> None:
+        tz = {"timezone": "Europe/London"}
+        self.refused({"notify": {"channels": {"phone": self.PHONE}}}, "wakes.timezone is needed")
+        self.refused({"wakes": tz, "notify": {"channels": {"phone": {**self.PHONE, "privacy": "tailnet"}}}},
+                     "privacy is computed")
+        self.refused({"wakes": tz, "notify": {"channels": {"phone": {**self.PHONE,
+                                                                     "public_url": "https://ntfy.sh"}}}},
+                     "model_text: a third-party channel")
+        self.refused({"wakes": tz, "notify": {"channels": {"tg": {"type": "telegram", "model_text": "clean_only"}}}},
+                     "never carries an assistant's own words")
+        self.refused({"wakes": tz, "notify": {"channels": {"phone": {**self.PHONE, "taps_topic": "seraphina"}}}},
+                     "three different names")
+        self.refused({"wakes": tz, "notify": {"channels": {"phone": self.PHONE, "other": {**self.PHONE,
+                                                                                          "chat_topic": "x-chat"}}}},
+                     "is also notify.channels.phone's")
+        self.refused({"wakes": tz, "notify": {"channels": {"phone": {**self.PHONE, "publish_url": "https://ntfy.sh"}}}},
+                     "publish_url")
+        self.refused({"wakes": tz, "notify": {"channels": {"phone": {**self.PHONE, "token_env": "PATH"}}}},
+                     "token_env")
+        self.refused({"wakes": tz, "notify": {"channels": {"Bad": self.PHONE}}}, "invalid name")
+        self.refused({"wakes": tz, "notify": {"routes": {"needs_you": ["nowhere"]}}}, "notify.routes.needs_you")
+        self.refused({"wakes": tz, "notify": {"routes": {"loud": ["*"]}}}, "is not a route")
+        self.save({"wakes": tz, "notify": {"channels": {"phone": self.PHONE},
+                                           "routes": {"needs_you": ["phone", "private_first"]}}})
+
+    def test_hooks(self) -> None:
+        digest = "a" * 64
+        hook = {"token_sha256": digest, "may": ["event"], "events": ["backup.failed"], "subjects": ["nightly"]}
+        self.save({"wakes": {"hooks": {"backup-script": hook}}})
+        self.refused({"wakes": {"hooks": {"a": hook, "b": hook}}}, "each source needs its own token")
+        self.refused({"wakes": {"hooks": {"x": {**hook, "token_sha256": "plain-token"}}}}, "token_sha256")
+        self.refused({"wakes": {"hooks": {"x": {**hook, "may": ["approve"]}}}}, "a list of event, wake")
+        self.save({"wakes": {"hooks": {"backup-script": None, "x": {**hook, "may": ["wake"],
+                                                                    "personas": ["seraphina"]}}}})
+        self.refused({"wakes": {"hooks": {"x": {**hook, "events": ["rm"]}}}}, "wakes.hooks.x.events")
+        self.refused({"wakes": {"hooks": {"x": {**hook, "per_minute": 1000}}}}, "wakes.hooks.per_minute")
+        self.refused({"wakes": {"hooks": {"x": {**hook, "token": "abc"}}}}, "is not a setting")
+
+    def test_a_missing_persona_file_never_blocks_an_unrelated_save(self) -> None:
+        self.save({"notify": {"default_persona": "nobody-here"}})
+        self.save({"limits": {"max_turns": 99}})
+
+
+class WakePersonaSettingsTest(SettingsTestCase):
+    """wakes.personas, wakes.servers and the step W2/W3 groups (Wake & Messages §5.4, decisions a-c, e, f)."""
+
+    save = WakesNotifySettingsTest.save
+    refused = WakesNotifySettingsTest.refused
+
+    def persona(self, **entry: object) -> dict:
+        return {"wakes": {"timezone": "Europe/London", "personas": {"seraphina": entry}}}
+
+    def test_a_persona_saves_with_no_model_and_no_file(self) -> None:
+        saved = self.save(self.persona(enabled=False, model=None))
+        self.assertIsNone(saved.raw["wakes"]["personas"]["seraphina"]["model"])
+        self.save({"wakes": {"personas": {"nobody": {"model": None}}}})
+        self.save({"limits": {"max_turns": 50}})
+
+    def test_persona_keys_and_the_operator_decisions(self) -> None:
+        self.save(self.persona(memory={"curation": "self"}, wake={"tools": "read_only",
+                                                                 "read_paths": ["/srv/notes"],
+                                                                 "commands": [["systemctl", "status"]]},
+                               reimport_decider="persona", instance_name="Sera at home"))
+        self.save(self.persona(memory={"external": {"folder": "/srv/sera/memory", "outbox": "/srv/sera/outbox.jsonl",
+                                                    "sqlite": {"path": "/srv/sera/memory.db",
+                                                               "query": "SELECT text, at FROM facts"}}}))
+        # a wake that reads and never pokes, and the read ledger of her own memory (both explicit choices)
+        saved = self.save(self.persona(wake={"tools": "read_only", "read_paths": ["/srv/notes"], "commands": []},
+                                       memory={"external": {"folder": "/srv/sera/memory", "ledger": True}}))
+        self.assertEqual(saved.raw["wakes"]["personas"]["seraphina"]["wake"]["commands"], [],
+                         "an empty list is kept as written, never read as the default")
+        refusals = [
+            (dict(approve_runs=True), "is not a persona setting"),
+            (dict(memory={"curation": "anyone"}), "owner or self"),
+            (dict(memory={"shared": True}), "only curation and external"),
+            (dict(memory={"external": {"folder": "relative/path"}}), "an absolute path"),
+            (dict(memory={"external": {"sqlite": {"path": "/srv/m.db", "query": "DELETE FROM facts"}}}), "SELECT"),
+            (dict(memory={"external": {"folder": "/srv/m", "taint": []}}), "never clean"),
+            (dict(memory={"external": {"folder": "/srv/m", "ledger": "yes"}}), "true or false"),
+            (dict(memory={"external": {"folder": "/srv/m", "versions": True}}), "outbox, taint, ledger"),
+            (dict(wake={"tools": "all"}), "none or read_only"),
+            (dict(wake={"tools": "read_only", "write_paths": ["/"]}), "only tools, read_paths and commands"),
+            (dict(wake={"commands": [["sh", "-c", "rm -rf ~; echo"]]}), "argv prefixes"),
+            (dict(wake={"commands": [["gh", "run", "list"]]}), "runs with no network (its context is private)"),
+            (dict(reimport_decider="nobody"), "owner or persona"),
+            (dict(instance_name="<script>"), "letters, digits"),
+            (dict(ambient={"active": "always"}), "auto"),
+            (dict(model="hosted model"), "a models key"),
+        ]
+        for entry, words in refusals:
+            with self.subTest(entry=entry):
+                self.refused(self.persona(**entry), words)
+        self.refused({"wakes": {"personas": {"Bad Name": {}}}}, "invalid persona name")
+
+    def test_local_attested_is_never_set_in_the_config(self) -> None:
+        self.save({"wakes": {"servers": {"local": {"kind": "llamacpp", "router": True,
+                                                   "root_url": "http://127.0.0.1:8080"}}}})
+        self.refused({"wakes": {"servers": {"local": {"local_attested": True}}}}, "set only by the persona setup")
+        self.refused({"wakes": {"servers": {"local": {"root_url": "http://example.com:8080"}}}}, "loopback")
+        self.refused({"wakes": {"servers": {"local": {"kind": "vllm-cloud"}}}}, "one of")
+
+    def test_chat_check_in_commands_carry_no_shell(self) -> None:
+        self.save({"wakes": {"chat_wakes": {"enabled": False, "commands": [["gh", "run", "view"]]}}})
+        self.refused({"wakes": {"chat_wakes": {"commands": [["gh", "run", "view", "$(id)"]]}}}, "no shell syntax")
+        # the setup's three choices (DESIGN §35): [] is no commands, null is the default list again
+        from swfactory import wakes
+        cfg = self.save({"wakes": {"chat_wakes": {"commands": []}}})
+        self.assertEqual(wakes.chat_wake_commands(cfg), [])
+        cfg = settings.update_config(cfg, {"wakes": {"chat_wakes": {"commands": None}}})
+        self.assertEqual(wakes.chat_wake_commands(cfg), [list(c) for c in wakes.CHAT_WAKE_DEFAULTS["commands"]])
+        self.refused({"wakes": {"external_memory_roots": ["relative"]}}, "absolute folders")
+
+
+class RefusedTunnelTest(unittest.TestCase):
+    """A provider read through an HTTPS proxy that refuses the CONNECT: the problem in words, and no socket left for
+    the garbage collector (Python 3.10's http.client keeps the tunnel's response in a frame of the traceback; the
+    harness clears those frames: settings.release_frames)."""
+
+    def test_a_refused_tunnel_leaves_no_socket_behind(self):
+        import gc
+        import warnings
+
+        server = socket.socket()
+        server.bind(("127.0.0.1", 0))
+        server.listen(4)
+        port = server.getsockname()[1]
+
+        def refuse():
+            conn, _ = server.accept()
+            with conn:
+                conn.recv(4096)
+                conn.sendall(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+        thread = threading.Thread(target=refuse, daemon=True)
+        thread.start()
+        self.addCleanup(server.close)
+        config = Config(Path(tempfile.mkdtemp()) / "c.json",
+                        {"providers": {"far": {"type": "openai", "base_url": "https://models.example.com/v1"}}})
+        self.addCleanup(shutil.rmtree, config.path.parent, True)
+        proxy = f"http://127.0.0.1:{port}"
+        with mock.patch.dict(os.environ, {"https_proxy": proxy, "HTTPS_PROXY": proxy, "no_proxy": "", "NO_PROXY": ""}), \
+                warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", ResourceWarning)
+            status, listed, problem = settings.list_models(config.provider("far"), 5)
+            gc.collect()
+        thread.join(5)
+        self.assertEqual((status, listed), (None, None))
+        self.assertIn("cannot reach https://models.example.com/v1/models", problem)
+        self.assertEqual([str(w.message) for w in caught if issubclass(w.category, ResourceWarning)], [])
+
+    def test_release_frames_walks_the_chain(self):
+        def inner():
+            held = object()   # noqa: F841 - a local the cleared frame must drop
+            raise OSError("inner")
+        try:
+            try:
+                inner()
+            except OSError as exc:
+                raise ValueError("outer") from exc
+        except ValueError as err:
+            caught = err
+        frame = caught.__cause__.__traceback__.tb_next.tb_frame
+        self.assertIn("held", frame.f_locals)
+        settings.release_frames(caught)
+        self.assertNotIn("held", frame.f_locals)

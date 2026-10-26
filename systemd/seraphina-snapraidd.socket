@@ -1,0 +1,23 @@
+# Seraphina OS Harness: the link to the SnapRAID Daemon (docs/seraphina/BACKUPS_SNAPRAID.md §3.2, DESIGN.md §41).
+#
+# One short-lived seraphina-snapraidd@.service instance per connection (Accept=yes). Only root and the harness's
+# group can connect (SocketMode=0660); the link checks the caller's uid itself as well. Replace @GROUP@ with the
+# harness's group (the cockpit's setup page fills it in), then:
+#   sudo install -m 0644 -o root -g root seraphina-snapraidd.socket seraphina-snapraidd@.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now seraphina-snapraidd.socket
+# UNVERIFIED on a systemd-booted machine until lab L14 passes.
+
+[Unit]
+Description=Seraphina's link to the SnapRAID Daemon (socket)
+
+[Socket]
+ListenStream=/run/seraphina-snapraidd/link.sock
+SocketUser=root
+SocketGroup=@GROUP@
+SocketMode=0660
+DirectoryMode=0755
+Accept=yes
+MaxConnections=4
+
+[Install]
+WantedBy=sockets.target

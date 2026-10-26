@@ -135,7 +135,8 @@ class ParserTests(CliCase):
             (["init", "--force", "--preset", "strata", "--data-dir", "/srv/f"], cli.cmd_init,
              {"force": True, "preset": "strata", "data_dir": "/srv/f"}),
             (["serve", "--host", "0.0.0.0", "--port", "9000"], cli.cmd_serve, {"host": "0.0.0.0", "port": 9000}),
-            (["doctor", "--probe", "--json"], cli.cmd_doctor, {"probe": True, "json": True}),
+            (["doctor", "--probe", "--json"], cli.cmd_doctor, {"probe": True, "json": True, "look_around": False}),
+            (["doctor", "--look-around"], cli.cmd_doctor, {"probe": False, "look_around": True}),
             (["repo", "add", "/x", "--name", "x"], cli.cmd_repo_add, {"path": "/x", "name": "x"}),
             (["submit", "app", "Add X", "--preset", "hybrid"], cli.cmd_submit,
              {"repo": "app", "feature": "Add X", "preset": "hybrid"}),
@@ -330,6 +331,39 @@ class UrlTests(CliCase):
         self.assertIn("run factory init first", err)
 
 
+class NoAnswerTests(CliCase):
+    def test_a_change_with_no_answer_may_have_been_done(self) -> None:
+        """DESIGN §40: a request the server got but never answered may have been done; a read says only that no
+        answer came."""
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(4)
+        self.addCleanup(listener.close)
+
+        def hang_up() -> None:   # read each request, then close without an answer
+            for _ in range(2):
+                conn, _ = listener.accept()
+                with conn:
+                    conn.settimeout(5)
+                    data = b""
+                    while b"\r\n\r\n" not in data:
+                        chunk = conn.recv(65536)
+                        if not chunk:
+                            break
+                        data += chunk
+
+        threading.Thread(target=hang_up, daemon=True).start()
+        client = cli.Client(self.make_config(port=listener.getsockname()[1]))
+        with self.assertRaises(cli.CliError) as posted:
+            client.post("/api/jobs/app/001/approve", {})
+        self.assertIn("no answer from the server", str(posted.exception))
+        self.assertIn("it may have been done, so look before you run it again", str(posted.exception))
+        with self.assertRaises(cli.CliError) as read:
+            client.get("/api/jobs")
+        self.assertIn("no answer from the server", str(read.exception))
+        self.assertNotIn("may have been done", str(read.exception))
+
+
 # -- doctor, agents, models -----------------------------------------------------------
 
 
@@ -337,8 +371,10 @@ class DoctorTests(CliCase):
     def run_doctor(self, checks: list[dict], *argv: str) -> tuple[int, str, str, list[dict]]:
         calls: list[dict] = []
 
-        def run_checks(config: Config, factory: Any = None, probe_models: bool = False) -> list[dict]:
-            calls.append({"config": config, "factory": factory, "probe_models": probe_models})
+        def run_checks(config: Config, factory: Any = None, probe_models: bool = False,
+                       look_around: bool = False, look_skip_ports: Any = frozenset()) -> list[dict]:
+            calls.append({"config": config, "factory": factory, "probe_models": probe_models,
+                          "look_around": look_around, "look_skip_ports": set(look_skip_ports)})
             return checks
 
         with mock.patch("swfactory.doctor.run_checks", run_checks):
@@ -352,6 +388,7 @@ class DoctorTests(CliCase):
         self.assertEqual(out, "ok    python: 3.12.3\n")
         self.assertIn("0 error(s), 0 warning(s)", err)
         self.assertFalse(calls[0]["probe_models"])
+        self.assertFalse(calls[0]["look_around"], "the doctor looks for model servers only when asked")
 
     def test_warnings_do_not_fail(self) -> None:
         code, out, _, _ = self.run_doctor([{"name": "rg", "ok": False, "level": "warn", "detail": "missing"}])
@@ -373,6 +410,34 @@ class DoctorTests(CliCase):
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out), checks)
         self.assertTrue(calls[0]["probe_models"])
+        self.assertFalse(calls[0]["look_around"])
+
+    def test_look_around_only_when_asked(self) -> None:
+        checks = [{"name": "model servers here", "ok": True, "level": "info", "detail": "none answered"}]
+        code, out, _, calls = self.run_doctor(checks, "--look-around")
+        self.assertEqual(code, 0)
+        self.assertIn("ok    model servers here: none answered", out)
+        self.assertEqual([(c["look_around"], c["probe_models"]) for c in calls], [(True, False)])
+        self.assertEqual(calls[0]["look_skip_ports"], set(), "no `factory serve` runs: only the config's port")
+
+    def test_the_look_around_skips_a_running_server_s_own_port(self) -> None:
+        """`factory serve --port` records the port it really took in factory.lock: `factory doctor --look-around`
+        skips it as well as the config's, so the harness never asks itself (as POST /api/setup/look-around does)."""
+        configured, served = free_port(), free_port()
+        self.make_config(port=configured)
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        (self.data_dir / "factory.lock").write_text(f"{os.getpid()}\nhttp://127.0.0.1:{served}\n")
+        asked: list[set] = []
+
+        def finder(skip_ports: Any = frozenset(), *args: Any, **kwargs: Any) -> list[dict]:
+            asked.append(set(skip_ports))
+            return []
+        with mock.patch("swfactory.listeners.model_servers", finder):
+            code, out, err = self.cli("doctor", "--look-around", "--json")
+            self.assertEqual(asked, [{configured, served}], err)
+            self.assertIn("model servers here", [c["name"] for c in json.loads(out)])
+            self.cli("doctor", "--json")
+        self.assertEqual(len(asked), 1, "without --look-around the doctor does not look")
 
 
 class AgentTests(CliCase):
@@ -476,6 +541,33 @@ class PersonaOfflineTests(CliCase):
         self.assertIn("no profile card for 'kate' yet", err)
         self.assertIn("live: no provider 'openwebui': apply the openwebui preset", err)
 
+    def test_the_card_says_what_runs_where(self) -> None:
+        from swfactory import personas
+
+        self.make_config()
+        record = {"id": "kate", "name": "Kate", "params": {"system": "You are Kate."},
+                  "meta": {"toolIds": ["calendar"], "skillIds": ["kind-replies"]}}
+        personas.save_profile(personas.profile_card(personas.parse_openwebui_export([record]), source="export file"))
+        code, out, _ = self.cli("personas", "card", "kate")
+        self.assertEqual(code, 0)
+        lines = out.splitlines()
+        own = lines.index("  The persona's own Open WebUI chats")
+        self.assertEqual(lines[own + 1], "    has: system prompt; settings; Open WebUI built-in memory; Open WebUI "
+                                         "Python tools (calendar); skills (kind-replies)")
+        chat = lines.index("  A harness chat with the persona [kate]")
+        self.assertIn("Open WebUI Python tools (calendar)", lines[chat + 2], "listed under not")
+        self.assertIn("Open WebUI built-in memory", lines[chat + 2], "not on the harness path")
+        self.assertNotIn("Python tools", lines[chat + 1])
+        self.assertIn("  A browsing chat (not set up)", lines)
+        self.assertTrue(any(line.startswith("  code: Code through a factory job") for line in lines))
+        self.assertTrue(any(line.startswith("import: At the first import the harness had no earlier copy")
+                            for line in lines))
+        self.assertIn("  changes before import: none attached (factory personas before-import <name> --attach "
+                      "<receipt id>)", lines)
+        data = json.loads(self.cli("personas", "card", "kate", "--json")[1])
+        self.assertIs(data["capability_map"]["parity"], False)
+        self.assertEqual((data["import"]["diff"], data["import"]["changes_before_import"]), (None, []))
+
 
 class ModelTests(CliCase):
     def test_lists_model_entries(self) -> None:
@@ -536,7 +628,24 @@ class EstimateTests(CliCase):
         self.assertIn("1,500,000 in / 40,000 out", builder)
         self.assertIn("[default table]", builder)
         self.assertIn("+ steps without prices", out.splitlines()[-1], "the sonnet tier has no prices")
+        guard = next(line for line in out.splitlines() if line.startswith("independence:"))
+        self.assertTrue(guard.startswith("independence: builder on opus (deepseek, route): approver runs with "
+                                         "reduced independence on opus;"), "one family: every judge is reduced")
+        approver = next(line for line in out.splitlines() if line.startswith("approver"))
+        self.assertTrue(approver.endswith("(independence reduced)"), approver)
         data = json.loads(self.cli("estimate", "app", "--kind", "plan", "--json")[1])
+        self.assertEqual(data["independence"][0]["builder"], {"via": "route", "model": "opus", "family": "deepseek"})
+        self.make_config(repos=[{"name": "app", "path": str(repo)}],
+                         models={"gemini": {"provider": "deepseek", "model": "google/gemini-x"}},
+                         agents={"reviewer-code": {"model": "opus", "independent_alternate": "gemini"},
+                                 "reviewer-security": {"model": "opus", "independent_alternate": False}})
+        out = self.cli("estimate", "app")[1]
+        code_row = next(line for line in out.splitlines() if line.startswith("reviewer-code"))
+        self.assertIn("gemini (deepseek/google/gemini-x)", code_row)
+        self.assertTrue(code_row.endswith("(instead of opus: independent alternate)"), code_row)
+        guard = next(line for line in out.splitlines() if line.startswith("independence:"))
+        self.assertIn("reviewer-code moves to gemini", guard)
+        self.assertIn("reviewer-security shares the builder's family on opus (accepted)", guard)
         self.assertEqual((data["kind"], data["jobs"], data["basis"]), ("plan", 3, "defaults"))
         code, _, err = self.cli("estimate", "app", "--profile", "nope")
         self.assertEqual(code, 1)
@@ -718,6 +827,71 @@ class ClientTests(CliCase):
         self.assertEqual(self.last()["body"], {"persona": "kate"})
         self.assertEqual(out.splitlines(), ["kate  behaviour  version 0123456789ab  → system:S-1",
                                             "kate-offline  error: cannot reach"])
+
+    def test_personas_before_import_and_the_read_ledger(self) -> None:
+        row = {"id": "CHG-1", "by": "operator", "attached_at": "2026-10-22T09:00:00Z", "time": "2026-10-21T16:00:00Z",
+               "intent": "Rewrite her own prompt", "not_verified": ["the copy not re-imported yet"], "verified": [],
+               "label": "reported by the operator"}
+        self.route("POST", "/api/personas/kate/before-import",
+                   {"import": {"baseline": "the import is the baseline", "changes_before_import": [row]}})
+        code, out, err = self.cli("personas", "before-import", "kate", "--attach", "CHG-1", "--by", "operator")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.last()["body"], {"attach": ["CHG-1"], "detach": [], "by": "operator"})
+        self.assertIn("    NOT verified: the copy not re-imported yet", out)
+        self.assertIn("    verified: nothing", out)
+        self.assertNotIn("    outcome:", out, "a row without an outcome prints none")
+        unknown = {**row, "verified": ["the unit file was written"], "not_verified": [],
+                   "outcome": {"state": "outcome_unknown", "words": "outcome unknown (reported): it may or may not "
+                                                                     "have happened"}}
+        self.route("POST", "/api/personas/kate/before-import",
+                   {"import": {"baseline": "the import is the baseline", "changes_before_import": [unknown]}})
+        code, out, err = self.cli("personas", "before-import", "kate", "--attach", "CHG-1")
+        self.assertEqual(code, 0, err)
+        lines = out.splitlines()
+        self.assertLess(lines.index("    outcome: outcome unknown (reported): it may or may not have happened"),
+                        lines.index("    verified (reported): the unit file was written"),
+                        "how the change ended comes before what was reported verified")
+        code, _, err = self.cli("personas", "before-import", "kate")
+        self.assertEqual(code, 1)
+        self.assertIn("--attach ID or --detach ID", err)
+        old, new = "a" * 64, "b" * 64
+        self.route("GET", "/api/personas/kate/external", {
+            "ledger": True, "reads": 2, "kept_bytes": 20, "cap_bytes": 100, "sqlite": [],
+            "files": [{"name": "pets.md", "versions": [
+                {"sha256": new, "bytes": 10, "first_read_at": "2026-10-22T09:00:00Z",
+                 "last_read_at": "2026-10-22T09:00:00Z", "reads": 1, "kept": True, "redacted": False},
+                {"sha256": old, "bytes": 10, "first_read_at": "2026-10-21T09:00:00Z",
+                 "last_read_at": "2026-10-21T09:00:00Z", "reads": 1, "kept": True, "redacted": True}]}]})
+        code, out, _ = self.cli("personas", "ledger", "kate")
+        self.assertEqual(code, 0)
+        self.assertIn("read ledger: on; 2 reads, 20 of 100 bytes kept (private)", out)
+        self.assertIn(f"  {old[:12]}  10 bytes  read 2026-10-21T09:00 to 2026-10-21T09:00 (1x)  kept, redacted", out)
+        self.route("GET", f"/api/personas/kate/external/diff?from={old}&to={new}", {"diff": "-Pip is 3.\n+Pip is 4."})
+        code, out, _ = self.cli("personas", "ledger", "kate", "--diff", old, new)
+        self.assertEqual(out, "-Pip is 3.\n+Pip is 4.\n")
+        self.route("POST", "/api/personas/kate/external/restore", {"restore": {
+            "name": "pets.md", "sha256": old, "text": "Pip is 3.\n", "current": {"sha256": new}, "warnings": [],
+            "apply": "The harness never writes the persona's own memory."}})
+        code, out, err = self.cli("personas", "ledger", "kate", "--restore", old, "--file", "pets.md")
+        self.assertEqual(self.last()["body"], {"sha256": old, "file": "pets.md"})
+        self.assertEqual(out, f"restore pets.md to {old[:12]} (the newest read held {new[:12]})\nPip is 3.\n")
+        self.assertIn("never writes", err)
+        self.route("POST", "/api/personas/kate/external/erase", {"erased": {"sha256": old, "copies": 1, "entries": 2}})
+        code, out, err = self.cli("personas", "ledger", "kate", "--erase", old)
+        self.assertEqual((code, self.last()["body"]), (0, {"sha256": old}))
+        self.assertEqual(out, f"erased {old[:12]}: 1 copy removed, 2 manifest entries keep its sha256 only\n")
+        self.assertIn("her own store is not touched", err)
+        self.route("GET", "/api/personas/kate/external", {
+            "ledger": True, "reads": 3, "kept_bytes": 20, "cap_bytes": 100, "files": [],
+            "erased": [{"sha256": old, "erased_at": "2026-10-23T09:00:00Z", "reads": 2}],
+            "caps": {"evicted": 4, "evicted_at": "2026-10-23T08:00:00Z"},
+            "sqlite": [{"at": "2026-10-23T09:00:00Z", "rows": None, "sha256": None, "error": "the query failed",
+                        "detail": "no such column: hidden"}]})
+        code, out, err = self.cli("personas", "ledger", "kate")
+        self.assertIn(f"erased  {old[:12]}  at 2026-10-23T09:00 (2x read)", out)
+        self.assertIn("database read 2026-10-23T09:00: could not be read (the query failed: no such column: hidden)",
+                      out)
+        self.assertIn("4 older copies removed to stay under the cap", err)
 
     def test_plan_delivery(self) -> None:
         self.route("POST", "/api/plans", {"plan": {"id": "P001-x", "repo": "app", "stage": "planning"}}, status=201)
@@ -1629,6 +1803,66 @@ class InstallTests(ScriptCase):
         self.assertTrue(self.config.exists())
         self.assertIn("--user disable --now factory.service", self.systemctl_log.read_text())
 
+    def test_credentials_become_load_credential_lines(self) -> None:
+        self.existing_config()
+        result = self.install("--systemd-user", "--credential", "register-token:/etc/credstore/register.token",
+                              "--credential=checker-token:/etc/credstore/checker.token")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        unit = self.unit.read_text()
+        self.assertIn("\nLoadCredential=register-token:/etc/credstore/register.token\n"
+                      "LoadCredential=checker-token:/etc/credstore/checker.token\n", unit)
+        self.assertLess(unit.index("\nLoadCredential="), unit.index("[Install]"), "in [Service]")
+        self.assertGreater(unit.index("\nLoadCredential="), unit.index("[Service]"))
+        self.assertNotIn("@CREDENTIALS@", unit)
+        for bad, words in [("register-token", "NAME must be"), ("../x:/etc/x", "NAME must be"),
+                           ("a/b:/etc/x", "NAME must be"), ("token:relative/path", "absolute path"),
+                           ("token:/etc/with space", "must not hold"), ("token:/etc/50%", "must not hold"),
+                           ('token:/etc/"q"', "must not hold")]:
+            with self.subTest(bad=bad):
+                result = self.install("--systemd-user", "--credential", bad)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(words, result.stderr)
+        result = self.install("--credential", "register-token:/etc/credstore/register.token")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("--credential needs --systemd-user", result.stderr)
+        result = self.install("--drop-credential", "register-token")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("--drop-credential needs --systemd-user", result.stderr)
+
+    def credential_lines(self) -> list[str]:
+        return [line for line in self.unit.read_text().splitlines() if line.startswith("LoadCredential")]
+
+    def test_running_it_again_keeps_the_credential_lines(self) -> None:
+        """An update, or the doctor's advice for a second credential, never drops a credential line the unit
+        has: a NAME given again gets its new PATH, and --drop-credential NAME removes one."""
+        self.existing_config()
+        result = self.install("--systemd-user", "--credential", "register-token:/etc/credstore/register.token")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("with LoadCredential=register-token:/etc/credstore/register.token", result.stdout)
+        self.assertEqual(self.install("--systemd-user").returncode, 0)
+        self.assertEqual(self.credential_lines(), ["LoadCredential=register-token:/etc/credstore/register.token"],
+                         "a plain re-run keeps it")
+        self.assertEqual(self.install("--systemd-user", "--credential",
+                                      "checker-token:/etc/credstore/checker.token").returncode, 0)
+        self.assertEqual(self.credential_lines(), ["LoadCredential=register-token:/etc/credstore/register.token",
+                                                   "LoadCredential=checker-token:/etc/credstore/checker.token"])
+        self.assertEqual(self.install("--systemd-user", "--credential",
+                                      "register-token:/etc/credstore/register-2.token").returncode, 0)
+        self.assertEqual(self.credential_lines(), ["LoadCredential=checker-token:/etc/credstore/checker.token",
+                                                   "LoadCredential=register-token:/etc/credstore/register-2.token"])
+        with self.unit.open("a") as handle:   # a line the owner added by hand is kept as it is
+            handle.write("LoadCredentialEncrypted=sealed.token:/etc/credstore.encrypted/sealed.token\n")
+        result = self.install("--systemd-user", "--drop-credential", "checker-token", "--drop-credential=absent")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--drop-credential absent: the unit has no credential line absent", result.stderr)
+        unit = self.unit.read_text()
+        self.assertEqual(self.credential_lines(), [
+            "LoadCredential=register-token:/etc/credstore/register-2.token",
+            "LoadCredentialEncrypted=sealed.token:/etc/credstore.encrypted/sealed.token"])
+        self.assertLess(unit.index("\nLoadCredential="), unit.index("[Install]"), "in [Service]")
+        self.assertGreater(unit.index("\nLoadCredential="), unit.index("[Service]"))
+        self.assertEqual(unit.count("\nLoadCredentialEncrypted="), 1, "written once, in place of @CREDENTIALS@")
+
     def test_a_unit_without_start_is_only_loaded(self) -> None:
         self.existing_config()
         result = self.install("--systemd-user")
@@ -1672,3 +1906,123 @@ class InstallTests(ScriptCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MessagesCliTests(CliCase):
+    """factory notify, factory wake and factory secret set (DESIGN §34)."""
+
+    def test_secret_set_reads_stdin_and_never_echoes(self) -> None:
+        self.make_config()
+        code, out, err = self.cli("secret", "set", "SERAPHINA_TELEGRAM_BOT_TOKEN", "--stdin",
+                                  stdin="7123:AAH-secret-value-0123456789\n")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("secret-value", out + err)
+        env = (self.config_path.parent / "env").read_text()
+        self.assertIn("SERAPHINA_TELEGRAM_BOT_TOKEN=7123:AAH-secret-value-0123456789", env)
+        code, _, err = self.cli("secret", "set", "SERAPHINA_TELEGRAM_BOT_TOKEN", stdin="x\n")
+        self.assertEqual(code, 1)
+        self.assertIn("--stdin", err)
+        code, _, err = self.cli("secret", "set", "PATH", "--stdin", stdin="/bin\n")
+        self.assertEqual(code, 1)
+        self.assertNotIn("/bin", err)
+        code, _, err = self.cli("secret", "set", "SERAPHINA_NTFY_TOKEN", "--stdin", stdin="")
+        self.assertEqual(code, 1)
+        self.assertIn("no value", err)
+
+    def test_wake_pause_and_resume_work_without_the_server(self) -> None:
+        self.make_config()
+        code, out, _ = self.cli("wake", "pause")
+        self.assertEqual(code, 0)
+        self.assertIn("Seraphina is stopped", out)
+        paused = self.data_dir / "wakes" / "PAUSED"
+        self.assertEqual(json.loads(paused.read_text())["by"], "cli")
+        self.assertEqual(self.cli("wake", "status", "--json")[1].strip()[:1], "{")
+        self.assertTrue(json.loads(self.cli("wake", "status", "--json")[1])["paused"])
+        code, out, _ = self.cli("wake", "resume")
+        self.assertEqual((code, paused.exists()), (0, False))
+        self.assertEqual(self.cli("wake", "status")[1].strip(), "running")
+        audit = "".join(p.read_text() for p in (self.data_dir / "wakes").glob("audit-*.jsonl"))
+        self.assertIn('"kind": "stop"', audit)
+        self.assertIn('"kind": "restart"', audit)
+        # step W2: one persona stops (offline: in the wake state the server reads), and resumes
+        code, out, _ = self.cli("wake", "pause", "--persona", "seraphina", "--until", "08:00")
+        self.assertEqual(code, 0, out)
+        state = json.loads((self.data_dir / "wakes" / "state.json").read_text())
+        # stored as the server stores it (an ISO UTC time of the next 08:00 in wakes.timezone), so the next start
+        # reads the stop as still on instead of as already over (S43)
+        from datetime import timedelta
+
+        from swfactory import wakes
+
+        until = state["stops"]["seraphina"]["until"]
+        clock = wakes.wake_clock(Config.load(self.config_path))
+        end = wakes.parse_iso(until)
+        self.assertIsNotNone(end, until)
+        self.assertEqual((state["stops"]["seraphina"]["by"], clock.hhmm(end)), ("cli", "08:00"))
+        self.assertTrue(timedelta(0) < end - clock.utc() <= timedelta(days=1))
+        self.assertEqual(self.cli("wake", "pause", "--persona", "seraphina", "--until", "8 o'clock")[0], 1)
+        self.assertEqual(self.cli("wake", "resume", "--persona", "seraphina")[0], 0)
+        state = json.loads((self.data_dir / "wakes" / "state.json").read_text())
+        self.assertNotIn("seraphina", state["stops"])
+        self.assertEqual(self.cli("wake", "pause", "--until", "08:00")[0], 1, "--until goes with --persona")
+
+    def test_wake_poke_writes_the_spool_without_the_server(self) -> None:
+        """W3-1: factory wake poke works without a running server; the reason rides in the file."""
+        self.make_config()
+        code, out, _ = self.cli("wake", "poke", "seraphina", "--reason", "test")
+        self.assertEqual(code, 0, out)
+        files = list((self.data_dir / "wakes" / "spool" / "new").iterdir())
+        self.assertEqual(len(files), 1)
+        self.assertTrue(files[0].name.startswith("seraphina."))
+        self.assertEqual(json.loads(files[0].read_text()), {"reason": "test"})
+        self.assertEqual(oct(files[0].stat().st_mode & 0o777), "0o600")
+        self.assertEqual(list((self.data_dir / "wakes" / "spool" / "tmp").iterdir()), [])
+        self.assertEqual(self.cli("wake", "poke", "Bad Name")[0], 1)
+        self.assertEqual(self.cli("wake", "poke", "seraphina", "--reason", "x" * 201)[0], 1)
+
+
+class MessagesServerCliTests(CliCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.api = FakeApi()
+        self.addCleanup(self.api.close)
+        self.make_config(port=self.api.port)
+
+    def test_notify_event_status_and_test(self) -> None:
+        self.api.routes[("POST", "/api/notify/events")] = (202, {"message": "M-000004"})
+        code, out, _ = self.cli("notify", "event", "backup.failed", "--subject", "nightly", "--detail", "exit 23")
+        self.assertEqual((code, out.strip()), (0, "M-000004"))
+        self.assertEqual(self.api.requests[-1]["body"], {"kind": "backup.failed", "subject": "nightly",
+                                                         "detail": "exit 23"})
+        self.api.routes[("GET", "/api/notify")] = (200, {
+            "channels": [{"name": "phone", "type": "ntfy", "privacy": "tailnet", "active": True,
+                          "health": {"ok": True, "detail": "listening"}, "last_answer": "2026-10-21T10:00:00Z"}],
+            "quiet_hours": {"window": "21:30-08:00", "source": "from your power schedule"},
+            "paused": None, "today": {"phone": 2, "cap": 12}})
+        code, out, err = self.cli("notify", "status")
+        self.assertEqual(code, 0)
+        self.assertIn("phone  ntfy  tailnet  ok", out)
+        self.assertIn("21:30-08:00", err)
+        self.api.routes[("GET", "/api/notify/channels")] = (200, {"channels": [{"name": "phone", "enabled": True}]})
+        self.api.routes[("POST", "/api/notify/test")] = (202, {"message": {"id": "M-000005",
+                                                                           "deliveries": {"phone": "queued"}}})
+        code, out, _ = self.cli("notify", "test")
+        self.assertEqual((code, out.strip()), (0, "phone  M-000005  queued"))
+        self.assertEqual(self.api.requests[-1]["body"], {"channel": "phone"})
+
+    def test_wake_pause_tells_a_running_server_and_resume_goes_through_it(self) -> None:
+        self.api.routes[("GET", "/api/state")] = (200, {"jobs": []})
+        self.api.routes[("POST", "/api/wakes/control")] = (200, {"paused": None})
+        self.cli("wake", "pause")
+        self.assertEqual(self.api.requests[-1]["body"], {"action": "pause"})
+        self.assertTrue((self.data_dir / "wakes" / "PAUSED").exists(), "stopped at once, server or not")
+        self.cli("wake", "resume")
+        self.assertEqual(self.api.requests[-1]["body"], {"action": "resume"})
+
+    def test_secret_set_through_a_running_server(self) -> None:
+        self.api.routes[("GET", "/api/state")] = (200, {"jobs": []})
+        self.api.routes[("POST", "/api/secrets")] = (200, {"secret": {"name": "SERAPHINA_NTFY_TOKEN", "set": True}})
+        code, out, err = self.cli("secret", "set", "SERAPHINA_NTFY_TOKEN", "--stdin", stdin="tk_value\n")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.api.requests[-1]["body"], {"name": "SERAPHINA_NTFY_TOKEN", "value": "tk_value"})
+        self.assertNotIn("tk_value", out + err)

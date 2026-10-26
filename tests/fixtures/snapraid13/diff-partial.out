@@ -1,0 +1,15 @@
+Loading state from /var/snapraid/snapraid.content...
+Comparing...
+remove media/photos/img1.jpg
+remove media/photos/img2.jpg
+remove media/photos/img3.jpg
+remove media/big.bin
+
+      26 equal
+       0 added
+       4 removed
+       0 updated
+       0 moved
+       0 copied
+       0 restored
+There are differences!

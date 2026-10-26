@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import sys
 import tempfile
@@ -887,6 +888,207 @@ class ApproverAndGateTests(FactoryTestCase):
         job = self.run_job(factory, "Second feature")
         self.assertEqual(job["stage"], "merged", job.get("reason"))
         self.assertEqual(run_git(remote, "rev-parse", "main").strip(), job["merged_commit"])
+
+
+class PushOutcomeTests(FactoryTestCase):
+    """DESIGN §40: a push records the remote's own answer; one with no answer is looked at again, read only, and
+    stays unknown (with a tracker item) unless the remote shows the commit. It is never pushed again by itself."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.remote = self.tmp / "remote.git"
+        run_git(self.tmp, "init", "-q", "--bare", str(self.remote))
+        run_git(self.repo, "remote", "add", "origin", str(self.remote))
+
+    def pushing(self) -> Factory:
+        return self.start(self.config(merge={"push": True}))
+
+    def system_titles(self, factory: Factory) -> list[str]:
+        return [item["title"] for item in factory._system_manager().store().ledger().items]
+
+    def test_a_push_records_the_remotes_answer(self) -> None:
+        job = self.run_job(self.pushing())
+        self.assertEqual(job["stage"], "merged", job.get("reason"))
+        push = job["push"]
+        self.assertEqual((push["remote"], push["ref"], push["commit"], push["outcome"]),
+                         ("origin", "refs/heads/main", job["merged_commit"], "succeeded"))
+        self.assertEqual(push["response"]["status"], 0)
+        self.assertEqual(push["response"]["ids"], ["[new branch]"], "git's own words for the ref, not the intent")
+        self.assertRegex(push["response"]["body_sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(run_git(self.remote, "rev-parse", "main").strip(), job["merged_commit"])
+
+    def test_a_refused_push_is_failed_and_says_why(self) -> None:
+        other = make_repo(self.tmp, "other")
+        commit_file(other, "theirs.txt", "theirs\n", "theirs")
+        run_git(other, "push", "-q", str(self.remote), "main")   # the remote's main has work this repo lacks
+        factory = self.pushing()
+        job = self.run_job(factory)
+        self.assertEqual(job["stage"], "merged")
+        self.assertEqual(job["push"]["outcome"], "failed")
+        self.assertIn("[rejected]", job["push"]["detail"])
+        self.assertEqual(self.system_titles(factory), [], "a refusal is known: no unknown-outcome item")
+
+    def test_a_push_with_no_answer_that_landed_is_confirmed_by_a_look_at_the_remote(self) -> None:
+        real = gitops.push
+
+        def landed_then_hung(*args: Any, **kwargs: Any) -> Any:
+            real(*args, **kwargs)
+            error = gitops.GitError(["git", "push"], "timed out after 600s")
+            error.timed_out = True
+            raise error
+
+        with mock.patch.object(gitops, "push", side_effect=landed_then_hung):
+            factory = self.pushing()
+            job = self.run_job(factory)
+        push = job["push"]
+        self.assertEqual(push["outcome"], "succeeded", push)
+        self.assertEqual(push["observed"]["remote_commit"], job["merged_commit"])
+        self.assertIn("looked again", push["detail"])
+        self.assertEqual(self.system_titles(factory), [])
+
+    def test_a_push_whose_outcome_stays_unknown_opens_one_item_and_is_not_pushed_again(self) -> None:
+        calls: list = []
+
+        def hung(*args: Any, **kwargs: Any) -> Any:
+            calls.append(args)
+            error = gitops.GitError(["git", "push"], "timed out after 600s")
+            error.timed_out = True
+            raise error
+
+        with mock.patch.object(gitops, "push", side_effect=hung):
+            factory = self.pushing()
+            job = self.run_job(factory)
+        self.assertEqual(job["stage"], "merged")
+        push = job["push"]
+        self.assertEqual(push["outcome"], "unknown", "never recorded as failed")
+        self.assertIsNone(push["observed"]["remote_commit"])
+        self.assertEqual(len(calls), 1, "no automatic second push")
+        title = f"Outcome unknown: check before retrying (push of main to origin, job {REPO}/{job['id']})"
+        self.assertEqual(self.system_titles(factory), [title])
+        self.assertEqual(push["item"], "system:S-1")
+
+
+    def test_a_push_that_never_reached_the_remote_is_failed_with_gits_reason(self) -> None:
+        run_git(self.repo, "remote", "remove", "origin")   # merge.remote names no repository: nothing can leave
+        factory = self.pushing()
+        job = self.run_job(factory)
+        push = job["push"]
+        self.assertEqual(push["outcome"], "failed", push)
+        self.assertEqual(push["detail"], "it never reached origin: fatal: 'origin' does not appear to be a git "
+                                         "repository")
+        self.assertNotIn("observed", push)
+        self.assertEqual(self.system_titles(factory), [], "no 'may or may not have landed' item")
+
+    def test_a_push_whose_report_was_lost_is_looked_at_again(self) -> None:
+        """'[remote failure]' is flag '!' but no refusal: the remote may have the commit (here it does)."""
+        relay = Path(__file__).resolve().parent / "fixtures" / "receive_pack_no_report.py"
+        run_git(self.repo, "config", "remote.origin.receivepack", f"{shlex.quote(sys.executable)} "
+                                                                  f"{shlex.quote(str(relay))}")
+        factory = self.pushing()
+        job = self.run_job(factory)
+        push = job["push"]
+        self.assertEqual(push["outcome"], "succeeded", push)
+        self.assertIn("[remote failure]", push["detail"])
+        self.assertIn("looked again", push["detail"])
+        self.assertEqual(push["observed"]["remote_commit"], job["merged_commit"])
+        self.assertEqual(self.system_titles(factory), [])
+
+
+class MergeTimeoutTests(FactoryTestCase):
+    """DESIGN §40: git merge killed at its timeout is looked at again, read only: it may have moved base."""
+
+    def timed_out(self, land: bool) -> Callable[..., Any]:
+        real = gitops.merge
+
+        def merge(*args: Any, **kwargs: Any) -> Any:
+            if land:
+                real(*args, **kwargs)   # base moved, then git was killed (printing the diffstat of a big merge)
+            error = gitops.GitError(["git", "merge"], "timed out after 600s")
+            error.timed_out = True
+            raise error
+        return merge
+
+    def test_a_merge_that_landed_before_the_timeout_is_found_and_the_job_merges(self) -> None:
+        with mock.patch.object(gitops, "merge", side_effect=self.timed_out(True)):
+            factory = self.start()
+            job = self.run_job(factory)
+        self.assertEqual(job["stage"], "merged", job.get("reason"))
+        self.assertEqual(job["merged_commit"], run_git(self.repo, "rev-parse", "main").strip())
+        self.assertEqual(run_git(self.repo, "rev-list", "--merges", "--count", "main").strip(), "1", "merged once")
+
+    def test_a_merge_that_did_not_land_says_so_never_merge_failed(self) -> None:
+        with mock.patch.object(gitops, "merge", side_effect=self.timed_out(False)):
+            factory = self.start()
+            job = self.run_job(factory)
+        self.assertEqual(job["stage"], "needs-human")
+        self.assertEqual(job["reason"], "merge timed out: nothing was merged into main (looked again); approve again "
+                                        "to merge it")
+        self.assertIsNone(job.get("merged_commit"))
+        factory.approve(REPO, job["id"])
+        self.assertEqual(factory.wait(REPO, job["id"], timeout=TIMEOUT)["stage"], "merged")
+
+
+class InterruptedMergeTests(FactoryTestCase):
+    """DESIGN §40: a job the server left merging is looked at again before anything is recorded, and a retry
+    finishes the delivery without merging twice."""
+
+    def stopped_while_merging(self, merged: bool, push: dict | None = None) -> dict:
+        factory = self.start(self.config(pipeline={"auto_merge": False}))
+        job = self.run_job(factory)
+        self.assertEqual(job["stage"], "needs-human")
+        factory.stop()
+        path = Path(job["job_dir"]) / "job.json"
+        doc = json.loads(path.read_text())
+        doc.update(stage="merging", step="merge")
+        if merged:   # the merge landed and was recorded; the checkout and branch were removed; then the crash
+            doc["merged_commit"] = gitops.merge(self.repo, "main", job["branch"], "merge", self.tmp / "t")
+            gitops.remove_worktree(self.repo, Path(job["worktree"]))
+            gitops.delete_branch(self.repo, job["branch"], force=True)
+        if push is not None:
+            doc["push"] = push
+        path.write_text(json.dumps(doc))
+        return job
+
+    def test_a_recorded_merge_is_never_merged_again_and_retry_finishes_it(self) -> None:
+        remote = self.tmp / "remote.git"
+        run_git(self.tmp, "init", "-q", "--bare", str(remote))
+        run_git(self.repo, "remote", "add", "origin", str(remote))
+        job = self.stopped_while_merging(True, push={"remote": "origin", "ref": "refs/heads/main", "outcome": None})
+        factory = self.start(self.config(merge={"push": True}))
+        job = factory.job(REPO, job["id"])
+        self.assertEqual(job["stage"], "failed")
+        self.assertIn(f"main has the merge at {job['merged_commit'][:12]}", job["reason"])
+        self.assertEqual(job["push"]["outcome"], "unknown", "its intent was on record without an answer")
+        titles = [i["title"] for i in factory._system_manager().store().ledger().items]
+        self.assertEqual(titles, [f"Outcome unknown: check before retrying (push of main to origin, job "
+                                  f"{REPO}/{job['id']})"])
+        merges = run_git(self.repo, "rev-list", "--merges", "--count", "main").strip()
+        factory.retry(REPO, job["id"])
+        job = factory.wait(REPO, job["id"], timeout=TIMEOUT)
+        self.assertEqual(job["stage"], "merged", job.get("reason"))
+        self.assertEqual(run_git(self.repo, "rev-list", "--merges", "--count", "main").strip(), merges, "merged once")
+        self.assertEqual((job["push"]["outcome"], run_git(remote, "rev-parse", "main").strip()),
+                         ("succeeded", job["merged_commit"]))
+
+    def test_nothing_merged_is_said_and_retry_merges_it(self) -> None:
+        job = self.stopped_while_merging(False)
+        factory = self.start()
+        job = factory.job(REPO, job["id"])
+        self.assertEqual(job["stage"], "failed")
+        self.assertIn("nothing was merged into main (looked again)", job["reason"])
+        factory.retry(REPO, job["id"])
+        self.assertEqual(factory.wait(REPO, job["id"], timeout=TIMEOUT)["stage"], "merged")
+
+    def test_a_merge_that_landed_without_its_record_is_found(self) -> None:
+        job = self.stopped_while_merging(False)
+        gitops.merge(self.repo, "main", job["branch"], "merge", self.tmp / "t")   # landed; the crash came first
+        factory = self.start()
+        job = factory.job(REPO, job["id"])
+        self.assertIn(f"main already contains {job['branch']} (looked again)", job["reason"])
+        merges = run_git(self.repo, "rev-list", "--merges", "--count", "main").strip()
+        factory.retry(REPO, job["id"])
+        self.assertEqual(factory.wait(REPO, job["id"], timeout=TIMEOUT)["stage"], "merged")
+        self.assertEqual(run_git(self.repo, "rev-list", "--merges", "--count", "main").strip(), merges, "merged once")
 
 
 class DeliveryTests(FactoryTestCase):
@@ -1821,7 +2023,9 @@ class DelegationTests(FactoryTestCase):
         self.assertEqual(chats.calls, [("new_chat", (REPO, "local", "worktree", "coder")),
                                        ("chat_send", ("c-0123456789", "hi")),
                                        ("chat_handoff", ("c-0123456789", "Ship it", None))])
-        self.assertEqual([name for name, _ in plans.calls], ["create", "run", "cancel", "retry", "update_plan_text"])
+        # the notifier's background reconcile may list the plans (a read) at any moment: only the actions count here
+        self.assertEqual([name for name, _ in plans.calls if name != "plans"],
+                         ["create", "run", "cancel", "retry", "update_plan_text"])
         new_config = self.config()
         factory.reload_config(new_config)
         self.assertIs(plans.config, new_config)
@@ -1879,6 +2083,18 @@ class DelegationTests(FactoryTestCase):
         status = factory.setup_status()
         self.assertEqual(set(status["steps"]), {"providers", "models", "routing", "repos", "tools", "output"})
         self.assertTrue(status["steps"]["repos"]["ok"], status["steps"]["repos"])
+        self.assertNotIn("model_servers", status["host"], "no look for model servers until the owner asks")
+        from swfactory.doctor import LookAroundRefused
+
+        asked: list[set] = []
+        with mock.patch("swfactory.listeners.model_servers",
+                        lambda skip, *args, **kwargs: asked.append(set(skip)) or []):
+            looked = factory.look_around(9001)
+            self.assertEqual(asked, [{8765, 9001}], "the config's port and the one the server listens on are skipped")
+            self.assertEqual(factory.setup_status()["host"]["model_servers_at"], looked["at"])
+            with self.assertRaises(LookAroundRefused):
+                factory.look_around(9001)
+        self.assertEqual(len(asked), 1)
         self.assertEqual(factory.secret_status()["env_file"], str(self.tmp / "env"))
         factory.secret_values()   # cached now
         with mock.patch.dict(os.environ, {}):

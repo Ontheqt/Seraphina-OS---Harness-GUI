@@ -1,0 +1,27 @@
+version:13.0
+unixtime:1792928553
+time:2026-10-25 11:42:33
+command:status
+argv:0:/usr/local/bin/snapraid
+argv:1:-c
+argv:2:/etc/snapraid.conf
+argv:3:-l
+argv:4:/var/lib/seraphina-snapraid/runs/J-1/snapraid.log
+argv:5:status
+selftest:
+msg:progress: Self test...
+conf:file:/etc/snapraid.conf
+blocksize:65536
+data:d1:/mnt/disk1/
+data:d2:/mnt/disk2/
+data:d3:/mnt/disk3/
+mode:par2
+parity:0:/mnt/parity1/snapraid.parity
+2-parity:0:/mnt/parity2/snapraid.2-parity
+autosave:1000000000
+filter:exclude /lost+found/
+filter:exclude *.unrecoverable
+filter:exclude /seraphina-restored/
+filter:exclude /.seraphina-trash/
+msg:fatal: The lock file '/var/snapraid/snapraid.content.lock' is already in use!
+msg:fatal: SnapRAID is already in use!

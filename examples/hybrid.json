@@ -1,5 +1,5 @@
 {
-  "description": "Recommended for the owner's server: local Flash-Next on TabbyAPI for spec-writer, builder, security review, chat and scout; Claude Sonnet 5.5 for the code, ux and ui reviews; Claude Opus 5.5 approves; Claude Fable 5.1 leads plans. Needs TABBY_API_KEY and ANTHROPIC_API_KEY.",
+  "description": "Recommended for the owner's server: local Flash-Next on TabbyAPI for spec-writer, builder, security review, chat and scout; Claude Sonnet 5.5 for the code, ux and ui reviews; Claude Opus 5.5 approves; Claude Fable 5.1 leads plans. Needs TABBY_API_KEY and ANTHROPIC_API_KEY. Server addresses are placeholders: your own config overrides them.",
   "providers": {
     "tabby": {
       "type": "openai",
@@ -163,7 +163,12 @@
       "model": "claude-opus"
     },
     "reviewer-security": {
-      "model": "local"
+      "model": "local",
+      "independent_alternate": false,
+      "reason": {
+        "kind": "stage-fit",
+        "text": "the local security fine-tune, and findings stay local; it shares the local builder's model by choice (independent_alternate: false)"
+      }
     },
     "reviewer-ux": {
       "model": "claude-sonnet"

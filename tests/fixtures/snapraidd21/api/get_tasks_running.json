@@ -1,0 +1,203 @@
+{
+ "body": null,
+ "headers": {
+  "Connection": "close",
+  "Content-Type": "application/json"
+ },
+ "json": {
+  "active": [
+   {
+    "command": "sync",
+    "error_data": 0,
+    "error_io": 0,
+    "error_soft": 0,
+    "health": "passed",
+    "high_command": "maintenance",
+    "log_file": "<lab>/run/logs/20261025-143749-sync.log",
+    "messages": [],
+    "number": 4,
+    "scheduled_at": "2026-10-25T14:37:48",
+    "started_at": "2026-10-25T14:37:49",
+    "status": "starting"
+   }
+  ],
+  "history": [
+   {
+    "command": "up",
+    "exit_code": 0,
+    "finished_at": "2026-10-25T14:37:49",
+    "health": "passed",
+    "high_command": "maintenance",
+    "log_file": "<lab>/run/logs/20261025-143748-up.log",
+    "messages": [],
+    "number": 3,
+    "scheduled_at": "2026-10-25T14:37:48",
+    "started_at": "2026-10-25T14:37:48",
+    "status": "terminated"
+   },
+   {
+    "command": "read",
+    "exit_code": 0,
+    "finished_at": "2026-10-25T14:36:07",
+    "health": "passed",
+    "high_command": "startup",
+    "log_file": "<lab>/run/logs/20261025-143606-read.log",
+    "messages": [],
+    "number": 2,
+    "scheduled_at": "2026-10-25T14:36:06",
+    "started_at": "2026-10-25T14:36:06",
+    "status": "terminated"
+   },
+   {
+    "command": "probe",
+    "exit_code": 0,
+    "finished_at": "2026-10-25T14:36:06",
+    "health": "passed",
+    "high_command": "startup",
+    "log_file": "<lab>/run/logs/20261025-143605-probe.log",
+    "messages": [],
+    "number": 1,
+    "scheduled_at": "2026-10-25T14:36:05",
+    "started_at": "2026-10-25T14:36:05",
+    "status": "terminated"
+   }
+  ],
+  "pending": [
+   {
+    "command": "report",
+    "health": "pending",
+    "health_reason": "Task is waiting to be executed",
+    "messages": [],
+    "number": 15,
+    "scheduled_at": "2026-10-25T14:37:48",
+    "status": "queued"
+   },
+   {
+    "command": "report",
+    "health": "pending",
+    "health_reason": "Task is waiting to be executed",
+    "messages": [],
+    "number": 14,
+    "scheduled_at": "2026-10-25T14:37:48",
+    "status": "queued"
+   },
+   {
+    "command": "report",
+    "health": "pending",
+    "health_reason": "Task is waiting to be executed",
+    "high_command": "undelete",
+    "messages": [],
+    "number": 13,
+    "scheduled_at": "2026-10-25T14:37:48",
+    "status": "queued"
+   },
+   {
+    "command": "fix",
+    "error_data": 0,
+    "error_io": 0,
+    "error_recovered": 0,
+    "error_soft": 0,
+    "error_unrecoverable": 0,
+    "health": "pending",
+    "health_reason": "Task is waiting to be executed",
+    "high_command": "undelete",
+    "messages": [],
+    "number": 12,
+    "scheduled_at": "2026-10-25T14:37:48",
+    "status": "queued"
+   },
+   {
+    "command": "up",
+    "health": "pending",
+    "health_reason": "Task is waiting to be executed",
+    "high_command": "undelete",
+    "messages": [],
+    "number": 11,
+    "scheduled_at": "2026-10-25T14:37:48",
+    "status": "queued"
+   },
+   {
+    "command": "report",
+    "health": "pending",
+    "health_reason": "Task is waiting to be executed",
+    "high_command": "heal",
+    "messages": [],
+    "number": 10,
+    "scheduled_at": "2026-10-25T14:37:48",
+    "status": "queued"
+   },
+   {
+    "command": "scrub",
+    "error_data": 0,
+    "error_io": 0,
+    "error_soft": 0,
+    "health": "pending",
+    "health_reason": "Task is waiting to be executed",
+    "high_command": "heal",
+    "messages": [],
+    "number": 9,
+    "scheduled_at": "2026-10-25T14:37:48",
+    "status": "queued"
+   },
+   {
+    "command": "fix",
+    "error_data": 0,
+    "error_io": 0,
+    "error_recovered": 0,
+    "error_soft": 0,
+    "error_unrecoverable": 0,
+    "health": "pending",
+    "health_reason": "Task is waiting to be executed",
+    "high_command": "heal",
+    "messages": [],
+    "number": 8,
+    "scheduled_at": "2026-10-25T14:37:48",
+    "status": "queued"
+   },
+   {
+    "command": "up",
+    "health": "pending",
+    "health_reason": "Task is waiting to be executed",
+    "high_command": "heal",
+    "messages": [],
+    "number": 7,
+    "scheduled_at": "2026-10-25T14:37:48",
+    "status": "queued"
+   },
+   {
+    "command": "report",
+    "health": "pending",
+    "health_reason": "Task is waiting to be executed",
+    "high_command": "maintenance",
+    "messages": [],
+    "number": 6,
+    "scheduled_at": "2026-10-25T14:37:48",
+    "status": "queued"
+   },
+   {
+    "command": "scrub",
+    "error_data": 0,
+    "error_io": 0,
+    "error_soft": 0,
+    "health": "pending",
+    "health_reason": "Task is waiting to be executed",
+    "high_command": "maintenance",
+    "messages": [],
+    "number": 5,
+    "scheduled_at": "2026-10-25T14:37:48",
+    "status": "queued"
+   }
+  ],
+  "pulse": {
+   "activity": 22,
+   "array": 5,
+   "config": 1,
+   "current_at": "2026-10-25T14:37:51",
+   "disks": 1,
+   "tasks": 22
+  }
+ },
+ "method": "GET",
+ "path": "/snapraid/v1/tasks?limit_history=5",
+ "status": 200
+}

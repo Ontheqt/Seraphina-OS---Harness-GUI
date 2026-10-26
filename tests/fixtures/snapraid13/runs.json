@@ -1,0 +1,394 @@
+{
+ "about": "Real SnapRAID 13.0 runs (v13.0 tag, commit 744d5b4) on five loop ext4 disks: d1 d2 d3 data, parity and 2-parity; content in /var/snapraid/ and in .snapraid/ on d1 and d2; blocksize 64 KiB. Every path is a placeholder (the manual's /mnt/diskN); the file names are the lab's own, some hostile on purpose (a colon, a backslash, markup, a right-to-left override, a newline). exit is SnapRAID's exit status (-9: killed by SIGKILL, which a shell reports as 137). smart-fake is a run with SnapRAID's own --test-fake-device, which the helper never passes, so every SMART status bit appears once.",
+ "runs": {
+  "status-empty": {
+   "command": "status",
+   "exit": 0,
+   "options": [],
+   "log": true,
+   "out": true
+  },
+  "diff-first": {
+   "command": "diff",
+   "exit": 2,
+   "options": [],
+   "log": true,
+   "out": true
+  },
+  "sync-gui": {
+   "command": "sync",
+   "exit": 0,
+   "options": [
+    "-G",
+    "--bw-limit",
+    "2M"
+   ],
+   "log": true,
+   "out": true
+  },
+  "status-ok": {
+   "command": "status",
+   "exit": 0,
+   "options": [],
+   "log": true,
+   "out": true
+  },
+  "list": {
+   "command": "list",
+   "exit": 0,
+   "options": [],
+   "log": true,
+   "out": true
+  },
+  "diff0": {
+   "command": "diff",
+   "exit": 0,
+   "options": [
+    "-q",
+    "-q",
+    "-q"
+   ],
+   "log": true,
+   "out": true
+  },
+  "smart-unsupported": {
+   "command": "smart",
+   "exit": 0,
+   "options": [],
+   "log": true,
+   "out": true
+  },
+  "probe-unsupported": {
+   "command": "probe",
+   "exit": 0,
+   "options": [],
+   "log": true,
+   "out": true
+  },
+  "devices-unsupported": {
+   "command": "devices",
+   "exit": 0,
+   "options": [],
+   "log": true,
+   "out": true
+  },
+  "diff-partial": {
+   "command": "diff",
+   "exit": 2,
+   "options": [],
+   "log": true,
+   "out": true
+  },
+  "diff-mixed": {
+   "command": "diff",
+   "exit": 2,
+   "options": [],
+   "log": true,
+   "out": true
+  },
+  "diff-unmounted": {
+   "command": "diff",
+   "exit": 2,
+   "options": [],
+   "log": true,
+   "out": true
+  },
+  "status-unmounted": {
+   "command": "status",
+   "exit": 0,
+   "options": [],
+   "log": true,
+   "out": true
+  },
+  "sync-unmounted": {
+   "command": "sync",
+   "exit": 1,
+   "options": [],
+   "log": true,
+   "out": true
+  },
+  "diff-nomountpoint": {
+   "command": "diff",
+   "exit": 1,
+   "options": [],
+   "log": true,
+   "out": true
+  },
+  "status-nomountpoint": {
+   "command": "status",
+   "exit": 0,
+   "options": [],
+   "log": true,
+   "out": true
+  },
+  "sync-accept": {
+   "command": "sync",
+   "exit": 0,
+   "options": [],
+   "log": true,
+   "out": true
+  },
+  "sync-int": {
+   "command": "sync",
+   "exit": 130,
+   "options": [
+    "-G",
+    "--bw-limit",
+    "2M"
+   ],
+   "log": true,
+   "out": true
+  },
+  "status-int": {
+   "command": "status",
+   "exit": 0,
+   "options": [],
+   "log": true,
+   "out": true
+  },
+  "diff-after-int": {
+   "command": "diff",
+   "exit": 2,
+   "options": [],
+   "log": true,
+   "out": true
+  },
+  "diff-busy": {
+   "command": "diff",
+   "exit": 1,
+   "options": [],
+   "log": true,
+   "out": true
+  },
+  "status-busy": {
+   "command": "status",
+   "exit": 1,
+   "options": [],
+   "log": true,
+   "out": true
+  },
+  "smart-during-sync": {
+   "command": "smart",
+   "exit": 0,
+   "options": [],
+   "log": true,
+   "out": true
+  },
+  "sync-lock": {
+   "command": "sync",
+   "exit": 130,
+   "options": [
+    "--bw-limit",
+    "2M"
+   ],
+   "log": true,
+   "out": true
+  },
+  "sync-resume": {
+   "command": "sync",
+   "exit": 0,
+   "options": [],
+   "log": true,
+   "out": true
+  },
+  "sync-term": {
+   "command": "sync",
+   "exit": 130,
+   "options": [
+    "--bw-limit",
+    "2M"
+   ],
+   "log": true,
+   "out": true
+  },
+  "sync-kill": {
+   "command": "sync",
+   "exit": -9,
+   "options": [
+    "--bw-limit",
+    "2M"
+   ],
+   "log": true,
+   "out": true
+  },
+  "sync-afterkill": {
+   "command": "sync",
+   "exit": 0,
+   "options": [],
+   "log": true,
+   "out": true
+  },
+  "sync-live": {
+   "command": "sync",
+   "exit": 1,
+   "options": [
+    "--bw-limit",
+    "1M"
+   ],
+   "log": true,
+   "out": true
+  },
+  "sync-after-live": {
+   "command": "sync",
+   "exit": 0,
+   "options": [],
+   "log": true,
+   "out": true
+  },
+  "diff-silent": {
+   "command": "diff",
+   "exit": 0,
+   "options": [],
+   "log": true,
+   "out": true
+  },
+  "scrub-corrupt": {
+   "command": "scrub",
+   "exit": 1,
+   "options": [
+    "-p",
+    "100",
+    "-o",
+    "0"
+   ],
+   "log": true,
+   "out": true
+  },
+  "status-bad": {
+   "command": "status",
+   "exit": 0,
+   "options": [],
+   "log": true,
+   "out": true
+  },
+  "check-a": {
+   "command": "check",
+   "exit": 1,
+   "options": [
+    "-a"
+   ],
+   "log": true,
+   "out": true
+  },
+  "fix-e": {
+   "command": "fix",
+   "exit": 0,
+   "options": [
+    "-e"
+   ],
+   "log": true,
+   "out": true
+  },
+  "status-after-fix-e": {
+   "command": "status",
+   "exit": 0,
+   "options": [],
+   "log": true,
+   "out": true
+  },
+  "scrub-bad": {
+   "command": "scrub",
+   "exit": 0,
+   "options": [
+    "-p",
+    "bad"
+   ],
+   "log": true,
+   "out": true
+  },
+  "status-clean": {
+   "command": "status",
+   "exit": 0,
+   "options": [],
+   "log": true,
+   "out": true
+  },
+  "scrub-default": {
+   "command": "scrub",
+   "exit": 0,
+   "options": [],
+   "log": true,
+   "out": true
+  },
+  "scrub-new": {
+   "command": "scrub",
+   "exit": 0,
+   "options": [
+    "-p",
+    "new"
+   ],
+   "log": true,
+   "out": true
+  },
+  "diff-zero": {
+   "command": "diff",
+   "exit": 2,
+   "options": [],
+   "log": true,
+   "out": true
+  },
+  "sync-zero": {
+   "command": "sync",
+   "exit": 1,
+   "options": [],
+   "log": true,
+   "out": true
+  },
+  "fix-zero": {
+   "command": "fix",
+   "exit": 0,
+   "options": [
+    "-m",
+    "-f",
+    "/media/photos/img5.jpg"
+   ],
+   "log": true,
+   "out": true
+  },
+  "sync-before-d1": {
+   "command": "sync",
+   "exit": 0,
+   "options": [],
+   "log": true,
+   "out": true
+  },
+  "fix-d1": {
+   "command": "fix",
+   "exit": 0,
+   "options": [
+    "-d",
+    "d1"
+   ],
+   "log": true,
+   "out": true
+  },
+  "check-d1": {
+   "command": "check",
+   "exit": 0,
+   "options": [
+    "-a",
+    "-d",
+    "d1"
+   ],
+   "log": true,
+   "out": true
+  },
+  "smart-fake": {
+   "command": "smart",
+   "exit": 1,
+   "options": [
+    "--test-fake-device",
+    "--test-skip-device"
+   ],
+   "log": true,
+   "out": false
+  },
+  "status-damaged": {
+   "command": "status",
+   "exit": 1,
+   "options": [],
+   "log": true,
+   "out": true
+  }
+ }
+}

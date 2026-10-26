@@ -17,7 +17,7 @@ from unittest import mock
 
 from swfactory.harness import tools
 from swfactory.harness.tools import (
-    ToolPolicy, Toolset, expand_braces, glob_match, mcp_tool_name, truncate_output,
+    WAKE_TOOL_DESCRIPTION, ToolPolicy, Toolset, expand_braces, glob_match, mcp_tool_name, truncate_output,
 )
 
 ALL_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"]
@@ -792,7 +792,8 @@ class BashTest(ToolTestCase):
         start = time.monotonic()
         out = self.err("Bash", command="echo begin; sleep 20", timeout=0.4)
         self.assertLess(time.monotonic() - start, 5)
-        self.assertEqual(out, "begin\n[timed out after 0.4s]")
+        self.assertEqual(out, "begin\n[timed out after 0.4s and stopped: what it did before that is unknown, so "
+                              "check before running it again]", "DESIGN §40: never read as failed")
 
     def test_timeout_defaults_and_cap(self) -> None:
         fake = FakeSandbox()
@@ -810,7 +811,9 @@ class BashTest(ToolTestCase):
         cancel.set()
         ts = self.toolset(cancel=cancel)
         start = time.monotonic()
-        self.assertTrue(self.err("Bash", ts, command="sleep 20").endswith("[cancelled]"))
+        self.assertTrue(self.err("Bash", ts, command="sleep 20").endswith(
+            "[stopped part way (cancelled, or the run's time limit): what it did before that is unknown, so check "
+            "before running it again]"), "never a bare [cancelled]: part of it may have run (DESIGN §40)")
         self.assertLess(time.monotonic() - start, 5)
 
     def test_long_output_keeps_head_tail_and_footer(self) -> None:
@@ -1095,3 +1098,217 @@ class ItemsToolTest(ToolTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RecordedReadTest(ToolTestCase):
+    """ToolPolicy.recorded (a read-only wake with the persona's read ledger on): a Read below a recorded path gives
+    its bytes to record before it shows them and shows nothing when record fails; Grep refuses such a path; Glob
+    lists names only."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.memory = self.job / "memory"
+        (self.memory / "sub").mkdir(parents=True)
+        (self.memory / "sub" / "note.md").write_text("line one\nline two\n")
+        (self.job / "other.md").write_text("not recorded\n")
+        self.recorded: list[tuple[Path, bytes, int]] = []
+
+    def record(self, path: Path, data: bytes, size: int, mtime: float) -> None:
+        self.recorded.append((path, data, size))
+
+    def test_a_read_there_is_recorded_first_and_a_search_refused(self) -> None:
+        ts = self.toolset(["Read", "Glob", "Grep"], recorded=[self.memory], record=self.record, record_bytes=12)
+        self.assertEqual(self.ok("Read", ts, file_path=str(self.memory / "sub" / "note.md")),
+                         "     1\tline one\n     2\tlin\n\n(the harness records reads here and read only the first "
+                         "12 bytes of this file)")
+        self.assertEqual(self.recorded, [(self.memory / "sub" / "note.md", b"line one\nlin", 18)],
+                         "what is shown is what was recorded")
+        self.ok("Read", ts, file_path=str(self.job / "other.md"))
+        self.assertEqual(len(self.recorded), 1, "outside the recorded folder nothing is recorded")
+        for target in (self.memory, self.memory / "sub", self.job):
+            self.assertIn("Grep does not search", self.err("Grep", ts, pattern="line", path=str(target)))
+        self.assertIn("other.md", self.ok("Grep", ts, pattern="recorded", path=str(self.job / "other.md")))
+        self.assertIn("note.md", self.ok("Glob", ts, pattern="**/*.md", path=str(self.memory)))
+        self.assertEqual(len(self.recorded), 1, "Glob reads no file")
+
+    def test_a_read_that_cannot_be_recorded_shows_nothing(self) -> None:
+        def broken(*_args: Any) -> None:
+            raise OSError(28, "No space left on device")
+        ts = self.toolset(["Read"], recorded=[self.memory], record=broken)
+        out = self.err("Read", ts, file_path=str(self.memory / "sub" / "note.md"))
+        self.assertIn("could not be recorded, so nothing was read", out)
+        self.assertNotIn("line one", out)
+        (self.memory / "link.md").symlink_to(self.job / "other.md")
+        ts = self.toolset(["Read"], recorded=[self.memory], record=self.record)
+        self.err("Read", ts, file_path=str(self.memory / "sub"))
+        self.assertEqual(self.recorded, [], "a folder is not read")
+
+
+class WakeToolTest(ToolTestCase):
+    """The Wake tool and the check-in toolset (Wake & Messages §5.8)."""
+
+    class Context:
+        """A WakeContext-shaped fake: what the WakeManager would answer."""
+
+        def __init__(self) -> None:
+            self.pending: dict[str, dict] = {}
+            self.attached: list[tuple[str, str]] = []
+            self.chat_id, self.chain, self.checkin = "C-1", 0, False
+
+        def schedule(self, in_minutes, note) -> dict:
+            if not isinstance(in_minutes, int) or isinstance(in_minutes, bool):
+                raise ValueError("in_minutes must be a whole number")
+            if len(self.pending) >= 3:
+                raise ValueError("this chat already has 3 pending wakes")
+            minutes = max(10, min(int(in_minutes), 10080))
+            wake_id = f"W-{len(self.pending) + 1:06d}"
+            row = {"id": wake_id, "at": "2026-10-21T12:10:00+01:00", "in_minutes": minutes,
+                   "moved": minutes != in_minutes}
+            self.pending[wake_id] = row
+            return dict(row)
+
+        def list(self) -> list[dict]:
+            return list(self.pending.values())
+
+        def cancel(self, wake_id: str) -> dict:
+            if wake_id not in self.pending:
+                raise ValueError(f"no pending wake {wake_id} in this chat")
+            row = self.pending.pop(wake_id)
+            return {"id": wake_id, "cancelled": True, "item": row.get("item")}
+
+        def attach(self, wake_id: str, item_id: str) -> None:
+            self.attached.append((wake_id, item_id))
+            self.pending[wake_id]["item"] = item_id
+
+    class ArgvSandbox(FakeSandbox):
+        def run_argv(self, argv, timeout, cancel=None):
+            self.calls.append((list(argv), timeout, cancel))
+            return self.result
+
+    def wake_toolset(self, names=("Read", "Bash"), checkin=None, sandbox=None) -> tuple[Toolset, "WakeToolTest.Context"]:
+        context = self.Context()
+        ts = Toolset(list(names), self.policy(sandbox=sandbox), wake=context, checkin_commands=checkin)
+        self.addCleanup(ts.close)
+        return ts, context
+
+    def names(self, ts: Toolset) -> list[str]:
+        return [schema["name"] for schema in ts.schemas()]
+
+    def test_the_schema_and_registration_only_with_a_context(self) -> None:
+        self.assertNotIn("Wake", self.names(self.toolset(["Read", "Wake"])), "no context: no tool")
+        ts, _ = self.wake_toolset()
+        schema = next(s for s in ts.schemas() if s["name"] == "Wake")
+        spec = schema["input_schema"]
+        self.assertEqual(spec["required"], ["action"])
+        self.assertEqual(spec["properties"]["action"]["enum"], ["schedule", "list", "cancel"])
+        self.assertIn("10 to 10080", spec["properties"]["in_minutes"]["description"])
+        self.assertIn("not as an instruction", spec["properties"]["note"]["description"])
+        self.assertIn("cannot message the owner", schema["description"])
+        self.assertIn("Wake", self.names(ts), "registered whatever the agent's tools: list says")
+
+    def test_schedule_list_and_cancel_report_clamps_back(self) -> None:
+        ts, context = self.wake_toolset()
+        scheduled = json.loads(self.ok("Wake", ts, action="schedule", in_minutes=3, note="check CI"))
+        self.assertEqual((scheduled["id"], scheduled["in_minutes"], scheduled["moved"]), ("W-000001", 10, True))
+        self.assertEqual([w["id"] for w in json.loads(self.ok("Wake", ts, action="list"))["wakes"]], ["W-000001"])
+        self.assertIn("whole number", self.err("Wake", ts, action="schedule", in_minutes="soon"))
+        self.assertIn("needs the wake id", self.err("Wake", ts, action="cancel"))
+        self.assertIn("no pending wake", self.err("Wake", ts, action="cancel", id="W-999999"))
+        self.assertTrue(json.loads(self.ok("Wake", ts, action="cancel", id="W-000001"))["cancelled"])
+        self.assertIn("schedule, list or cancel", self.err("Wake", ts, action="approve"))
+        for _ in range(3):
+            self.ok("Wake", ts, action="schedule", in_minutes=20000, note="x")
+        self.assertIn("3 pending", self.err("Wake", ts, action="schedule", in_minutes=30, note="x"))
+        self.assertEqual(context.pending["W-000001"]["in_minutes"], 10080)
+
+    def test_a_scheduled_wake_opens_a_tracker_item_and_a_cancel_drops_it(self) -> None:
+        from swfactory import items as items_lib
+
+        store = items_lib.ItemStore(self.job, items_lib.job_scope("app", "001-x"))
+        items = items_lib.ItemsContext(store, "builder", self.job / "sessions" / "builder.items.jsonl", round=1)
+        context = self.Context()
+        ts = Toolset(["Read"], self.policy(), items=items, wake=context)
+        self.addCleanup(ts.close)
+        scheduled = json.loads(self.ok("Wake", ts, action="schedule", in_minutes=30, note="look at the build"))
+        item_id = scheduled["item"]
+        self.assertEqual(context.attached, [(scheduled["id"], item_id)])
+        row = next(item for item in items.ledger().items if item["id"] == item_id)
+        self.assertEqual((row["kind"], row["links"]["wake"], row["status"]), ("commitment", scheduled["id"], "open"))
+        self.assertIn("untrusted", row.get("taint") or [])
+        self.ok("Wake", ts, action="cancel", id=scheduled["id"])
+        row = next(item for item in items.ledger().items if item["id"] == item_id)
+        self.assertEqual(row["status"], "dropped")
+
+    def test_the_checkin_toolset_has_only_read_tools_wake_and_runcheck(self) -> None:
+        index = SimpleNamespace(get=lambda n: None, list=lambda: [])
+        context = self.Context()
+        ts = Toolset(ALL_TOOLS + ["Skill", "Items"], self.policy(), skills=index, mcp_clients={"srv": object()},
+                     wake=context, checkin_commands=[["gh", "run", "view"], ["git", "status"]])
+        self.addCleanup(ts.close)
+        self.assertEqual(self.names(ts), ["Read", "Glob", "Grep", "Wake", "RunCheck"])
+        run_check = next(s for s in ts.schemas() if s["name"] == "RunCheck")
+        self.assertIn("gh run view; git status", run_check["description"])
+        without_context = Toolset(["Read", "Write", "Bash"], self.policy(), checkin_commands=[["git", "status"]])
+        self.addCleanup(without_context.close)
+        self.assertEqual(self.names(without_context), ["Read", "Glob", "Grep", "RunCheck"])
+
+    def test_the_wake_tool_says_what_a_check_in_can_run(self) -> None:
+        """The Wake tool's words follow wakes.chat_wakes.commands (WakeContext.commands in a chat turn, the turn's
+        own list in a check-in): an empty list says the check-in only reads files and runs no commands; a list
+        names only its own commands."""
+        context = self.Context()
+        context.commands = []
+        for ts in (Toolset(["Read"], self.policy(), wake=context),
+                   Toolset(["Read"], self.policy(), wake=self.Context(), checkin_commands=[])):
+            self.addCleanup(ts.close)
+            wake = next(s for s in ts.schemas() if s["name"] == "Wake")
+            self.assertIn("can only read files; it runs no commands", wake["description"])
+            self.assertNotIn("gh run view", json.dumps(ts.schemas()))
+            self.assertNotIn("RunCheck", self.names(ts))
+        context.commands = [["git", "status"]]
+        ts = Toolset(["Read"], self.policy(), wake=context)
+        self.addCleanup(ts.close)
+        wake = next(s for s in ts.schemas() if s["name"] == "Wake")
+        self.assertIn("run a few status commands (git status)", wake["description"])
+        self.assertNotIn("gh", wake["description"])
+        self.assertIn("gh run view, gh run list, gh pr checks, git status, git log", WAKE_TOOL_DESCRIPTION,
+                      "with no list known, the default one")
+
+    def test_an_empty_command_list_offers_no_runcheck(self) -> None:
+        """No command allowed: the check-in toolset stays (read tools only), and RunCheck is neither offered nor
+        described, so a turn cannot even try one ("a wake reads; it doesn't poke")."""
+        ts = Toolset(["Read", "Write", "Bash"], self.policy(), checkin_commands=[], jobs=lambda: "(no jobs)")
+        self.addCleanup(ts.close)
+        self.assertEqual(self.names(ts), ["Read", "Glob", "Grep", "Jobs"])
+        self.assertNotIn("Allowed commands", json.dumps(ts.schemas()))
+        self.assertIn("Unknown tool 'RunCheck'", self.err("RunCheck", ts, argv=["git", "status"]))
+
+    def test_runcheck_refuses_shell_syntax_writing_options_and_other_commands(self) -> None:
+        sandbox = self.ArgvSandbox(result=(0, "completed success\n", False))
+        ts, _ = self.wake_toolset(checkin=[["gh", "run", "view"], ["git", "status"]], sandbox=sandbox)
+        self.assertEqual(self.ok("RunCheck", ts, argv=["gh", "run", "view", "123"]), "completed success")
+        self.assertEqual(sandbox.calls[0][0], ["gh", "run", "view", "123"], "an argv, never a shell string")
+        refusals = {
+            "runs no shell": [["git", "status", ";", "rm", "-rf", "/"], ["gh", "run", "view", "$(id)"],
+                              ["git", "status", "a|b"], ["git", "status", "x\ny"], ["git", "status", "`id`"]],
+            "could write or run": [["gh", "run", "view", "--web"], ["git", "status", "-c", "core.pager=sh"],
+                                   ["gh", "run", "view", "--output=/tmp/x"], ["git", "status", "--ext-diff"]],
+            "not an allowed status command": [["gh", "run", "rerun", "1"], ["git", "push"], ["bash", "id"],
+                                              ["gh", "run"]],
+            "non-empty list of strings": [[], ["gh", ""], "gh run view"],
+        }
+        for words, cases in refusals.items():
+            for argv in cases:
+                with self.subTest(argv=argv):
+                    self.assertIn(words, self.err("RunCheck", ts, argv=argv))
+        self.assertEqual(len(sandbox.calls), 1, "nothing refused reached the sandbox")
+        failing = self.ArgvSandbox(result=(1, "not found\n", False))
+        ts, _ = self.wake_toolset(checkin=[["git", "status"]], sandbox=failing)
+        self.assertIn("[exit code 1]", self.err("RunCheck", ts, argv=["git", "status"]))
+
+    def test_neither_bookkeeping_tool_counts_as_a_callable_tool(self) -> None:
+        from swfactory.chats import _has_callable_tools
+
+        agent = SimpleNamespace(mcp={}, tools=["Wake", "Items", "RunCheck"])
+        self.assertFalse(_has_callable_tools(agent))
+        self.assertTrue(_has_callable_tools(SimpleNamespace(mcp={}, tools=["Wake", "Read"])))

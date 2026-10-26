@@ -1,5 +1,5 @@
 {
-  "description": "Claude through NanoGPT's OpenAI-format API: one NANOGPT_API_KEY for many vendors. The model ids are best guesses; check them against NanoGPT's model list.",
+  "description": "Claude through NanoGPT's OpenAI-format API: one NANOGPT_API_KEY for many vendors. The model ids are the ones NanoGPT's public model list gives (anthropic/claude-opus-5.5 and so on, read on 2026-10-25); which of them your key may use is unchecked: factory doctor reads your key's list and warns for an id it does not list.",
   "providers": {
     "nanogpt": {
       "type": "openai",
@@ -11,21 +11,21 @@
   "models": {
     "opus": {
       "provider": "nanogpt",
-      "model": "claude-opus-5-5",
+      "model": "anthropic/claude-opus-5.5",
       "max_tokens": 32768,
       "stream": true,
       "extra_body": {}
     },
     "sonnet": {
       "provider": "nanogpt",
-      "model": "claude-sonnet-5-5",
+      "model": "anthropic/claude-sonnet-5.5",
       "max_tokens": 32768,
       "stream": true,
       "extra_body": {}
     },
     "haiku": {
       "provider": "nanogpt",
-      "model": "claude-haiku-5-5",
+      "model": "anthropic/claude-haiku-5.5",
       "max_tokens": 16384,
       "stream": true,
       "extra_body": {}

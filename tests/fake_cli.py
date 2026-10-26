@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A fake agent CLI for the CLI driver tests. Behaviour is driven by environment variables.
 
-FAKE_CLI_RECORD     write {"argv", "cwd", "env", "stdin", "pid"} as JSON to this path
+FAKE_CLI_RECORD     write {"argv", "cwd", "env", "stdin", "pid", "no_new_privs"} as JSON to this path
 FAKE_CLI_ENV_KEYS   comma-separated env var names to record (default FOO,BAR,BOTH)
 FAKE_CLI_FORMAT     stream-json (Claude/Qwen style, default) | jsonl (Codex style) | text
 FAKE_CLI_REPLAY     print this file's lines verbatim instead of generated output
@@ -34,6 +34,17 @@ import time
 from pathlib import Path
 
 DEFAULT_THREAD = "0199a000-0000-7000-8000-000000000001"
+
+
+def no_new_privs() -> bool | None:
+    """This process's NoNewPrivs flag from /proc (None when /proc does not say)."""
+    try:
+        for line in Path("/proc/self/status").read_text().splitlines():
+            if line.startswith("NoNewPrivs:"):
+                return line.split(":", 1)[1].strip() == "1"
+    except OSError:
+        return None
+    return None
 
 
 def arg_after(argv: list[str], flag: str) -> str | None:
@@ -134,7 +145,7 @@ def main() -> int:
         keys = (os.environ.get("FAKE_CLI_ENV_KEYS") or "FOO,BAR,BOTH").split(",")
         Path(record).write_text(json.dumps({
             "argv": argv, "cwd": os.getcwd(), "env": {key: os.environ.get(key) for key in keys},
-            "stdin": sys.stdin.read(), "pid": os.getpid()}))
+            "stdin": sys.stdin.read(), "pid": os.getpid(), "no_new_privs": no_new_privs()}))
     if os.environ.get("FAKE_CLI_IGNORE_TERM") == "1":
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
     if os.environ.get("FAKE_CLI_CHILD"):

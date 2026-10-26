@@ -129,14 +129,16 @@ class FakeFactory:
         return Factory(self.config or Config(Path("/nonexistent/config.json")), EventBus()).check_delivery(delivery)
 
     def submit(self, repo: str, feature: str, from_branch: str | None = None, routing: Any = None,
-               delivery: str | None = None, profile: str | None = None, items: list[dict] | None = None) -> dict:
+               delivery: str | None = None, profile: str | None = None, items: list[dict] | None = None,
+               handoff_models: list[dict] | None = None) -> dict:
         if self.fail_submit is not None:
             raise self.fail_submit
         with self._lock:
             job_id = f"{len(self.submitted) + 1:03d}-job"
             job = {"id": job_id, "repo": repo, "feature": feature, "stage": "queued",
                    "from_branch": from_branch, "routing": routing, "delivery": delivery, "merged_commit": None,
-                   **({"profile": profile} if profile is not None else {})}
+                   **({"profile": profile} if profile is not None else {}),
+                   **({"handoff_models": handoff_models} if handoff_models is not None else {})}
             self.jobs[(repo, job_id)] = job
             self.submitted.append(dict(job))
             if items is not None:   # handed over with the job (written before it is queued)
@@ -704,6 +706,50 @@ class ChatHandoffTest(ChatTestCase):
         self.assertEqual(self.manager.chat(chat["id"])["job"], job["id"])
         self.assertEqual(self.published("chat.updated")[-1].data["chat"]["job"], job["id"])
 
+    def test_handoff_names_the_models_the_chat_ran_on(self) -> None:
+        """DESIGN §23: the chat's model wrote the branch, so the job's judges must be independent of it; chat.models
+        lists every model a turn ran on, and the hand-off passes them as handoff_models."""
+        from swfactory.routing import default_family
+
+        chat = self.manager.new_chat("app")
+        self.assertEqual(chat["models"], [])
+        self.manager.chat_send(chat["id"], "build it")
+        done = self.settle(chat["id"])
+        ran = self.runners.calls[-1].ctx.model
+        entry = {"model": ran.key, "provider": ran.provider.name, "model_id": ran.model,
+                 "family": default_family(ran.model)}
+        self.assertEqual(done["models"], [entry])
+        self.manager.chat_send(chat["id"], "again")
+        self.assertEqual(self.settle(chat["id"])["models"], [entry], "each model once")
+        commit_file(Path(chat["worktree"]), "feature.txt", "done\n", message="add feature")
+        self.manager.chat_handoff(chat["id"], "Ship")
+        self.assertEqual(self.factory.submitted[0]["handoff_models"], [entry])
+
+    def test_handoff_of_a_chat_from_before_chat_models(self) -> None:
+        chat = self.manager.new_chat("app")
+        path = self.tmp / "data" / "chats" / chat["id"] / "chat.json"
+        saved = json.loads(path.read_text())
+        del saved["models"]
+        saved.update(turns=2,
+                     session_model={"driver": "builtin", "model": "m1", "provider": "p", "model_id": "qwen3-x"},
+                     earlier_sessions=[{"driver": "builtin", "model": "m0", "provider": "p",
+                                        "model_id": "claude-x", "file": None}])
+        path.write_text(json.dumps(saved))
+        commit_file(Path(chat["worktree"]), "feature.txt", "done\n", message="add feature")
+        self.manager.chat_handoff(chat["id"], "Ship")
+        self.assertEqual(self.factory.submitted[0]["handoff_models"],
+                         [{"model": "m0", "provider": "p", "model_id": "claude-x", "family": "anthropic"},
+                          {"model": "m1", "provider": "p", "model_id": "qwen3-x", "family": "qwen"}])
+        other = self.manager.new_chat("app")
+        path = self.tmp / "data" / "chats" / other["id"] / "chat.json"
+        saved = json.loads(path.read_text())
+        del saved["models"]
+        saved["turns"] = 3
+        path.write_text(json.dumps(saved))
+        commit_file(Path(other["worktree"]), "feature.txt", "done\n", message="add feature")
+        self.manager.chat_handoff(other["id"], "Ship")
+        self.assertNotIn("handoff_models", self.factory.submitted[1], "turns, but no model recorded: unknown")
+
     def test_handoff_validation(self) -> None:
         chat = self.manager.new_chat("app")
         with self.assertRaisesRegex(self.ActionError, "no commits ahead"):
@@ -956,3 +1002,124 @@ class HelperTest(ManagerTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ChatWakeTurnTest(ChatTestCase):
+    """Chat check-ins (Wake & Messages §5.8): the WakeManager fires chat_send(origin="wake"), the turn is a smaller
+    read-only run, wake_chain counts the links, and the turn's end closes its item and tells the WakeManager."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.contexts: list[tuple[str, int, bool]] = []
+        self.done: list[tuple] = []
+
+        def wake_chat_context(chat_id: str, chain: int, *, checkin: bool) -> Any:
+            self.contexts.append((chat_id, chain, checkin))
+            return types.SimpleNamespace(chat_id=chat_id, chain=chain, checkin=checkin)
+
+        self.factory.wake_chat_context = wake_chat_context
+        self.factory.wake_chat_done = lambda *args: self.done.append(args)
+
+    def test_a_wake_turn_is_a_read_only_checkin_and_the_chain_counts(self) -> None:
+        chat = self.manager.new_chat("app")
+        self.manager.chat_send(chat["id"], "Ship the fix and watch CI.")
+        first = self.settle(chat["id"])
+        self.assertEqual(first.get("wake_chain"), 0)
+        user_call = self.runners.calls[0]
+        self.assertFalse(user_call.ctx.checkin)
+        self.assertEqual(self.contexts[-1], (chat["id"], 0, False), "an ordinary turn gets the Wake tool's context")
+        self.assertIsNotNone(user_call.ctx.wake)
+        with self.assertRaises(ValueError):
+            self.manager.chat_send(chat["id"], "x", origin="cron")
+        for link in (1, 2):
+            self.manager.chat_send(chat["id"], "[Scheduled check-in] look at CI", origin="wake", wake_id=f"W-00000{link}")
+            done = self.settle(chat["id"])
+            self.assertEqual(done["wake_chain"], link)
+            self.assertEqual(done["title"], first["title"], "a check-in never retitles the chat")
+        call = self.runners.calls[-1]
+        cwd = Path(chat["cwd"])
+        self.assertEqual((call.ctx.checkin, call.ctx.background, call.ctx.message_origin), (True, True, "wake"))
+        self.assertEqual(call.ctx.write_paths, [], "a check-in writes nothing")
+        self.assertEqual(call.ctx.read_roots[0], cwd)
+        self.assertIn(["gh", "run", "view"], call.ctx.checkin_commands)
+        self.assertEqual((call.ctx.limits.max_turns, call.ctx.max_output_tokens), (30, 20000))
+        self.assertEqual(self.contexts[-1], (chat["id"], 2, True))
+        self.assertEqual([d[:2] + d[3:] for d in self.done], [(chat["id"], "W-000001", True),
+                                                             (chat["id"], "W-000002", True)])
+        self.manager.chat_send(chat["id"], "Thanks, now tidy up.")
+        self.assertEqual(self.settle(chat["id"])["wake_chain"], 0, "a person's message resets the chain")
+
+    def test_the_end_of_a_checkin_closes_its_item_through_the_chats_items(self) -> None:
+        chat = self.manager.new_chat("app")
+        opened: list[str] = []
+
+        def coder(call: Call) -> AgentRun:
+            if not call.ctx.checkin:
+                opened.append(call.ctx.items.open_wake("Scheduled check-in W-000007", "2026-10-21T15:00:00+01:00",
+                                                       "W-000007", taint=("untrusted",)))
+            return AgentRun(ok=True, final_text="ok", turns=1, session_ref=str(call.ctx.session_path))
+
+        self.runners.handler = coder
+        self.manager.chat_send(chat["id"], "Watch CI for me.")
+        self.settle(chat["id"])
+        item = opened[0]
+        self.manager.chat_send(chat["id"], "[Scheduled check-in] CI", origin="wake", wake_id="W-000007", wake_item=item)
+        self.settle(chat["id"])
+        row = next(i for i in self.manager.scope_items(chat["id"])["items"] if i["id"] == item)
+        self.assertEqual(row["status"], "verified")
+        self.assertEqual(self.done[-1][1], "W-000007")
+
+    def test_a_failed_checkin_leaves_its_item_open_and_says_so(self) -> None:
+        chat = self.manager.new_chat("app")
+        opened: list[str] = []
+
+        def coder(call: Call) -> AgentRun:
+            if not call.ctx.checkin:
+                opened.append(call.ctx.items.open_wake("Scheduled check-in W-000008", "2026-10-21T15:00:00+01:00",
+                                                       "W-000008"))
+                return AgentRun(ok=True, final_text="ok", turns=1, session_ref=str(call.ctx.session_path))
+            return AgentRun(ok=False, error="the model stayed busy: a check-in waits for people")
+
+        self.runners.handler = coder
+        self.manager.chat_send(chat["id"], "Watch CI for me.")
+        self.settle(chat["id"])
+        self.manager.chat_send(chat["id"], "[Scheduled check-in] CI", origin="wake", wake_id="W-000008",
+                               wake_item=opened[0])
+        self.settle(chat["id"])
+        row = next(i for i in self.manager.scope_items(chat["id"])["items"] if i["id"] == opened[0])
+        self.assertEqual(row["status"], "open", "a promised check-in that did not happen stays in sight")
+        self.assertEqual(self.done[-1][1:2] + self.done[-1][3:], ("W-000008", False))
+
+    def test_a_checkin_s_commands_follow_the_setting_and_an_empty_list_gives_none(self) -> None:
+        """wakes.chat_wakes.commands: [] gives the check-in no RunCheck (an empty list); missing or null keeps the
+        default list, the same rule as a persona's wake.commands."""
+        from swfactory.wakes import CHAT_WAKE_DEFAULTS
+
+        chat = self.manager.new_chat("app")
+        self.manager.chat_send(chat["id"], "Watch CI.")
+        self.settle(chat["id"])
+        wakes = self.manager.config.raw.setdefault("wakes", {})
+        cases = (([], []), (None, CHAT_WAKE_DEFAULTS["commands"]), ([["git", "status"]], [["git", "status"]]))
+        for number, (value, expected) in enumerate(cases, start=1):
+            wakes["chat_wakes"] = {"enabled": True, "commands": value}
+            self.manager.chat_send(chat["id"], "[Scheduled check-in] CI", origin="wake", wake_id=f"W-00002{number}")
+            self.settle(chat["id"])
+            self.assertEqual(self.runners.calls[-1].ctx.checkin_commands, expected, value)
+
+    def test_without_the_factory_context_there_is_no_wake_tool(self) -> None:
+        del self.factory.wake_chat_context
+        chat = self.manager.new_chat("app")
+        self.manager.chat_send(chat["id"], "hi")
+        self.settle(chat["id"])
+        self.assertIsNone(self.runners.calls[0].ctx.wake)
+
+    def test_a_checkin_whose_context_is_refused_does_not_run(self) -> None:
+        """S46: the switches no longer hold when the check-in turn starts (bwrap turned off meanwhile): no run at
+        all, so RunCheck never runs unsandboxed; the WakeManager hears it failed."""
+        self.factory.wake_chat_context = lambda chat_id, chain, *, checkin: None
+        chat = self.manager.new_chat("app")
+        self.manager.chat_send(chat["id"], "[Scheduled check-in] CI", origin="wake", wake_id="W-000009")
+        ended = self.settle(chat["id"])
+        self.assertEqual(self.runners.calls, [], "the check-in never ran")
+        self.assertIn("check-ins are off for this chat now", ended["error"])
+        self.assertEqual(self.done[-1][1:2] + self.done[-1][3:], ("W-000009", False))

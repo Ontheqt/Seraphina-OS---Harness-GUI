@@ -1,0 +1,1874 @@
+{
+ "body": null,
+ "headers": {
+  "Connection": "close",
+  "Content-Type": "application/json"
+ },
+ "json": {
+  "block_size_bytes": 262144,
+  "blocks_bad": 0,
+  "blocks_count": 500,
+  "blocks_rehash": 0,
+  "blocks_unscrubbed": 0,
+  "blocks_unsynced": 500,
+  "daemon_conf": "/etc/snapraidd.conf",
+  "daemon_version": "2.1",
+  "data_disks_count": 2,
+  "diff_added": 364,
+  "diff_copied": 0,
+  "diff_equal": 0,
+  "diff_moved": 0,
+  "diff_relocated": 0,
+  "diff_removed": 0,
+  "diff_restored": 0,
+  "diff_updated": 0,
+  "diffs": [
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "big/d1-big-0.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "big/d1-big-1.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-000.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-001.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-002.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-003.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-004.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-005.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-006.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-007.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-008.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-009.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-010.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-011.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-012.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-013.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-014.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-015.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-016.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-017.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-018.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-019.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-020.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-021.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-022.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-023.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-024.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-025.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-026.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-027.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-028.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-029.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-030.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-031.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-032.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-033.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-034.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-035.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-036.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-037.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-038.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-039.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-040.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-041.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-042.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-043.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-044.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-045.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-046.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-047.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-048.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-049.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-050.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-051.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-052.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-053.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-054.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-055.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-056.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-057.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-058.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "docs/d1-docs-059.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-000.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-001.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-002.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-003.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-004.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-005.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-006.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-007.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-008.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-009.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-010.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-011.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-012.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-013.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-014.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-015.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-016.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-017.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-018.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-019.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-020.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-021.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-022.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-023.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-024.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-025.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-026.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-027.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-028.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-029.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-030.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-031.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-032.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-033.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-034.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-035.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-036.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-037.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-038.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-039.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-040.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-041.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-042.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-043.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-044.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-045.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-046.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-047.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-048.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-049.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-050.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-051.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-052.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-053.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-054.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-055.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-056.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-057.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-058.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "music/d1-music-059.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-000.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-001.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-002.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-003.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-004.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-005.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-006.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-007.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-008.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-009.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-010.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-011.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-012.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-013.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-014.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-015.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-016.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-017.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-018.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-019.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-020.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-021.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-022.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-023.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-024.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-025.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-026.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-027.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-028.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-029.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-030.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-031.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-032.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-033.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-034.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-035.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-036.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-037.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-038.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-039.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-040.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-041.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-042.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-043.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-044.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-045.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-046.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-047.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-048.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-049.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-050.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-051.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-052.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-053.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-054.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-055.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-056.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-057.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-058.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d1",
+    "path": "photos/d1-photos-059.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "big/d2-big-0.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "big/d2-big-1.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-000.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-001.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-002.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-003.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-004.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-005.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-006.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-007.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-008.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-009.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-010.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-011.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-012.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-013.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-014.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-015.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-016.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-017.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-018.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-019.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-020.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-021.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-022.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-023.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-024.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-025.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-026.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-027.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-028.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-029.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-030.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-031.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-032.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-033.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-034.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-035.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-036.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-037.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-038.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-039.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-040.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-041.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-042.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-043.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-044.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-045.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-046.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-047.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-048.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-049.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-050.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-051.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-052.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-053.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-054.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-055.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-056.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-057.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-058.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "docs/d2-docs-059.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-000.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-001.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-002.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-003.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-004.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-005.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-006.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-007.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-008.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-009.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-010.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-011.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-012.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-013.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-014.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-015.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-016.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-017.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-018.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-019.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-020.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-021.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-022.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-023.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-024.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-025.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-026.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-027.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-028.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-029.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-030.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-031.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-032.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-033.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-034.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-035.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-036.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-037.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-038.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-039.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-040.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-041.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-042.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-043.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-044.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-045.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-046.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-047.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-048.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-049.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-050.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-051.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-052.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-053.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-054.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-055.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-056.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-057.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-058.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "music/d2-music-059.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-000.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-001.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-002.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-003.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-004.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-005.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-006.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-007.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-008.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-009.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-010.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-011.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-012.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-013.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-014.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-015.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-016.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-017.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-018.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-019.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-020.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-021.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-022.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-023.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-024.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-025.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-026.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-027.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-028.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-029.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-030.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-031.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-032.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-033.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-034.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-035.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-036.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-037.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-038.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-039.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-040.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-041.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-042.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-043.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-044.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-045.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-046.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-047.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-048.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-049.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-050.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-051.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-052.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-053.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-054.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-055.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-056.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-057.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-058.bin"
+   },
+   {
+    "change": "added",
+    "disk": "d2",
+    "path": "photos/d2-photos-059.bin"
+   }
+  ],
+  "engine_conf": "/etc/snapraid.conf",
+  "engine_version": "15.1",
+  "extra_disks_count": 0,
+  "files_count": 364,
+  "fix_recovered": 0,
+  "fix_unrecoverable": 0,
+  "fixes": [],
+  "free_space_bytes": 295174144,
+  "health": "pending",
+  "hold_off": false,
+  "instance": "lab",
+  "last_command": "sync",
+  "last_command_at": "2026-10-25T15:00:57",
+  "parity_disks_count": 1,
+  "pulse": {
+   "activity": 70,
+   "array": 29,
+   "config": 1,
+   "current_at": "2026-10-25T15:01:00",
+   "disks": 56,
+   "tasks": 68
+  },
+  "total_space_bytes": 465043456
+ },
+ "method": "GET",
+ "path": "/snapraid/v1/array",
+ "status": 200
+}

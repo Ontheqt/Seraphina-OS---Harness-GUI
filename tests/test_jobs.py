@@ -42,7 +42,7 @@ class TempDirTestCase(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(tmp.name).resolve()
         self.data_dir = self.tmp / "data"
-        self.store = JobStore(self.data_dir)
+        self.store = JobStore(self.data_dir, ports_in_use=set)   # nothing listens: every job gets its numbered ports
 
     def new_job(self, feature: str = "Rate limit the signup form", repo: str = "my-app",
                 **kwargs) -> dict:
@@ -408,6 +408,40 @@ class AllocateTest(TempDirTestCase):
             ids += out.split()
         self.assertEqual(len(ids), 120)
         self.assertEqual(sorted(int(job_id[:3]) for job_id in ids), list(range(1, 121)))
+
+
+class JobPortTest(TempDirTestCase):
+    """A job's three ports (builder, reviewer-ux, reviewer-ui) avoid what already listens on this machine: a
+    server's own web app on 6080 would otherwise be job 98's builder port."""
+
+    def test_the_numbered_block_or_the_same_number_above_the_overflow(self) -> None:
+        self.assertEqual(jobs.job_port(1, set()), 5110)
+        self.assertEqual(jobs.job_port(98, {6080}), 16080, "the same number's block above 15100")
+        self.assertEqual(jobs.job_port(98, {6082}), 16080, "any of the three ports counts")
+        self.assertEqual(jobs.job_port(98, {6083}), 6080, "the next job's block is not this one's")
+        self.assertEqual(jobs.job_port(98, {6080, 16081, 25100}), 25110, "else the first free spare block")
+        self.assertEqual(jobs.job_port(999, {15090}), 25090)
+        self.assertEqual(jobs.SPARE_PORT, 25100, "above job 999's overflow block (25090-25092)")
+        self.assertEqual(jobs.job_port(5, {5150, 15150} | set(range(25100, 32768))), 5150,
+                         "nothing free: the numbered block")
+
+    def test_a_moved_job_never_takes_the_next_jobs_overflow_block(self) -> None:
+        """Job 98's numbered and overflow blocks are taken, and job 99's preview servers are down when 98 is made:
+        98 must not take 16090, which job 99 moves to when its own numbered block is taken too."""
+        busy = {6080, 16080, 6090}
+        first = jobs.job_port(98, busy)
+        self.assertEqual(first, 25100)
+        second = jobs.job_port(99, busy)
+        self.assertEqual(second, 16090)
+        self.assertFalse(set(range(first, first + jobs.JOB_PORTS)) & set(range(second, second + jobs.JOB_PORTS)))
+        for number in range(1, jobs.MAX_JOB_NUMBER + 1):
+            self.assertLess(jobs.OVERFLOW_PORT + jobs.PORT_STRIDE * number + jobs.JOB_PORTS - 1, jobs.SPARE_PORT)
+
+    def test_a_new_job_reads_what_listens_now(self) -> None:
+        self.store.ports_in_use = lambda: {5111}
+        self.assertEqual(self.new_job()["port"], 15110)
+        self.store.ports_in_use = set
+        self.assertEqual(self.new_job("Another")["port"], 5120)
 
 
 class NewJobTest(TempDirTestCase):

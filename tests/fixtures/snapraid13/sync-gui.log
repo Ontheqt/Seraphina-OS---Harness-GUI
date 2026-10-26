@@ -1,0 +1,183 @@
+version:13.0
+unixtime:1792928531
+time:2026-10-25 11:42:11
+command:sync
+argv:0:/usr/local/bin/snapraid
+argv:1:-c
+argv:2:/etc/snapraid.conf
+argv:3:-l
+argv:4:/var/lib/seraphina-snapraid/runs/J-1/snapraid.log
+argv:5:-G
+argv:6:--bw-limit
+argv:7:2M
+argv:8:sync
+selftest:
+msg:progress: Self test...
+conf:file:/etc/snapraid.conf
+uuid:by-uuid:7:5: opendir(/dev/disk/by-uuid) failed, No such file or directory
+uuid:blkid:7:5:7e387000-0cc5-4f60-9c08-c27504b3227b: found /dev/loop5
+uuid:by-uuid:7:6: opendir(/dev/disk/by-uuid) failed, No such file or directory
+uuid:blkid:7:6:570f566e-dcf4-4c4a-9b8b-f33ac5c35ecb: found /dev/loop6
+uuid:by-uuid:7:7: opendir(/dev/disk/by-uuid) failed, No such file or directory
+uuid:blkid:7:7:49978a8b-220a-4ec8-ad0e-23d57ad6b79a: found /dev/loop7
+blocksize:65536
+data:d1:/mnt/disk1/
+data:d2:/mnt/disk2/
+data:d3:/mnt/disk3/
+mode:par2
+parity:0:/mnt/parity1/snapraid.parity
+2-parity:0:/mnt/parity2/snapraid.2-parity
+autosave:1000000000
+filter:exclude /lost+found/
+filter:exclude *.unrecoverable
+filter:exclude /seraphina-restored/
+filter:exclude /.seraphina-trash/
+content:/var/snapraid/snapraid.content
+msg:progress: Loading state from /var/snapraid/snapraid.content...
+msg:fatal: WARNING! Content file '/var/snapraid/snapraid.content' not found, attempting with another copy...
+content:/mnt/disk1/.snapraid/snapraid.content
+msg:progress: Loading state from /mnt/disk1/.snapraid/snapraid.content...
+msg:fatal: WARNING! Content file '/mnt/disk1/.snapraid/snapraid.content' not found, attempting with another copy...
+content:/mnt/disk2/.snapraid/snapraid.content
+msg:progress: Loading state from /mnt/disk2/.snapraid/snapraid.content...
+msg:fatal: No content file found. Assuming empty.
+uuid:by-uuid:7:8: opendir(/dev/disk/by-uuid) failed, No such file or directory
+uuid:blkid:7:8:edc3bb94-8a01-4ef1-be3a-7ede66bbdb21: found /dev/loop8
+uuid:by-uuid:7:9: opendir(/dev/disk/by-uuid) failed, No such file or directory
+uuid:blkid:7:9:7aa14332-8868-4a39-af8c-a92d415217cc: found /dev/loop9
+msg:progress: Scanning...
+statfs:ext2/3/4: /mnt/disk1/ 
+statfs:ext2/3/4: /mnt/disk2/ 
+statfs:ext2/3/4: /mnt/disk3/ 
+msg:verbose: Excluding directory '/mnt/disk2/lost+found' for rule 'exclude /lost+found/'
+msg:verbose: Excluding directory '/mnt/disk1/lost+found' for rule 'exclude /lost+found/'
+msg:verbose: Excluding directory '/mnt/disk3/lost+found' for rule 'exclude /lost+found/'
+scan:add:d2:docs/readme.txt
+scan:add:d1:docs/readme.txt
+scan:add:d3:docs/readme.txt
+scan:add:d1:media/photos/img1.jpg
+scan:add:d1:media/photos/img2.jpg
+scan:add:d2:media/photos/img1.jpg
+scan:add:d1:media/photos/img3.jpg
+scan:add:d3:media/photos/img1.jpg
+scan:add:d1:media/photos/img4.jpg
+scan:add:d2:media/photos/img2.jpg
+scan:add:d2:media/photos/img3.jpg
+scan:add:d3:media/photos/img2.jpg
+scan:add:d1:media/photos/img5.jpg
+scan:add:d2:media/photos/img4.jpg
+scan:add:d1:media/big.bin
+scan:add:d3:media/photos/img3.jpg
+scan:add:d2:media/photos/img5.jpg
+scan:add:d3:media/photos/img4.jpg
+scan:add:d2:media/big.bin
+scan:add:d3:media/photos/img5.jpg
+scan:add:d1:media/notes/a\db.txt
+scan:add:d3:media/big.bin
+scan:add:d1:media/notes/back\\slash.txt
+scan:add:d2:media/notes/a\db.txt
+msg:progress: Scanned d1 in 0 seconds
+scan:add:d3:media/notes/a\db.txt
+scan:add:d3:media/notes/back\\slash.txt
+msg:progress: Scanned d3 in 0 seconds
+scan:add:d2:media/notes/back\\slash.txt
+scan:add:d2:media/notes/<img src=x onerror=alert(1)>.jpg
+scan:add:d2:media/notes/invoice‮gpj.exe
+scan:add:d2:media/notes/line\nbreak.txt
+msg:progress: Scanned d2 in 0 seconds
+msg:verbose:        0 equal
+msg:verbose:       30 added
+msg:verbose:        0 removed
+msg:verbose:        0 updated
+msg:verbose:        0 moved
+msg:verbose:        0 copied
+msg:verbose:        0 restored
+summary:equal:0
+summary:added:30
+summary:removed:0
+summary:updated:0
+summary:moved:0
+summary:copied:0
+summary:restored:0
+summary:exit:diff
+statfs:ext2/3/4: /mnt/disk1/ 
+statfs:ext2/3/4: /mnt/disk2/ 
+statfs:ext2/3/4: /mnt/disk3/ 
+statfs:ext2/3/4: /mnt/parity1/snapraid.parity 
+statfs:ext2/3/4: /mnt/parity2/snapraid.2-parity 
+memory:used:229228
+memory:block:17
+memory:extent:88
+memory:file:192
+memory:link:88
+memory:dir:80
+msg:progress: Using 0 MiB of memory for the file-system.
+msg:progress: Initializing...
+msg:progress: Resizing...
+split:fill:/mnt/parity1/snapraid.parity:0:3735552:
+split:delta:/mnt/parity1/snapraid.parity:0:2097152:
+split:grow:/mnt/parity1/snapraid.parity:2097152: ok
+split:delta:/mnt/parity1/snapraid.parity:2097152:1048576:
+split:grow:/mnt/parity1/snapraid.parity:3145728: ok
+split:delta:/mnt/parity1/snapraid.parity:3145728:524288:
+split:grow:/mnt/parity1/snapraid.parity:3670016: ok
+split:delta:/mnt/parity1/snapraid.parity:3670016:65536:
+split:grow:/mnt/parity1/snapraid.parity:3735552: ok
+split:shrink:/mnt/parity1/snapraid.parity:3735552: ok
+split:fill:/mnt/parity2/snapraid.2-parity:0:3735552:
+split:delta:/mnt/parity2/snapraid.2-parity:0:2097152:
+split:grow:/mnt/parity2/snapraid.2-parity:2097152: ok
+split:delta:/mnt/parity2/snapraid.2-parity:2097152:1048576:
+split:grow:/mnt/parity2/snapraid.2-parity:3145728: ok
+split:delta:/mnt/parity2/snapraid.2-parity:3145728:524288:
+split:grow:/mnt/parity2/snapraid.2-parity:3670016: ok
+split:delta:/mnt/parity2/snapraid.2-parity:3670016:65536:
+split:grow:/mnt/parity2/snapraid.2-parity:3735552: ok
+split:shrink:/mnt/parity2/snapraid.2-parity:3735552: ok
+statfs:ext2/3/4: /mnt/disk1/ 
+statfs:ext2/3/4: /mnt/disk2/ 
+statfs:ext2/3/4: /mnt/disk3/ 
+statfs:ext2/3/4: /mnt/parity1/snapraid.parity 
+statfs:ext2/3/4: /mnt/parity2/snapraid.2-parity 
+msg:progress: Saving state to /var/snapraid/snapraid.content...
+msg:progress: Saving state to /mnt/disk1/.snapraid/snapraid.content...
+msg:progress: Saving state to /mnt/disk2/.snapraid/snapraid.content...
+msg:verbose:       30 files
+msg:verbose:        0 hardlinks
+msg:verbose:        0 symlinks
+msg:verbose:        2 empty dirs
+msg:progress: Verifying...
+msg:progress: Verified /var/snapraid/snapraid.content in 0 seconds
+msg:progress: Verified /mnt/disk1/.snapraid/snapraid.content in 0 seconds
+msg:progress: Verified /mnt/disk2/.snapraid/snapraid.content in 0 seconds
+msg:progress: Using 40 MiB of memory for 128 cached blocks.
+msg:progress: Selecting...
+msg:progress: Syncing...
+run:begin:0:57:57
+run:pos:0:1:9000:1:0:0:0:0
+run:pos:5:6:808608:10:0:0:0:1
+run:pos:11:12:1807824:21:0:0:0:2
+run:pos:18:19:2832216:33:0:0:0:3
+run:pos:24:25:3840432:43:0:0:0:4
+run:pos:30:31:5020080:54:0:1:0:5
+run:pos:36:37:6199728:64:0:1:0:6
+run:pos:42:43:7379376:75:0:1:0:7
+run:pos:48:49:8559024:85:0:1:0:8
+run:pos:55:56:9066800:98:0:1:0:9
+run:end
+msg:progress: Saving state to /var/snapraid/snapraid.content...
+msg:progress: Saving state to /mnt/disk1/.snapraid/snapraid.content...
+msg:progress: Saving state to /mnt/disk2/.snapraid/snapraid.content...
+msg:verbose:       30 files
+msg:verbose:        0 hardlinks
+msg:verbose:        0 symlinks
+msg:verbose:        2 empty dirs
+msg:progress: Verifying...
+msg:progress: Verified /var/snapraid/snapraid.content in 0 seconds
+msg:progress: Verified /mnt/disk1/.snapraid/snapraid.content in 0 seconds
+msg:progress: Verified /mnt/disk2/.snapraid/snapraid.content in 0 seconds
+msg:status: Everything OK
+summary:error_file:0
+summary:error_io:0
+summary:error_data:0
+summary:exit:ok

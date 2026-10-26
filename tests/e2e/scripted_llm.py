@@ -138,6 +138,8 @@ class Scenario:
     between the SSE chunks of that reply instead (a slow stream). coder_delay: seconds the coder's first
     reply of the first message waits. echo_secret: a value the builder's final reply of round 1 includes
     (a model that leaks a key it saw). probe_env: names the builder looks for with ``env`` in round 1.
+    product_assumption: an Assumptions line the spec-writer marks (product) (a decision only a person answers,
+    DESIGN §7 and §32); None writes "None." there.
     """
 
     reviews: dict = field(default_factory=dict)
@@ -149,6 +151,7 @@ class Scenario:
     coder_delay: float = 0.0
     echo_secret: str | None = None
     probe_env: tuple = ()
+    product_assumption: str | None = None
 
     def verdict(self, lens: str, round_: int) -> str:
         script = self.reviews.get(lens) or ["PASS"]
@@ -174,12 +177,15 @@ def agent_signatures(agents_dir: Path = AGENTS_DIR) -> dict[str, str]:
 # ---------------------------------------------------------------- the conversation, neutral
 
 
-def _text_of(content: Any) -> str:
-    """The text of a message's content, without the harness's <factory-items> notes."""
+def _text_of(content: Any, notes: bool = False) -> str:
+    """The text of a message's content, without the harness's <factory-items> notes (with them: notes=True, for
+    the system prompt, which never carries a note but names the marker in its rules: "as a <factory-items ...>
+    block", which the note pattern would read as an unclosed note running to the end, the agent's body with it)."""
+    strip = (lambda text: text) if notes else (lambda text: NOTE_RE.sub("", text))
     if isinstance(content, str):
-        return NOTE_RE.sub("", content)
+        return strip(content)
     if isinstance(content, list):
-        texts = (NOTE_RE.sub("", str(block.get("text") or "")) for block in content
+        texts = (strip(str(block.get("text") or "")) for block in content
                  if isinstance(block, dict) and block.get("type") == "text")
         return "\n\n".join(text for text in texts if text)
     return ""
@@ -216,7 +222,7 @@ class Conversation:
         for message in raw:
             role = message.get("role")
             if role == "system":
-                system = _text_of(message.get("content"))
+                system = _text_of(message.get("content"), notes=True)
             elif role == "user":
                 entries.append(Entry("user", _text_of(message.get("content"))))
             elif role == "assistant":
@@ -237,7 +243,7 @@ class Conversation:
     @classmethod
     def _anthropic(cls, body: dict) -> "Conversation":
         system = body.get("system")
-        system = system if isinstance(system, str) else _text_of(system)
+        system = system if isinstance(system, str) else _text_of(system, notes=True)
         entries = []
         raw = [m for m in body.get("messages") or [] if isinstance(m, dict)]
         for message in raw:
@@ -542,12 +548,14 @@ class ScriptedLLM:
             if from_branch:
                 diff_note = ("\nThe work is already on the branch: " + (t.out(0, len(t.steps[0]) - 1).splitlines()
                                                                          or [""])[0] + "\n")
+            product = self.scenario.product_assumption
+            assumptions = f"- {product} (product)" if product else "None."
             spec = (f"# {first[:60]}\n\n> Feature: {first}\n\n## Context\n`src/todo.js` exports "
                     f"{', '.join(functions) or 'nothing yet'}; tests are in `test/todo.test.js` and run with "
                     f"`node --test` (AGENTS.md).{diff_note}\n\n## Requirements\n1. {first}.\n\n"
                     "## Acceptance criteria\n1. `node --test` passes, with a test for the new behaviour.\n"
                     "2. `node --check src/todo.js src/app.js` passes.\n\n## Out of scope\nAnything the feature "
-                    "does not name.\n\n## Assumptions\nNone.\n\n## Risk\nNone.\n")
+                    "does not name.\n\n## Assumptions\n" + assumptions + "\n\n## Risk\nNone.\n")
             return reply("The spec is clear; write it.", call("Write", file_path=f"{job}/spec.md", content=spec))
         return final("Wrote spec.md.")
 

@@ -1,0 +1,36 @@
+Loading state from /var/snapraid/snapraid.content...
+Listing...
+        3000 2026/10/25 11:42 docs/readme.txt
+     2000000 2026/10/25 11:42 media/big.bin
+        1500 2026/10/25 11:42 media/notes/a:b.txt
+        1600 2026/10/25 11:42 media/notes/back\\slash.txt
+      201000 2026/10/25 11:42 media/photos/img1.jpg
+      202000 2026/10/25 11:42 media/photos/img2.jpg
+      203000 2026/10/25 11:42 media/photos/img3.jpg
+      204000 2026/10/25 11:42 media/photos/img4.jpg
+      205000 2026/10/25 11:42 media/photos/img5.jpg
+        3000 2026/10/25 11:42 docs/readme.txt
+     2000000 2026/10/25 11:42 media/big.bin
+        1700 2026/10/25 11:42 media/notes/\<img\ src\=x\ onerror\=alert\(1\)\>.jpg
+        1500 2026/10/25 11:42 media/notes/a:b.txt
+        1600 2026/10/25 11:42 media/notes/back\\slash.txt
+        1800 2026/10/25 11:42 media/notes/invoice‮gpj.exe
+        1900 2026/10/25 11:42 media/notes/line\
+break.txt
+      201000 2026/10/25 11:42 media/photos/img1.jpg
+      202000 2026/10/25 11:42 media/photos/img2.jpg
+      203000 2026/10/25 11:42 media/photos/img3.jpg
+      204000 2026/10/25 11:42 media/photos/img4.jpg
+      205000 2026/10/25 11:42 media/photos/img5.jpg
+        3000 2026/10/25 11:42 docs/readme.txt
+     2000000 2026/10/25 11:42 media/big.bin
+        1500 2026/10/25 11:42 media/notes/a:b.txt
+        1600 2026/10/25 11:42 media/notes/back\\slash.txt
+      201000 2026/10/25 11:42 media/photos/img1.jpg
+      202000 2026/10/25 11:42 media/photos/img2.jpg
+      203000 2026/10/25 11:42 media/photos/img3.jpg
+      204000 2026/10/25 11:42 media/photos/img4.jpg
+      205000 2026/10/25 11:42 media/photos/img5.jpg
+
+      30 files, for 0 GB
+       0 links

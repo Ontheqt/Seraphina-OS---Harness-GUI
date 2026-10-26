@@ -28,11 +28,14 @@ missing parent directories created, so a refused path never reaches the server.
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import fnmatch
+import io
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 import threading
@@ -49,6 +52,39 @@ if TYPE_CHECKING:
     from .mcp import McpClient
 
 BUILTIN_TOOLS = ("Read", "Write", "Edit", "Glob", "Grep", "Bash", "Skill", "Items")
+# The check-in toolset (Wake & Messages §5.8; a read-only wake, decision c): no write, send or shell tool.
+CHECKIN_TOOLS = ("Read", "Glob", "Grep")
+RUN_CHECK_TIMEOUT = 120.0
+SHELL_SYNTAX = frozenset(";|&$`<>\n\r\0")
+REFUSED_OPTIONS = ("--output", "-o", "--exec", "--upload-pack", "--receive-pack", "--ext-diff", "--textconv",
+                   "--web", "-w", "--config", "-c")
+WAKE_TOOL_TEXT = (
+    "Ask Software Factory to wake this chat later, so you can check on something such as a CI run or a long build, "
+    "instead of waiting in Bash. schedule returns an id and the time it was set to; the time may be moved to fit "
+    "the owner's power-off and quiet periods. The check-in turn can only {can}; it reports what it found, and the "
+    "owner continues from there. list shows this chat's pending wakes; cancel removes one. You cannot message the "
+    "owner or wake anything else, and the owner sees every wake.")
+DEFAULT_CHECKIN_COMMANDS = (("gh", "run", "view"), ("gh", "run", "list"), ("gh", "pr", "checks"), ("git", "status"),
+                            ("git", "log"))
+
+
+def wake_tool_description(commands: Iterable[Iterable[str]] | None = None) -> str:
+    """The Wake tool's words, with what a check-in turn can do from its command list (wakes.chat_wake_commands;
+    None: the default list): an empty list says it only reads files and runs no commands."""
+    listed = [" ".join(map(str, command)) for command in (DEFAULT_CHECKIN_COMMANDS if commands is None else commands)]
+    can = (f"read files and run a few status commands ({', '.join(listed)})" if listed
+           else "read files; it runs no commands")
+    return WAKE_TOOL_TEXT.format(can=can)
+
+
+WAKE_TOOL_DESCRIPTION = wake_tool_description()
+WAKE_TOOL_SCHEMA = {"type": "object", "properties": {
+    "action": {"type": "string", "enum": ["schedule", "list", "cancel"]},
+    "in_minutes": {"type": "integer", "description": "schedule: minutes from now, 10 to 10080 (7 days)."},
+    "note": {"type": "string", "description": "schedule: what to check, at most 300 characters. It comes back to the "
+                                              "check-in as a reminder, not as an instruction."},
+    "id": {"type": "string", "description": "cancel: the wake id, e.g. W-000231."}},
+    "required": ["action"]}
 READ_DEFAULT_LIMIT = 2000
 MAX_LINE_CHARS = 2000
 MAX_LINE_BYTES = MAX_LINE_CHARS * 4       # enough UTF-8 for MAX_LINE_CHARS characters
@@ -83,6 +119,15 @@ class ToolPolicy:
     output_chars: int = 30000
     sandbox: Sandbox | None = None             # None: a plain sandbox in cwd is created on first Bash
     cancel: threading.Event | None = field(default=None, repr=False)   # aborts a running Bash command
+    # Never read, even inside a readable root (a read-only wake's tools, Wake & Messages decision c: the data and
+    # config dirs, the sensitive-terms file, the agent sockets). Glob skips them; Grep refuses a target holding one.
+    denied: list[Path] = field(default_factory=list)
+    # Read only through record (a read-only wake's view of the persona's own memory with the read ledger on, DESIGN
+    # §35): a Read below one of these gives its bytes (at most record_bytes) to record before it shows them, and is
+    # refused when record fails; Grep refuses them (a search cannot be recorded); Glob lists names only.
+    recorded: list[Path] = field(default_factory=list)
+    record: Callable[[Path, bytes, int, float], None] | None = field(default=None, repr=False)
+    record_bytes: int = 64 * 1024
 
 
 def truncate_output(text: str, limit: int) -> str:
@@ -192,10 +237,26 @@ class Toolset:
     """The tools one agent may call, bound to a ToolPolicy."""
 
     def __init__(self, names: list[str], policy: ToolPolicy, skills: "SkillIndex | None" = None,
-                 mcp_clients: "dict[str, McpClient] | None" = None, items: "ItemsContext | None" = None) -> None:
+                 mcp_clients: "dict[str, McpClient] | None" = None, items: "ItemsContext | None" = None,
+                 wake: Any = None, checkin_commands: list[list[str]] | None = None,
+                 jobs: Callable[[], str] | None = None) -> None:
+        """wake: a chat turn's WakeContext (Wake & Messages §5.8): registers Wake, whatever the agent's tools:
+        list says. checkin_commands: the check-in toolset: only Read, Glob, Grep, Wake (with a context) and
+        RunCheck, which runs an argv starting with one of these commands, no shell, in the policy's sandbox; no
+        Write, Edit, Bash, Skill or MCP tool. An empty list keeps that toolset without RunCheck (no command can
+        run, so the tool is not offered). jobs: a read-only wake's Jobs tool (the factory's jobs by ref)."""
         self.policy = policy
         self.skills = skills
         self.items = items
+        self.wake = wake
+        self.checkin_commands = [list(map(str, command)) for command in checkin_commands or []
+                                 if isinstance(command, (list, tuple)) and command]
+        self.jobs = jobs
+        if checkin_commands is not None:
+            names = list(CHECKIN_TOOLS)
+            mcp_clients = {}
+            skills = None
+            self.skills = None
         self._sandbox = policy.sandbox
         self._mcp_clients = dict(mcp_clients or {})
         self._skill_roots: list[Path] = []
@@ -204,16 +265,31 @@ class Toolset:
         builtin = _builtin_schemas(policy.bash_timeout)
         canonical = {tool.lower(): tool for tool in BUILTIN_TOOLS}
         names = list(names or ())
-        if items is not None and not any(str(raw).strip().lower() == "items" for raw in names):
+        # an operator persona's read-only view of her items (items.ItemsView, DESIGN §36) offers no tool
+        tool_items = items if items is not None and getattr(items, "offers_tool", True) else None
+        if tool_items is not None and not any(str(raw).strip().lower() == "items" for raw in names):
             names.append("Items")   # the contract lives in the harness, whatever the agent's tools: list says
         for raw in names:
             name = canonical.get(str(raw).strip().lower())
-            if name is None or (name == "Skill" and skills is None) or (name == "Items" and items is None):
+            if name is None or (name == "Skill" and skills is None) or (name == "Items" and tool_items is None):
                 continue
             self._add(name, builtin[name]["description"], builtin[name]["input_schema"],
                       getattr(self, f"_tool_{name.lower()}"))
         for server, client in self._mcp_clients.items():
             self._add_mcp_tools(server, client)
+        if wake is not None:
+            said = checkin_commands if checkin_commands is not None else getattr(wake, "commands", None)
+            self._add("Wake", wake_tool_description(said), copy.deepcopy(WAKE_TOOL_SCHEMA), self._tool_wake)
+        if checkin_commands is not None and self.checkin_commands:
+            allowed = "; ".join(" ".join(command) for command in self.checkin_commands)
+            self._add("RunCheck", "Run one allowed status command and return its output (no shell: give the argv as a "
+                      f"list of strings). Allowed commands start with: {allowed}. Nothing can be written.",
+                      {"type": "object", "properties": {"argv": {"type": "array", "items": {"type": "string"},
+                                                                 "description": "The command and its arguments."}},
+                       "required": ["argv"]}, self._tool_run_check)
+        if jobs is not None:
+            self._add("Jobs", "List the factory's jobs by reference and stage (read-only).",
+                      {"type": "object", "properties": {}}, lambda args: self.jobs())
 
     # -- public API -------------------------------------------------------------
 
@@ -324,6 +400,53 @@ class Toolset:
         if not any(_within(path, root) for root in roots):
             raise ToolError(f"Access denied: {path} is outside the readable roots "
                             f"({', '.join(map(str, roots))}).")
+        if self._denied(path):
+            raise ToolError(f"Access denied: {path} is never read by this run.")
+
+    def _denied(self, path: Path) -> bool:
+        return any(_within(path, Path(root).resolve()) for root in self.policy.denied)
+
+    def _holds_denied(self, path: Path) -> bool:
+        """Whether a directory a search would walk contains a path that is never read."""
+        return any(_within(Path(root).resolve(), path) for root in self.policy.denied)
+
+    def _recorded(self, path: Path) -> bool:
+        """Whether path is (or is below) one the harness records every read of (ToolPolicy.recorded)."""
+        return any(_within(path, Path(root).resolve()) for root in self.policy.recorded)
+
+    def _recorded_read(self, path: Path) -> tuple[bytes, str]:
+        """(the bytes a Read shows, a footer) for a file whose reads are recorded: at most record_bytes, opened
+        with O_NOFOLLOW and checked with fstat, given to record before anything is shown; a read that cannot be
+        recorded shows nothing."""
+        try:
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+        except OSError as exc:
+            raise ToolError(f"{path} cannot be read ({exc.strerror}).") from None
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise ToolError(f"{path} is not a regular file.")
+            chunks, left = [], self.policy.record_bytes
+            while left > 0:
+                chunk = os.read(fd, left)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                left -= len(chunk)
+            data = b"".join(chunks)
+        finally:
+            os.close(fd)
+        if b"\0" in data[:BINARY_SNIFF_BYTES]:
+            raise ToolError(f"{path} looks like a binary file; Read only shows text files.")
+        try:
+            self.policy.record(path, data, info.st_size, info.st_mtime)   # type: ignore[misc]
+        except Exception:   # a full disk, a file the ledger cannot write: the read does not happen
+            raise ToolError(f"{path} is in the persona's own memory, and the harness records every read there; this "
+                            "read could not be recorded, so nothing was read.") from None
+        size = f"{len(data) // 1024} KB" if len(data) >= 1024 else f"{len(data)} bytes"
+        footer = (f"\n\n(the harness records reads here and read only the first {size} of this file)"
+                  if len(data) < info.st_size else "")
+        return data, footer
 
     def _writable_path(self, args: dict, key: str) -> Path:
         """The resolved path of args[key] for Write/Edit, after the .git and write-policy checks."""
@@ -380,10 +503,16 @@ class Toolset:
             raise ToolError(f"File not found: {path}")
         if not path.is_file():
             raise ToolError(f"{path} is not a regular file.")
+        footer = ""
+        if self.policy.record is not None and self._recorded(path):
+            data, footer = self._recorded_read(path)
+            opened: Any = contextlib.nullcontext(io.BytesIO(data))
+        else:
+            opened = open(path, "rb")
         budget = self._output_budget()
         shown: list[str] = []
         used = total = 0
-        with open(path, "rb") as fh:
+        with opened as fh:
             if b"\0" in fh.read(BINARY_SNIFF_BYTES):
                 raise ToolError(f"{path} looks like a binary file; Read only shows text files.")
             fh.seek(0)
@@ -400,14 +529,14 @@ class Toolset:
                     break
             total += _count_lines(fh)
         if total == 0:
-            return "(empty file)"
+            return "(empty file)" + footer
         if offset > total:
-            return f"(file has {total} lines; offset {offset} is past the end)"
+            return f"(file has {total} lines; offset {offset} is past the end)" + footer
         last = offset + len(shown) - 1
         text = "\n".join(shown)
         if offset > 1 or last < total:
             text += f"\n\n(file has {total} lines; showing {offset}-{last})"
-        return text
+        return text + footer
 
     def _tool_write(self, args: dict) -> str:
         path = self._writable_path(args, "file_path")
@@ -465,7 +594,8 @@ class Toolset:
             rel_dir = Path(dirpath).relative_to(base).parts
             if max_depth is not None and len(rel_dir) >= max_depth:
                 dirnames.clear()
-            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS
+                           and not (self.policy.denied and self._denied(Path(dirpath, d).resolve()))]
             for name in filenames:
                 if any(glob_match(parts, (*rel_dir, name)) for parts in patterns):
                     matches.append(os.path.join(dirpath, name))
@@ -484,6 +614,13 @@ class Toolset:
         self._check_read(target)
         if not target.exists():
             raise ToolError(f"Path not found: {target}")
+        if self.policy.denied and target.is_dir() and self._holds_denied(target):
+            raise ToolError(f"Access denied: {target} contains a folder this run never reads; search a narrower path.")
+        if self.policy.recorded and (self._recorded(target) or (target.is_dir() and any(
+                _within(Path(root).resolve(), target) for root in self.policy.recorded))):
+            raise ToolError(f"Grep does not search {target}: the harness records every read of the persona's own "
+                            "memory there, and a search cannot be recorded. List its files with Glob and Read the ones "
+                            "you need (or search a narrower path).")
         mode = args.get("output_mode") or "files_with_matches"
         if mode not in GREP_OUTPUT_MODES:
             raise ToolError(f"Invalid arguments: output_mode must be one of {', '.join(GREP_OUTPUT_MODES)}.")
@@ -519,15 +656,78 @@ class Toolset:
             self._sandbox = Sandbox("none", Path(self.policy.cwd), list(self.policy.write_paths), True, {})
         exit_code, output, timed_out = self._sandbox.run(command, timeout, self.policy.cancel)
         text = output.rstrip("\n")
-        if timed_out:
-            footer = f"[timed out after {timeout:g}s]"
-        elif exit_code is None:
-            footer = "[cancelled]"
+        if timed_out:   # killed part way: what it changed is unknown, never "failed" (DESIGN §40)
+            footer = (f"[timed out after {timeout:g}s and stopped: what it did before that is unknown, so check "
+                      f"before running it again]")
+        elif exit_code is None:   # stopped by a cancel or the run's time limit: the same unknown, in its words
+            footer = ("[stopped part way (cancelled, or the run's time limit): what it did before that is unknown, "
+                      "so check before running it again]")
         elif exit_code != 0:
             footer = f"[exit code {exit_code}]"
         else:
             return text or "(no output)"
         raise ToolError(f"{text}\n{footer}" if text else footer)
+
+    def _tool_wake(self, args: dict) -> str:
+        """Wake: schedule, list or cancel this chat's check-ins (Wake & Messages §5.8). A scheduled wake opens a
+        tracker item through the run's items context: a commitment due at the wake, closed by code when it runs."""
+        import json as _json
+
+        action = args.get("action")
+        try:
+            if action == "schedule":
+                result = self.wake.schedule(args.get("in_minutes"), args.get("note"))
+                if self.items is not None:
+                    try:
+                        item = self.items.open_wake(f"Scheduled check-in {result['id']} at {result['at']}",
+                                                    str(result.get("at") or ""), result["id"], taint=("untrusted",))
+                        self.wake.attach(result["id"], item)
+                        result = {**result, "item": item}
+                    except Exception:   # noqa: BLE001 - the wake stands; the tracker says why in its own log
+                        pass
+                return _json.dumps(result)
+            if action == "list":
+                return _json.dumps({"wakes": self.wake.list()})
+            if action == "cancel":
+                wake_id = args.get("id")
+                if not isinstance(wake_id, str):
+                    raise ToolError("cancel needs the wake id, e.g. W-000231")
+                result = self.wake.cancel(wake_id)
+                if self.items is not None and result.get("item"):
+                    try:
+                        self.items.cancel_wake(result["item"], "the agent cancelled its wake")
+                    except Exception:   # noqa: BLE001
+                        pass
+                return _json.dumps(result)
+        except ValueError as exc:
+            raise ToolError(str(exc)) from None
+        raise ToolError("action must be schedule, list or cancel")
+
+    def _tool_run_check(self, args: dict) -> str:
+        """RunCheck: an argv (no shell) that starts with one of the allowed commands, in the policy's sandbox with
+        no writable path; shell syntax and options that write or run other programs are refused."""
+        argv = args.get("argv")
+        if not isinstance(argv, list) or not argv or not all(isinstance(a, str) and a for a in argv):
+            raise ToolError("argv must be a non-empty list of strings")
+        if any(set(arg) & SHELL_SYNTAX for arg in argv):
+            raise ToolError("RunCheck runs no shell: remove ; | & $ ` < > and line breaks")
+        if any(arg == option or arg.startswith(option + "=") or (option.startswith("--") and arg.startswith(option))
+               for arg in argv[1:] for option in REFUSED_OPTIONS):
+            raise ToolError("that option could write or run something: RunCheck only reads")
+        if not any(argv[:len(command)] == command for command in self.checkin_commands):
+            allowed = "; ".join(" ".join(command) for command in self.checkin_commands) or "none"
+            raise ToolError(f"not an allowed status command (allowed: {allowed})")
+        if self._sandbox is None:
+            self._sandbox = Sandbox("none", Path(self.policy.cwd), [], False, {})
+        exit_code, output, timed_out = self._sandbox.run_argv(argv, RUN_CHECK_TIMEOUT, self.policy.cancel)
+        text = output.rstrip("\n")
+        if timed_out:
+            raise ToolError(f"{text}\n[timed out after {RUN_CHECK_TIMEOUT:g}s]")
+        if exit_code is None:
+            raise ToolError(f"{text}\n[cancelled]")
+        if exit_code != 0:
+            raise ToolError(f"{text}\n[exit code {exit_code}]")
+        return text or "(no output)"
 
     def _tool_items(self, args: dict) -> str:
         from ..items import ItemError

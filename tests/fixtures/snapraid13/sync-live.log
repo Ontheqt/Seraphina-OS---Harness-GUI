@@ -1,0 +1,663 @@
+version:13.0
+unixtime:1792928565
+time:2026-10-25 11:42:45
+command:sync
+argv:0:/usr/local/bin/snapraid
+argv:1:-c
+argv:2:/etc/snapraid.conf
+argv:3:-l
+argv:4:/var/lib/seraphina-snapraid/runs/J-1/snapraid.log
+argv:5:--bw-limit
+argv:6:1M
+argv:7:sync
+selftest:
+msg:progress: Self test...
+conf:file:/etc/snapraid.conf
+uuid:by-uuid:7:5: opendir(/dev/disk/by-uuid) failed, No such file or directory
+uuid:blkid:7:5:7e387000-0cc5-4f60-9c08-c27504b3227b: found /dev/loop5
+uuid:by-uuid:7:6: opendir(/dev/disk/by-uuid) failed, No such file or directory
+uuid:blkid:7:6:570f566e-dcf4-4c4a-9b8b-f33ac5c35ecb: found /dev/loop6
+uuid:by-uuid:7:7: opendir(/dev/disk/by-uuid) failed, No such file or directory
+uuid:blkid:7:7:49978a8b-220a-4ec8-ad0e-23d57ad6b79a: found /dev/loop7
+blocksize:65536
+data:d1:/mnt/disk1/
+data:d2:/mnt/disk2/
+data:d3:/mnt/disk3/
+mode:par2
+parity:0:/mnt/parity1/snapraid.parity
+2-parity:0:/mnt/parity2/snapraid.2-parity
+autosave:1000000000
+filter:exclude /lost+found/
+filter:exclude *.unrecoverable
+filter:exclude /seraphina-restored/
+filter:exclude /.seraphina-trash/
+content:/var/snapraid/snapraid.content
+msg:progress: Loading state from /var/snapraid/snapraid.content...
+msg:verbose:       24 files
+msg:verbose:        0 hardlinks
+msg:verbose:        0 symlinks
+msg:verbose:        4 empty dirs
+uuid:by-uuid:7:8: opendir(/dev/disk/by-uuid) failed, No such file or directory
+uuid:blkid:7:8:edc3bb94-8a01-4ef1-be3a-7ede66bbdb21: found /dev/loop8
+uuid:by-uuid:7:9: opendir(/dev/disk/by-uuid) failed, No such file or directory
+uuid:blkid:7:9:7aa14332-8868-4a39-af8c-a92d415217cc: found /dev/loop9
+msg:progress: Scanning...
+statfs:ext2/3/4: /mnt/disk1/ 
+statfs:ext2/3/4: /mnt/disk2/ 
+statfs:ext2/3/4: /mnt/disk3/ 
+msg:verbose: Excluding directory '/mnt/disk1/lost+found' for rule 'exclude /lost+found/'
+msg:verbose: Excluding content '/mnt/disk1/.snapraid/snapraid.content'
+msg:verbose: Excluding directory '/mnt/disk3/lost+found' for rule 'exclude /lost+found/'
+msg:verbose: Excluding directory '/mnt/disk2/lost+found' for rule 'exclude /lost+found/'
+msg:progress: Scanned d3 in 0 seconds
+msg:verbose: Excluding content '/mnt/disk2/.snapraid/snapraid.content'
+scan:add:d1:live/db1.dat
+msg:progress: Scanned d2 in 0 seconds
+scan:add:d1:live/db2.dat
+scan:add:d1:live/db3.dat
+scan:add:d1:live/db4.dat
+scan:add:d1:live/db5.dat
+scan:add:d1:live/db6.dat
+scan:add:d1:live/db7.dat
+scan:add:d1:live/db8.dat
+msg:progress: Scanned d1 in 0 seconds
+msg:verbose:       24 equal
+msg:verbose:        8 added
+msg:verbose:        0 removed
+msg:verbose:        0 updated
+msg:verbose:        0 moved
+msg:verbose:        0 copied
+msg:verbose:        0 restored
+summary:equal:24
+summary:added:8
+summary:removed:0
+summary:updated:0
+summary:moved:0
+summary:copied:0
+summary:restored:0
+summary:exit:diff
+statfs:ext2/3/4: /mnt/disk1/ 
+statfs:ext2/3/4: /mnt/disk2/ 
+statfs:ext2/3/4: /mnt/disk3/ 
+statfs:ext2/3/4: /mnt/parity1/snapraid.parity 
+statfs:ext2/3/4: /mnt/parity2/snapraid.2-parity 
+memory:used:330377
+memory:block:17
+memory:extent:88
+memory:file:192
+memory:link:88
+memory:dir:80
+msg:progress: Using 0 MiB of memory for the file-system.
+msg:progress: Initializing...
+msg:progress: Resizing...
+split:fill:/mnt/parity1/snapraid.parity:16121856:22609920:
+split:delta:/mnt/parity1/snapraid.parity:16121856:4194304:
+split:grow:/mnt/parity1/snapraid.parity:20316160: ok
+split:delta:/mnt/parity1/snapraid.parity:20316160:2097152:
+split:grow:/mnt/parity1/snapraid.parity:22413312: ok
+split:delta:/mnt/parity1/snapraid.parity:22413312:131072:
+split:grow:/mnt/parity1/snapraid.parity:22544384: ok
+split:delta:/mnt/parity1/snapraid.parity:22544384:65536:
+split:grow:/mnt/parity1/snapraid.parity:22609920: ok
+split:shrink:/mnt/parity1/snapraid.parity:22609920: ok
+split:fill:/mnt/parity2/snapraid.2-parity:16121856:22609920:
+split:delta:/mnt/parity2/snapraid.2-parity:16121856:4194304:
+split:grow:/mnt/parity2/snapraid.2-parity:20316160: ok
+split:delta:/mnt/parity2/snapraid.2-parity:20316160:2097152:
+split:grow:/mnt/parity2/snapraid.2-parity:22413312: ok
+split:delta:/mnt/parity2/snapraid.2-parity:22413312:131072:
+split:grow:/mnt/parity2/snapraid.2-parity:22544384: ok
+split:delta:/mnt/parity2/snapraid.2-parity:22544384:65536:
+split:grow:/mnt/parity2/snapraid.2-parity:22609920: ok
+split:shrink:/mnt/parity2/snapraid.2-parity:22609920: ok
+statfs:ext2/3/4: /mnt/disk1/ 
+statfs:ext2/3/4: /mnt/disk2/ 
+statfs:ext2/3/4: /mnt/disk3/ 
+statfs:ext2/3/4: /mnt/parity1/snapraid.parity 
+statfs:ext2/3/4: /mnt/parity2/snapraid.2-parity 
+msg:progress: Saving state to /var/snapraid/snapraid.content...
+msg:progress: Saving state to /mnt/disk1/.snapraid/snapraid.content...
+msg:progress: Saving state to /mnt/disk2/.snapraid/snapraid.content...
+msg:verbose:       32 files
+msg:verbose:        0 hardlinks
+msg:verbose:        0 symlinks
+msg:verbose:        4 empty dirs
+msg:progress: Verifying...
+msg:progress: Verified /mnt/disk1/.snapraid/snapraid.content in 0 seconds
+msg:progress: Verified /var/snapraid/snapraid.content in 0 seconds
+msg:progress: Verified /mnt/disk2/.snapraid/snapraid.content in 0 seconds
+msg:progress: Using 40 MiB of memory for 128 cached blocks.
+msg:progress: Selecting...
+msg:progress: Syncing...
+error:217:d1:live/db3.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db3.dat' from 1792928565.582362453 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:218:d1:live/db3.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db3.dat' from 1792928565.582362453 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:219:d1:live/db3.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db3.dat' from 1792928565.582362453 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:220:d1:live/db3.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db3.dat' from 1792928565.582362453 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:221:d1:live/db3.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db3.dat' from 1792928565.582362453 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:222:d1:live/db3.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db3.dat' from 1792928565.582362453 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:223:d1:live/db3.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db3.dat' from 1792928565.582362453 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:224:d1:live/db3.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db3.dat' from 1792928565.582362453 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:225:d1:live/db3.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db3.dat' from 1792928565.582362453 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:226:d1:live/db3.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db3.dat' from 1792928565.582362453 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:227:d1:live/db3.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db3.dat' from 1792928565.582362453 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:228:d1:live/db3.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db3.dat' from 1792928565.582362453 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:229:d1:live/db3.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db3.dat' from 1792928565.582362453 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:230:d1:live/db3.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db3.dat' from 1792928565.582362453 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:231:d1:live/db3.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db3.dat' from 1792928565.582362453 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:232:d1:live/db3.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db3.dat' from 1792928565.582362453 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:233:d1:live/db4.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db4.dat' from 1792928565.622362456 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:234:d1:live/db4.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db4.dat' from 1792928565.622362456 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:235:d1:live/db4.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db4.dat' from 1792928565.622362456 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:236:d1:live/db4.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db4.dat' from 1792928565.622362456 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:237:d1:live/db4.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db4.dat' from 1792928565.622362456 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:238:d1:live/db4.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db4.dat' from 1792928565.622362456 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:239:d1:live/db4.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db4.dat' from 1792928565.622362456 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:240:d1:live/db4.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db4.dat' from 1792928565.622362456 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:241:d1:live/db4.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db4.dat' from 1792928565.622362456 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:242:d1:live/db4.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db4.dat' from 1792928565.622362456 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:243:d1:live/db4.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db4.dat' from 1792928565.622362456 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:244:d1:live/db4.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db4.dat' from 1792928565.622362456 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:245:d1:live/db4.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db4.dat' from 1792928565.622362456 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:246:d1:live/db4.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db4.dat' from 1792928565.622362456 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:247:d1:live/db4.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db4.dat' from 1792928565.622362456 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:248:d1:live/db4.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db4.dat' from 1792928565.622362456 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:249:d1:live/db1.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db1.dat' from 1792928565.494362448 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:250:d1:live/db1.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db1.dat' from 1792928565.494362448 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:251:d1:live/db1.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db1.dat' from 1792928565.494362448 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:252:d1:live/db1.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db1.dat' from 1792928565.494362448 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:253:d1:live/db1.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db1.dat' from 1792928565.494362448 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:254:d1:live/db1.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db1.dat' from 1792928565.494362448 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:255:d1:live/db1.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db1.dat' from 1792928565.494362448 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:256:d1:live/db1.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db1.dat' from 1792928565.494362448 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:257:d1:live/db1.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db1.dat' from 1792928565.494362448 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:258:d1:live/db1.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db1.dat' from 1792928565.494362448 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:259:d1:live/db1.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db1.dat' from 1792928565.494362448 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:260:d1:live/db1.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db1.dat' from 1792928565.494362448 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:261:d1:live/db1.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db1.dat' from 1792928565.494362448 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:262:d1:live/db1.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db1.dat' from 1792928565.494362448 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:263:d1:live/db1.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db1.dat' from 1792928565.494362448 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:264:d1:live/db1.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db1.dat' from 1792928565.494362448 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:265:d1:live/db2.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db2.dat' from 1792928565.538362451 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:266:d1:live/db2.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db2.dat' from 1792928565.538362451 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:267:d1:live/db2.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db2.dat' from 1792928565.538362451 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:268:d1:live/db2.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db2.dat' from 1792928565.538362451 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:269:d1:live/db2.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db2.dat' from 1792928565.538362451 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:270:d1:live/db2.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db2.dat' from 1792928565.538362451 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:271:d1:live/db2.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db2.dat' from 1792928565.538362451 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:272:d1:live/db2.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db2.dat' from 1792928565.538362451 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:273:d1:live/db2.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db2.dat' from 1792928565.538362451 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:274:d1:live/db2.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db2.dat' from 1792928565.538362451 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:275:d1:live/db2.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db2.dat' from 1792928565.538362451 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:276:d1:live/db2.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db2.dat' from 1792928565.538362451 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:277:d1:live/db2.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db2.dat' from 1792928565.538362451 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:278:d1:live/db2.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db2.dat' from 1792928565.538362451 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:279:d1:live/db2.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db2.dat' from 1792928565.538362451 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:280:d1:live/db2.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db2.dat' from 1792928565.538362451 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:281:d1:live/db5.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db5.dat' from 1792928565.666362458 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:282:d1:live/db5.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db5.dat' from 1792928565.666362458 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:283:d1:live/db5.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db5.dat' from 1792928565.666362458 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:284:d1:live/db5.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db5.dat' from 1792928565.666362458 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:285:d1:live/db5.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db5.dat' from 1792928565.666362458 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:286:d1:live/db5.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db5.dat' from 1792928565.666362458 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:287:d1:live/db5.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db5.dat' from 1792928565.666362458 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:288:d1:live/db5.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db5.dat' from 1792928565.666362458 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:289:d1:live/db5.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db5.dat' from 1792928565.666362458 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:290:d1:live/db5.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db5.dat' from 1792928565.666362458 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:291:d1:live/db5.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db5.dat' from 1792928565.666362458 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:292:d1:live/db5.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db5.dat' from 1792928565.666362458 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:293:d1:live/db5.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db5.dat' from 1792928565.666362458 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:294:d1:live/db5.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db5.dat' from 1792928565.666362458 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:295:d1:live/db5.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db5.dat' from 1792928565.666362458 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:296:d1:live/db5.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db5.dat' from 1792928565.666362458 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:297:d1:live/db6.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db6.dat' from 1792928565.710362461 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:298:d1:live/db6.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db6.dat' from 1792928565.710362461 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:299:d1:live/db6.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db6.dat' from 1792928565.710362461 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:300:d1:live/db6.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db6.dat' from 1792928565.710362461 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:301:d1:live/db6.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db6.dat' from 1792928565.710362461 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:302:d1:live/db6.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db6.dat' from 1792928565.710362461 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:303:d1:live/db6.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db6.dat' from 1792928565.710362461 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:304:d1:live/db6.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db6.dat' from 1792928565.710362461 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:305:d1:live/db6.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db6.dat' from 1792928565.710362461 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:306:d1:live/db6.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db6.dat' from 1792928565.710362461 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:307:d1:live/db6.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db6.dat' from 1792928565.710362461 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:308:d1:live/db6.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db6.dat' from 1792928565.710362461 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:309:d1:live/db6.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db6.dat' from 1792928565.710362461 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:310:d1:live/db6.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db6.dat' from 1792928565.710362461 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:311:d1:live/db6.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db6.dat' from 1792928565.710362461 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:312:d1:live/db6.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db6.dat' from 1792928565.710362461 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:313:d1:live/db7.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db7.dat' from 1792928565.742362463 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:314:d1:live/db7.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db7.dat' from 1792928565.742362463 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:315:d1:live/db7.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db7.dat' from 1792928565.742362463 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:316:d1:live/db7.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db7.dat' from 1792928565.742362463 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:317:d1:live/db7.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db7.dat' from 1792928565.742362463 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:318:d1:live/db7.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db7.dat' from 1792928565.742362463 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:319:d1:live/db7.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db7.dat' from 1792928565.742362463 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:320:d1:live/db7.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db7.dat' from 1792928565.742362463 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:321:d1:live/db7.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db7.dat' from 1792928565.742362463 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:322:d1:live/db7.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db7.dat' from 1792928565.742362463 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:323:d1:live/db7.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db7.dat' from 1792928565.742362463 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:324:d1:live/db7.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db7.dat' from 1792928565.742362463 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:325:d1:live/db7.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db7.dat' from 1792928565.742362463 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:326:d1:live/db7.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db7.dat' from 1792928565.742362463 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:327:d1:live/db7.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db7.dat' from 1792928565.742362463 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:328:d1:live/db7.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db7.dat' from 1792928565.742362463 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:329:d1:live/db8.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db8.dat' from 1792928565.782362465 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:330:d1:live/db8.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db8.dat' from 1792928565.782362465 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:331:d1:live/db8.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db8.dat' from 1792928565.782362465 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:332:d1:live/db8.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db8.dat' from 1792928565.782362465 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:333:d1:live/db8.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db8.dat' from 1792928565.782362465 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:334:d1:live/db8.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db8.dat' from 1792928565.782362465 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:335:d1:live/db8.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db8.dat' from 1792928565.782362465 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:336:d1:live/db8.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db8.dat' from 1792928565.782362465 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:337:d1:live/db8.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db8.dat' from 1792928565.782362465 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:338:d1:live/db8.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db8.dat' from 1792928565.782362465 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:339:d1:live/db8.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db8.dat' from 1792928565.782362465 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:340:d1:live/db8.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db8.dat' from 1792928565.782362465 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:341:d1:live/db8.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db8.dat' from 1792928565.782362465 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:342:d1:live/db8.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db8.dat' from 1792928565.782362465 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:343:d1:live/db8.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db8.dat' from 1792928565.782362465 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+error:344:d1:live/db8.dat: Unexpected attribute change
+msg:error: Unexpected time change at file '/mnt/disk1/live/db8.dat' from 1792928565.782362465 to 1792928566.786362525.
+msg:error: WARNING! You cannot modify files during a sync.
+msg:error: Rerun the sync command when finished.
+msg:progress: Saving state to /var/snapraid/snapraid.content...
+msg:progress: Saving state to /mnt/disk1/.snapraid/snapraid.content...
+msg:progress: Saving state to /mnt/disk2/.snapraid/snapraid.content...
+msg:verbose:       32 files
+msg:verbose:        0 hardlinks
+msg:verbose:        0 symlinks
+msg:verbose:        4 empty dirs
+msg:progress: Verifying...
+msg:progress: Verified /var/snapraid/snapraid.content in 0 seconds
+msg:progress: Verified /mnt/disk1/.snapraid/snapraid.content in 0 seconds
+msg:progress: Verified /mnt/disk2/.snapraid/snapraid.content in 0 seconds
+msg:status: 
+msg:status:      128 file errors
+msg:status:        0 io errors
+msg:status:        0 data errors
+msg:fatal: WARNING! Unexpected file errors!
+summary:error_file:128
+summary:error_io:0
+summary:error_data:0
+summary:exit:error

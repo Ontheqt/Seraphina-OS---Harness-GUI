@@ -237,7 +237,7 @@ class Client:
             with response:
                 payload = response.read()
         except (OSError, http.client.HTTPException) as exc:
-            raise CliError(f"no answer from the server at {self.base_url}: {exc}") from None
+            raise CliError(_no_answer(self.base_url, method, exc)) from None
         try:
             return json.loads(payload.decode("utf-8")) if payload else {}
         except ValueError:
@@ -262,7 +262,14 @@ class Client:
         except ConnectionRefusedError:
             raise ServerNotRunning(NOT_RUNNING) from None
         except (OSError, http.client.HTTPException) as exc:
-            raise CliError(f"no answer from the server at {self.base_url}: {exc}") from None
+            raise CliError(_no_answer(self.base_url, method, exc)) from None
+
+
+def _no_answer(base_url: str, method: str, exc: BaseException) -> str:
+    """The words for a request that was sent and got no answer: for anything but a read, it may have been done
+    (DESIGN §40), so look before running it again."""
+    words = f"no answer from the server at {base_url}: {exc or type(exc).__name__}"
+    return words if method == "GET" else words + "; it may have been done, so look before you run it again"
 
 
 def parse_sse(lines: Any) -> Iterator[dict]:
@@ -307,6 +314,8 @@ def _http_error(exc: urllib.error.HTTPError) -> str:
         message = json.loads(exc.read().decode("utf-8")).get("error")
     except (ValueError, AttributeError, OSError):
         message = None
+    finally:
+        exc.close()
     if exc.code == 401:
         return "the server refused the token in the config (was it re-initialised? restart the server)"
     return f"{message or exc.reason} (HTTP {exc.code})"
@@ -673,7 +682,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     """Run the checks in-process; exit 1 if an error-level check fails."""
     from .doctor import run_checks
 
-    checks = run_checks(load_config(), probe_models=args.probe)
+    config = load_config()
+    # The look-around skips the harness's own port: the config's, and the one a running `factory serve --port` took.
+    running = recorded_server_url(config.data_dir) if args.look_around else None
+    skip = {port} if running and (port := urllib.parse.urlsplit(running).port) else set()
+    checks = run_checks(config, probe_models=args.probe, look_around=args.look_around, look_skip_ports=skip)
     if args.json:
         print_json(checks)
     errors = warnings = 0
@@ -1170,8 +1183,9 @@ def cmd_personas(args: argparse.Namespace) -> int:
 
 
 def cmd_personas_card(args: argparse.Namespace) -> int:
-    """Print a persona's saved profile card and what Open WebUI lists for it now."""
-    from .personas import OpenWebUIError, find_persona, live_card, load_profile
+    """Print a persona's saved profile card, what runs where (its capability map) and what Open WebUI lists for
+    it now."""
+    from .personas import OpenWebUIError, capability_map, find_persona, live_card, load_profile
 
     config = load_config()
     try:
@@ -1185,7 +1199,10 @@ def cmd_personas_card(args: argparse.Namespace) -> int:
         live = live_card(config, persona)
     except OpenWebUIError as exc:
         live = {"error": str(exc)}
-    view = {"persona": args.name, "card": load_profile(model_id), "live": live}
+    card = load_profile(model_id)
+    view = {"persona": args.name, "card": card, "live": live,
+            "capability_map": capability_map(card, persona, config) if card else None,
+            "import": _offline_import_record(config, model_id, card) if card else None}
     if args.json:
         print_json(view)
         return 0
@@ -1201,6 +1218,8 @@ def cmd_personas_card(args: argparse.Namespace) -> int:
             mark = "yes" if part["through_api"] else "no "
             ids = f" ({', '.join(part['ids'])})" if part["ids"] else ""
             print(f"  [{mark}] {part['part']}{ids}: {part['note']}")
+        _print_capability_map(view["capability_map"])
+        _print_import_record(view["import"])
     if live.get("error"):
         hint(f"live: {live['error']}")
     elif live.get("listed"):
@@ -1209,6 +1228,163 @@ def cmd_personas_card(args: argparse.Namespace) -> int:
             hint(f"live: {warning}")
     else:
         hint(f"live: Open WebUI does not list {model_id!r} for this key")
+    return 0
+
+
+def _print_capability_map(cmap: dict) -> None:
+    """The capability map (DESIGN §33): one line of what each surface has and one of what it does not."""
+    def parts(rows: list[dict]) -> str:
+        return "; ".join(row["part"] + (f" ({', '.join(row['ids'])})" if row["ids"] else "") for row in rows) or "-"
+
+    print(f"what runs where: {cmap['note']}")
+    for surface in cmap["surfaces"]:
+        state = {False: " (not set up)", None: ""}.get(surface["exists"], "")
+        names = f" [{', '.join(surface['personas'])}]" if surface.get("personas") else ""
+        print(f"  {surface['title']}{state}{names}")
+        print(f"    has: {parts(surface['available'])}")
+        print(f"    not: {parts(surface['unavailable'])}")
+    for route in cmap["delegation"]:
+        print(f"  {route['route']}: {route['text']}")
+
+
+def _offline_import_record(config: Config, model_id: str, card: dict) -> dict:
+    """The card's import record read here without the server (read only): the baseline note and the receipts
+    attached to the import (DESIGN §33 "Changes before import")."""
+    from .personas import IMPORT_BASELINE
+    from .receipts import REPORTED
+
+    reader = _offline_receipts(config)
+    rows = []
+    for row in reader.attached(model_id):
+        try:
+            receipt = reader.get(row["id"])["receipt"]
+        except KeyError:
+            rows.append({**row, "missing": True, "label": REPORTED})
+            continue
+        rows.append({**row, **{key: receipt.get(key) for key in ("time", "intent", "not_verified", "verified",
+                                                                  "outcome", "reported_outcome")},
+                     "label": REPORTED})
+    return {"model": model_id, "imported_at": card.get("imported_at"), "version_id": card.get("version_id"),
+            "diff": None, "baseline": IMPORT_BASELINE, "changes_before_import": rows}
+
+
+def _print_import_record(record: dict | None) -> None:
+    """The import is the baseline; the changes before it are only the receipts attached to it: each one's outcome,
+    then not_verified before verified."""
+    if not record:
+        return
+    print(f"import: {record['baseline']}")
+    rows = record.get("changes_before_import") or []
+    if not rows:
+        print("  changes before import: none attached (factory personas before-import <name> --attach <receipt id>)")
+    for row in rows:
+        if row.get("missing"):
+            print(f"  {row['id']}: attached by the {row.get('by')}, no longer in the receipts index")
+            continue
+        print(f"  {row.get('time')}  {row['id']}  ({row['label']}; attached by the {row.get('by')})")
+        print(f"    intent: {row.get('intent')}")
+        if isinstance(row.get("outcome"), dict):   # an outcome reported unknown or failed never reads as verified (§40)
+            print(f"    outcome: {row['outcome'].get('words')}")
+        for text in row.get("not_verified") or []:
+            print(f"    NOT verified: {text}")
+        for text in row.get("verified") or []:
+            print(f"    verified (reported): {text}")
+        if not row.get("verified"):
+            print("    verified: nothing")
+
+
+def cmd_personas_before_import(args: argparse.Namespace) -> int:
+    """(server) Attach the operator's receipts (by id) to a persona's import as its changes before import."""
+    if not args.attach and not args.detach:
+        raise CliError("name receipts with --attach ID or --detach ID")
+    body = {"attach": args.attach or [], "detach": args.detach or [], "by": args.by}
+    result = Client(load_config()).post(f"/api/personas/{args.name}/before-import", body)
+    if args.json:
+        print_json(result)
+        return 0
+    _print_import_record(result.get("import"))
+    return 0
+
+
+def cmd_personas_ledger(args: argparse.Namespace) -> int:
+    """(server) The read ledger of a persona's external memory: what the harness read, per file, and the kept
+    copies; --show one, --diff two, --restore one (the earlier text for her own tools or you to apply: the
+    harness never writes her store), or --erase one (its copy goes, the ledger keeps its sha256 only)."""
+    client = Client(load_config())
+    base = f"/api/personas/{args.name}/external"
+    if args.erase:
+        result = client.post(f"{base}/erase", {"sha256": args.erase}).get("erased") or {}
+        if args.json:
+            print_json(result)
+            return 0
+        print(f"erased {str(result.get('sha256'))[:12]}: {result.get('copies', 0)} copy removed, "
+              f"{result.get('entries', 0)} manifest entries keep its sha256 only")
+        hint("her own store is not touched: while a file there holds that text, wakes still read it")
+        return 0
+    if args.show:
+        result = client.get(f"{base}/versions/{args.show}")
+        if args.json:
+            print_json(result)
+            return 0
+        print(f"{result['sha256'][:12]}  {', '.join(result.get('names') or [])}  (private; read "
+              f"{str(result.get('first_read_at'))[:16]} to {str(result.get('last_read_at'))[:16]})")
+        if result.get("redacted"):
+            hint("a secret the harness knows was taken out of this copy")
+        print(result.get("text") or "", end="" if str(result.get("text") or "").endswith("\n") else "\n")
+        return 0
+    if args.diff:
+        older, newer = args.diff
+        result = client.get(f"{base}/diff?" + urllib.parse.urlencode({"from": older, "to": newer}))
+        if args.json:
+            print_json(result)
+            return 0
+        print(result.get("diff") or "(no difference)")
+        return 0
+    if args.restore:
+        body = {"sha256": args.restore, **({"file": args.file} if args.file else {})}
+        result = client.post(f"{base}/restore", body).get("restore") or {}
+        if args.json:
+            print_json(result)
+            return 0
+        current = result.get("current") or {}
+        print(f"restore {result.get('name')} to {str(result.get('sha256'))[:12]} (the newest read held "
+              f"{str(current.get('sha256') or 'nothing')[:12]})")
+        for warning in result.get("warnings") or []:
+            hint(warning)
+        hint(result.get("apply") or "")
+        print(result.get("text") or "", end="" if str(result.get("text") or "").endswith("\n") else "\n")
+        return 0
+    result = client.get(base)
+    if args.json:
+        print_json(result)
+        return 0
+    print(f"read ledger: {'on' if result.get('ledger') else 'off'}; {result.get('reads', 0)} reads, "
+          f"{result.get('kept_bytes', 0)} of {result.get('cap_bytes', 0)} bytes kept (private)")
+    caps = result.get("caps") or {}
+    for key, words in (("evicted", "older copies removed to stay under the cap (the newest of each file kept)"),
+                       ("trimmed", "oldest manifests removed to stay under the cap"),
+                       ("not_kept", "versions not kept: they did not fit the cap")):
+        if caps.get(key):
+            hint(f"{caps[key]} {words}, the last at {str(caps.get(key + '_at'))[:16]}")
+    for file in result.get("files") or []:
+        print(file["name"])
+        for row in file["versions"]:
+            kept = "kept" + (", redacted" if row.get("redacted") else "") if row.get("kept") else "not kept"
+            cut = ", only the start read" if row.get("truncated") else ""
+            print(f"  {row['sha256'][:12]}  {row.get('bytes')} bytes  read {str(row.get('first_read_at'))[:16]} "
+                  f"to {str(row.get('last_read_at'))[:16]} ({row.get('reads')}x)  {kept}{cut}")
+    for row in result.get("erased") or []:
+        print(f"erased  {str(row.get('sha256'))[:12]}  at {str(row.get('erased_at'))[:16]} ({row.get('reads')}x read)")
+    for row in (result.get("sqlite") or [])[:5]:
+        if row.get("error"):
+            detail = f": {row['detail']}" if row.get("detail") else ""
+            print(f"database read {str(row.get('at'))[:16]}: could not be read ({row['error']}{detail})")
+        else:
+            print(f"database read {str(row.get('at'))[:16]}: {row.get('rows')} rows, sha256 "
+                  f"{str(row.get('sha256'))[:12]}")
+    if not result.get("files") and not result.get("sqlite") and not result.get("erased"):
+        hint("nothing recorded yet" + ("" if result.get("ledger") else
+                                       " (memory.external.ledger is off for this persona)"))
     return 0
 
 
@@ -1266,6 +1442,371 @@ def cmd_personas_check(args: argparse.Namespace) -> int:
             print(f"{row['persona']}  {row['kind']}  version {str(row.get('version_id'))[:12]}{item}")
     if not rows:
         hint("no persona is bound to an Open WebUI workspace model")
+    return 0
+
+
+# -- operator personas: receipts and activity (DESIGN.md section 36) ----------------------
+
+
+def _offline_receipts(config: Config) -> Any:
+    """The operator's receipts read here without the server: read only, nothing written (not even the index)."""
+    from .events import env_secret_values
+    from .receipts import Receipts
+
+    reader = Receipts(lambda: config, config.data_dir, secrets=lambda: [*config.secret_values(), *env_secret_values()])
+    if reader.directory() is not None:
+        reader.scan(write=False)
+    return reader
+
+
+def cmd_activity(args: argparse.Namespace) -> int:
+    """What an agent or persona did since a time: its receipts (an operator's), tracker transitions, messages and
+    wakes audit lines, run starts and ends, the GPU custody leases its runs took (an operator: every custody line)
+    and an operator's drift checks, oldest first, each with the file it was read from. From the server when it
+    runs; else read here from the same files (nothing is written)."""
+    config = load_config()
+    client = _client_if_running(config)
+    if client is not None:
+        query = urllib.parse.urlencode({key: value for key, value in (
+            ("agent", args.agent), ("since", args.since), ("until", args.until), ("limit", args.limit),
+            ("after", args.after)) if value not in (None, "")})
+        result = client.get(f"/api/activity?{query}")
+    else:
+        from .activity import activity
+        from .events import env_secret_values
+
+        try:
+            result = activity(config, agent=args.agent, since=args.since, until=args.until, limit=args.limit,
+                              after=args.after, receipts=_offline_receipts(config),
+                              secrets=lambda: [*config.secret_values(), *env_secret_values()])
+        except ValueError as exc:
+            raise CliError(str(exc)) from None
+    if args.json:
+        print_json(result)
+        return 0
+    from .activity import activity_lines
+
+    for line in activity_lines(result):
+        print(line)
+    if not result.get("entries"):
+        hint(f"nothing recorded for {result.get('agent')} since {result.get('since') or 'the start'}")
+    for error in result.get("errors") or []:
+        hint(f"could not read {error}")
+    return 0
+
+
+def cmd_operator(args: argparse.Namespace) -> int:
+    """Who the owner's config marks as the operator, and what the last scan of her receipts found."""
+    config = load_config()
+    client = _client_if_running(config)
+    if client is not None:
+        state = client.get("/api/operator")
+    else:
+        from . import operator as op
+
+        reader = _offline_receipts(config)
+        summary = reader.summary()
+        state = {"operators": op.operators(config), "marked": op.marked(config.raw), "problem":
+                 op.rule_problem(config.raw), "receipts_dir": reader.settings()["receipts_dir"], "scan": summary}
+    if args.json:
+        print_json(state)
+        return 0
+    print(f"operator: {', '.join(state.get('operators') or []) or 'none'}")
+    if state.get("problem"):
+        print(f"problem: {state['problem']}")
+    scan = state.get("scan") or {}
+    print(f"receipts: {state.get('receipts_dir') or 'operator.receipts_dir is not set'}; {scan.get('read', 0)} read, "
+          f"{scan.get('cannot_read', 0)} cannot read, {scan.get('refused', 0)} refused (last scan "
+          f"{scan.get('scanned_at') or 'never'})")
+    if scan.get("problem"):
+        print(f"  {scan['problem']}")
+    if scan.get("writable"):
+        print("  the harness's own user may write the receipts directory: a file put there would read as hers "
+              "(her items from it are marked untrusted; see factory doctor)")
+    if scan.get("past_limit"):
+        print(f"  {scan['past_limit']} older file(s) past operator.max_receipts were not read")
+    return 0
+
+
+def cmd_operator_receipts(args: argparse.Namespace) -> int:
+    """The operator's change receipts, newest first: what each reports, its checks not verified first."""
+    from .receipts import receipt_lines
+
+    config = load_config()
+    client = _client_if_running(config)
+    if client is not None:
+        query = urllib.parse.urlencode({key: value for key, value in (
+            ("limit", args.limit), ("since", args.since), ("rescan", "1" if args.rescan else None))
+            if value not in (None, "")})
+        result = client.get(f"/api/operator/receipts?{query}")
+    else:
+        from .activity import parse_when
+
+        reader = _offline_receipts(config)
+        try:
+            rows = reader.rows(limit=args.limit, since=parse_when(args.since))
+        except ValueError as exc:
+            raise CliError(str(exc)) from None
+        result = {"receipts": rows, "refused": reader.index().get("refused") or [], "scan": reader.summary()}
+    if args.json:
+        print_json(result)
+        return 0
+    for row in result.get("receipts") or []:
+        for line in receipt_lines(row):
+            print(line)
+    for row in result.get("refused") or []:
+        print(f"{row.get('file')}  refused: {row.get('why')}")
+    problem = (result.get("scan") or {}).get("problem")
+    if problem:
+        hint(problem)
+    elif not result.get("receipts"):
+        hint("no receipts read yet")
+    return 0
+
+
+def cmd_operator_scan(args: argparse.Namespace) -> int:
+    """(server) Read the operator's receipts directory now and update the tracker items of what she did not check."""
+    scan = Client(load_config()).post("/api/operator/receipts/scan").get("scan") or {}
+    if args.json:
+        print_json(scan)
+        return 0
+    print(f"{scan.get('read', 0)} read, {scan.get('cannot_read', 0)} cannot read, {scan.get('refused', 0)} refused; "
+          f"{scan.get('new', 0)} new, {scan.get('changed', 0)} changed, {scan.get('gone', 0)} gone; items changed: "
+          f"{', '.join(scan.get('items') or []) or 'none'}")
+    if scan.get("problem"):
+        hint(scan["problem"])
+    return 0
+
+
+# -- messages, Seraphina's stop switch, secrets (DESIGN.md section 34) ----------------------
+
+
+def cmd_notify_status(args: argparse.Namespace) -> int:
+    """(server) The phone channels, their health, and whether Seraphina is stopped."""
+    state = Client(load_config()).get("/api/notify")
+    if args.json:
+        print_json(state)
+        return 0
+    for row in state.get("channels") or []:
+        health = row.get("health") or {}
+        mark = "ok" if row.get("active") and health.get("ok") is not False else "off" if not row.get("active") else "down"
+        why = row.get("inactive_why") or health.get("detail") or ""
+        answered = f"  phone last answered {row['last_answer']}" if row.get("last_answer") else ""
+        print(f"{row.get('name')}  {row.get('type')}  {row.get('privacy')}  {mark}  {why}{answered}".rstrip())
+    if not state.get("channels"):
+        hint("no phone channel yet: Messages, Phone setup in the cockpit")
+    quiet = (state.get("quiet_hours") or {})
+    if quiet.get("window"):
+        hint(f"do-not-disturb {quiet['window']} ({quiet.get('source')})")
+    paused = state.get("paused")
+    if paused:
+        hint(f"Seraphina is stopped (by {paused.get('by')} at {paused.get('at')}): factory wake resume")
+    today = state.get("today") or {}
+    hint(f"{today.get('phone', 0)} of {today.get('cap', 12)} phone messages today")
+    return 0
+
+
+def cmd_notify_test(args: argparse.Namespace) -> int:
+    """(server) Send a test notice with a Got it button to one channel, or to each."""
+    client = Client(load_config())
+    names = [args.channel] if args.channel else [row["name"] for row in client.get("/api/notify/channels").get(
+        "channels") or [] if row.get("enabled")]
+    if not names:
+        raise CliError("no phone channel is set up: Messages, Phone setup in the cockpit")
+    for name in names:
+        message = client.post("/api/notify/test", {"channel": name}).get("message") or {}
+        state = (message.get("deliveries") or {}).get(name)
+        print(f"{name}  {message.get('id')}  {state}")
+    hint("tap Got it on your phone; the cockpit shows when it arrives")
+    return 0
+
+
+def cmd_notify_event(args: argparse.Namespace) -> int:
+    """(server) Report an event as the owner (POST /api/notify/events)."""
+    body: dict[str, Any] = {"kind": args.kind}
+    if args.subject:
+        body["subject"] = args.subject
+    if args.detail:
+        body["detail"] = args.detail
+    result = Client(load_config()).post("/api/notify/events", body)
+    print(result.get("message") or "recorded (no new notice: an open incident, or nothing to recover)")
+    return 0
+
+
+def _paused_file(config: Config) -> Path:
+    return config.data_dir / "wakes" / "PAUSED"
+
+
+def cmd_wake_poke(args: argparse.Namespace) -> int:
+    """Write a poke into the spool (works without a running server; the server reads it every few seconds). The
+    reason is untrusted text for the persona: at most 200 characters."""
+    import uuid
+
+    from .personas import PERSONA_NAME_RE
+
+    if not PERSONA_NAME_RE.fullmatch(args.persona or ""):
+        raise CliError("give a persona name, e.g. factory wake poke seraphina --reason \"check the backup\"")
+    if args.reason is not None and len(args.reason) > 200:
+        raise CliError("--reason is at most 200 characters")
+    config = load_config()
+    spool = config.data_dir / "wakes" / "spool"
+    for part in ("tmp", "new"):
+        (spool / part).mkdir(mode=0o700, parents=True, exist_ok=True)
+    name = f"{args.persona}.{uuid.uuid4().hex}.json"
+    body = json.dumps({"reason": args.reason}) if args.reason else ""
+    tmp = spool / "tmp" / name
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(body)
+    os.replace(tmp, spool / "new" / name)
+    print(f"poked {args.persona}: the server reads the spool every 5 seconds")
+    return 0
+
+
+def _persona_stop_offline(config: Config, persona: str, until: str | None, resume: bool) -> str | None:
+    """With no server running, a persona's stop is written into the wake state directly (the server reads it).
+    --until (HH:MM in wakes.timezone, or an ISO time) is stored as an ISO UTC time, as the server stores it.
+    Returns the until as stored (None without one)."""
+    from . import wakes
+    from .notify import Audit, write_json
+
+    end = None
+    if until and not resume:
+        clock = wakes.wake_clock(config)
+        try:
+            end = wakes.iso(wakes.until_time(until, clock, clock.utc()))
+        except wakes.WakeError as exc:
+            raise CliError(str(exc)) from None
+    path = config.data_dir / "wakes" / "state.json"
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        state = {}
+    stops = state.setdefault("stops", {})
+    if resume:
+        if (stops.get(persona) or {}).get("by") == "integrity":
+            raise CliError(f"{persona}'s instructions changed outside her page: review the change in the cockpit")
+        stops.pop(persona, None)
+    else:
+        stops[persona] = {"at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "by": "cli", "via": "cli",
+                          "until": end, "kind": "stop"}
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    write_json(path, state)
+    Audit(config.data_dir).write("resume" if resume else "pause", persona=persona, by="cli", via="cli", until=end)
+    return end
+
+
+def cmd_wake_pause(args: argparse.Namespace) -> int:
+    """Stop Seraphina at once (the PAUSED file, which works without the server), then tell the server; with
+    --persona, stop only that persona (--until HH:MM ends it by itself)."""
+    config = load_config()
+    if args.persona:
+        client = _client_if_running(config)
+        if client is not None:
+            client.post("/api/wakes/control", {"action": "pause", "persona": args.persona,
+                                               **({"until": args.until} if args.until else {})})
+        else:
+            _persona_stop_offline(config, args.persona, args.until, resume=False)
+        print(f"{args.persona} is stopped" + (f" until {args.until}" if args.until else "") +
+              f". Restart: factory wake resume --persona {args.persona}")
+        return 0
+    if args.until:
+        raise CliError("--until goes with --persona; `factory wake pause` stops Seraphina until you resume her")
+    path = _paused_file(config)
+    if not path.exists():
+        from .notify import Audit, write_json
+
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        write_json(path, {"at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "by": "cli", "via": "cli"})
+        Audit(config.data_dir).write("stop", by="cli", via="cli")
+    client = _client_if_running(config)
+    if client is not None:
+        client.post("/api/wakes/control", {"action": "pause"})
+    print("Seraphina is stopped. Alerts from your server still come. Restart: factory wake resume")
+    return 0
+
+
+def cmd_wake_resume(args: argparse.Namespace) -> int:
+    """(server) Restart Seraphina; with no server running, remove the PAUSED file directly."""
+    config = load_config()
+    client = _client_if_running(config)
+    if getattr(args, "persona", None):
+        if client is not None:
+            client.post("/api/wakes/control", {"action": "resume", "persona": args.persona})
+        else:
+            _persona_stop_offline(config, args.persona, None, resume=True)
+        print(f"{args.persona} is running.")
+        return 0
+    if client is not None:
+        client.post("/api/wakes/control", {"action": "resume"})
+    else:
+        path = _paused_file(config)
+        if path.exists():
+            from .notify import Audit
+
+            path.unlink()
+            Audit(config.data_dir).write("restart", by="cli")
+    print("Seraphina is running.")
+    return 0
+
+
+def cmd_wake_status(args: argparse.Namespace) -> int:
+    """Whether Seraphina is stopped (from the PAUSED file; works without the server); with the server, each
+    persona's next check-ins, budget and the last gate reason."""
+    config = load_config()
+    client = _client_if_running(config)
+    if client is not None:
+        state = client.get("/api/wakes")
+        if args.json:
+            print_json(state)
+            return 0
+        print("stopped" if state.get("paused") else ("running" if state.get("enabled") else "check-ins are off"))
+        for row in state.get("personas") or []:
+            budget = row.get("budget") or {}
+            nxt = (row.get("next") or [{}])[0]
+            print(f"{row.get('name')}  {'on' if row.get('enabled') else 'off'}  {row.get('privacy')}  "
+                  f"{budget.get('model_wakes', 0)}/{budget.get('max_model_wakes')} check-ins  "
+                  f"next {nxt.get('at') or '-'}  {nxt.get('gate') or ''}".rstrip())
+        return 0
+    path = _paused_file(config)
+    record: dict[str, Any] = {}
+    if path.exists():
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            record = {}
+    state = {"paused": bool(path.exists()), "by": record.get("by"), "at": record.get("at")}
+    if args.json:
+        print_json(state)
+    elif state["paused"]:
+        print(f"stopped by {state['by'] or 'someone'} at {state['at'] or '?'}")
+    else:
+        print("running")
+    return 0
+
+
+def cmd_secret_set(args: argparse.Namespace) -> int:
+    """Read one secret from standard input into the env file, never echoed (envfile.check_secret's rules).
+    With the server running it is set there too, so it takes effect at once."""
+    from .envfile import read_secret_from_stdin, set_secret
+
+    if not args.stdin:
+        raise CliError("give the value on standard input with --stdin (never on the command line, where "
+                       "other users could read it in /proc)")
+    try:
+        value = read_secret_from_stdin(sys.stdin)
+    except ValueError as exc:
+        raise CliError(str(exc)) from None
+    config = load_config()
+    client = _client_if_running(config)
+    try:
+        if client is not None:
+            client.post("/api/secrets", {"name": args.name, "value": value})
+        else:
+            set_secret(config, args.name, value)
+    except ValueError as exc:
+        raise CliError(str(exc)) from None
+    print(f"{args.name} is set in {config.path.parent / ENV_FILE}" + (" and in the running server" if client else ""))
     return 0
 
 
@@ -1335,9 +1876,21 @@ def cmd_estimate(args: argparse.Namespace) -> int:
     for row in result["roles"]:
         tokens = row["tokens"]
         cost = f"${row['cost_usd']:.2f}" if row["priced"] else "no price"
+        status = row.get("independence")
+        guarded = (f"  (instead of {row['instead_of']}: independent alternate)" if status == "alternate"
+                   else f"  (independence {status})" if status else "")
         print(f"{row['agent']:<{width}}  {row['model']} ({row['provider']}/{row['model_id']})  "
               f"{tokens['input_tokens']:,} in / {tokens['output_tokens']:,} out  {cost}  "
-              f"~{_minutes(row['seconds'])}  [{row['basis']}]")
+              f"~{_minutes(row['seconds'])}  [{row['basis']}]{guarded}")
+    for row in result.get("independence") or []:   # the independence guard (DESIGN §23)
+        moves = [f"{judge} moves to {model}" for judge, model in row["alternate"].items()]
+        moves += [f"{judge} runs with reduced independence on {model}" for judge, model in row["reduced"].items()]
+        moves += [f"{judge} shares the builder's family on {model} (accepted)"
+                  for judge, model in (row.get("accepted") or {}).items()]
+        if moves:
+            builder = row["builder"]
+            print(f"independence: builder on {builder['model']} ({builder['family']}, {builder['via']}): "
+                  + "; ".join(moves))
     total = result["total"]
     unpriced = "" if total["priced"] else " + steps without prices"
     jobs = f" for {result['jobs']} jobs" if result["kind"] == "plan" else ""
@@ -1402,6 +1955,276 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
     hint(f"{probes['total']} probes: " + ", ".join(f"{n} {status}" for status, n in probes.items()
                                                     if status != "total") + ".")
     hint("Read snapshot.json before you share it: redaction is pattern-based, not proof.")
+    return 0
+
+
+def cmd_capture(args: argparse.Namespace) -> int:
+    """Bundle the harness's own logs (and containers' logs) for a time window, read-only, into --out."""
+    from .capture import CaptureError, bundle, parse_when
+    from .events import env_secret_values
+
+    try:
+        config = Config.load()
+    except ValueError as exc:
+        raise CliError(str(exc)) from None
+    try:
+        secrets = config.secret_values()
+    except Exception:  # noqa: BLE001 - an unreadable key file must not stop the capture; env values still count
+        secrets = []
+    try:
+        since, until = parse_when(args.since), parse_when(args.until)
+        manifest = bundle(config.data_dir, Path(args.out), since, until, args.container or [],
+                          secrets=[*secrets, *env_secret_values()])
+    except CaptureError as exc:
+        raise CliError(str(exc)) from None
+    except OSError as exc:
+        raise CliError(f"cannot write the capture to {args.out}: {exc}") from None
+    if args.json:
+        print_json(manifest)
+        return 0
+    out = Path(os.path.expanduser(args.out))
+    print(out / "manifest.json")
+    events = sum(row["events"] for row in manifest["harness"])
+    hint(f"{events} harness events from {len(manifest['harness'])} run logs between {manifest['window']['since']} "
+         f"and {manifest['window']['until']}.")
+    for row in manifest["containers"]:
+        hint(f"container {row['name']}: " + (f"{row['lines']} lines" if row.get("taken") else f"not taken ({row['why']})"))
+    hint("Read the bundle before you share it: redaction is pattern-based, not proof.")
+    return 0
+
+
+def cmd_drift(args: argparse.Namespace) -> int:
+    """(server) The drift sources the tracker reads: their status, or check one now."""
+    client = Client(load_config())
+    if args.action == "check":
+        result = client.post(f"/api/drift-sources/{_quote(args.name)}/check", {})
+        if args.json:
+            print_json(result)
+            return 0
+        print(f"{result.get('name')}  {result.get('status')}  {result.get('detail') or ''}".rstrip())
+        changes = result.get("result") or {}
+        for key in ("opened", "reopened", "closed"):
+            if changes.get(key):
+                print(f"  {key}: {', '.join(changes[key])}")
+        return 0
+    rows = client.get("/api/drift-sources").get("sources") or []
+    if args.json:
+        print_json(rows)
+        return 0
+    for row in rows:
+        print(f"{row['name']}  {row.get('status')}  observed {row.get('observed_at') or '-'}  "
+              f"{len(row.get('present') or [])} findings  next {row.get('next_at') or '-'}"
+              + (f"  ({row['detail']})" if row.get("detail") else ""))
+    if not rows:
+        hint("no drift source is configured (drift_sources in config.json)")
+    return 0
+
+
+SNAPRAID_WAIT = {"status": 300.0, "health": 600.0, "diff": 4 * 3600.0}
+
+
+def cmd_snapraid(args: argparse.Namespace) -> int:
+    """(server) Disk protection with SnapRAID (DESIGN §41): the card in plain text (with the SnapRAID Daemon's facts
+    on the daemon route), a check now, the reader's runs, a guard report (counts and reasons only: file names stay in
+    the cockpit), and the copy blocks that install or remove the reader or Seraphina's link to the daemon. There is
+    no action command: an approval must follow seeing what the cockpit shows."""
+    action = getattr(args, "snapraid_action", None)
+    if action == "helper":
+        return _snapraid_helper(args)
+    if action == "link":
+        return _snapraid_link(args)
+    client = Client(load_config())
+    if action == "check-now":
+        what = args.what or "status"
+        started = client.post("/api/snapraid/refresh", {"what": what})
+        if started.get("busy"):
+            raise CliError(f"another check is running ({started.get('refreshing')}); try again when it ends")
+        hint(f"checking {what}…")
+        deadline = time.monotonic() + SNAPRAID_WAIT[what]
+        view = client.get("/api/snapraid")
+        while view.get("refreshing") and time.monotonic() < deadline:
+            time.sleep(2.0)
+            view = client.get("/api/snapraid")
+        return _snapraid_print(args, view)
+    if action == "jobs":
+        if args.id:
+            result = client.get(f"/api/snapraid/jobs/{_quote(args.id)}")
+            if args.json:
+                print_json(result)
+                return 0
+            job = result.get("job") or {}
+            print(f"{job.get('job')}  {job.get('verb')} ({job.get('command')})  {job.get('outcome')}  exit "
+                  f"{job.get('exit')}  {job.get('started')} → {job.get('ended') or '…'}")
+            print(f"  {job.get('words')}")
+            return 0
+        rows = client.get("/api/snapraid/jobs").get("jobs") or []
+        if args.json:
+            print_json(rows)
+            return 0
+        for job in rows:
+            print(f"{job.get('job')}  {job.get('verb'):<7} {job.get('command'):<7} {job.get('outcome') or '…':<12} "
+                  f"{job.get('started')}")
+        if not rows:
+            hint("the reader has no runs yet")
+        return 0
+    if action == "guard":
+        view = client.get("/api/snapraid")
+        guard = view.get("guard") or {}
+        if args.id and args.id != guard.get("guard"):
+            guard = (client.get(f"/api/snapraid/guard/{_quote(args.id)}?offset=0").get("guard") or {})
+        if args.json:
+            print_json(guard)
+            return 0
+        if not guard.get("verdict"):
+            hint("no guard report yet: run `factory snapraid check-now diff`")
+            return 0
+        words = {"would_hold": "this run would be held", "would_wait": "this run would wait",
+                 "would_run": "this run would go ahead", "nothing_to_do": "nothing to protect", "error": "error"}
+        print(f"{guard.get('guard')}  {words.get(guard.get('verdict'), guard.get('verdict'))}  {guard.get('at')}"
+              + (f"  ({', '.join(guard.get('reasons') or [])})" if guard.get("reasons") else ""))
+        for check in guard.get("checks") or []:
+            print(f"  {check.get('id'):<4} {check.get('result'):<8} {check.get('words')}")
+        array = ((guard.get("counts") or {}).get("array") or {})
+        if array:
+            print(f"  across the disks: {array.get('added', 0)} added, {array.get('removed', 0)} removed, "
+                  f"{array.get('updated', 0)} changed, {array.get('moved', 0)} moved; {array.get('lost', 0)} would "
+                  f"be lost")
+        hint("file names stay in the cockpit (Backups, the change list); this phase only reports")
+        return 0
+    return _snapraid_print(args, client.get("/api/snapraid"))
+
+
+def _snapraid_print(args: argparse.Namespace, view: dict) -> int:
+    from .snapraid import card_lines
+
+    if args.json:
+        print_json(view)
+        return 0
+    for line in card_lines(view):
+        print(line)
+    if view.get("state") != "ready":
+        hint({"absent": "SnapRAID is not installed (optional)",
+              "no_reader": "install the reader: factory snapraid helper install",
+              "off": "turn the panel on: snapraid.enabled in Settings, once the reader is installed"}
+             .get(view.get("state"), ""))
+    return 0
+
+
+def _snapraid_link(args: argparse.Namespace) -> int:
+    """`factory snapraid link install|check|remove`: the link's copy blocks (BACKUPS_SNAPRAID.md §10.4)."""
+    client = Client(load_config())
+    if args.link_action == "check":
+        result = client.post("/api/snapraid/setup/link-check", {})
+        if args.json:
+            print_json(result)
+            return 0
+        print(result.get("words") or ("ok" if result.get("ok") else "not ok"))
+        return 0 if result.get("ok") else 1
+    if args.link_action == "install":
+        link = client.post("/api/snapraid/setup/link-stage", {}).get("link") or {}
+        blocks = link.get("blocks") or []
+    else:
+        blocks = (client.get("/api/snapraid/setup").get("link") or {}).get("removal") or []
+    if args.json:
+        print_json(blocks)
+        return 0
+    _print_blocks(blocks, "factory snapraid link check")
+    return 0
+
+
+def _print_blocks(blocks: list, check_command: str) -> None:
+    for block in blocks:
+        print(f"# {block['id']}. {block['title']}")
+        for command in block.get("commands") or []:
+            print(command)
+        if block.get("action") in ("check", "link-check"):
+            print(check_command)
+        if block.get("expect"):
+            print(f"#   expect: {block['expect']}")
+        if block.get("then"):
+            print("#   then, only once it shows what you expect (the move runs only when its check passes again):")
+            for command in block["then"]:
+                print(command)
+        if block.get("note"):
+            print(f"#   note: {block['note']}")
+        if block.get("if_not"):
+            print(f"#   if not: {block['if_not']}")
+        print()
+
+
+def _snapraid_helper(args: argparse.Namespace) -> int:
+    """`factory snapraid helper install|check|remove`: the copy blocks (the harness never runs sudo)."""
+    client = Client(load_config())
+    if args.helper_action == "check":
+        result = client.post("/api/snapraid/setup/check", {})
+        if args.json:
+            print_json(result)
+            return 0
+        print(result.get("words") or ("ok" if result.get("ok") else "not ok"))
+        return 0 if result.get("ok") else 1
+    if args.helper_action == "install":
+        setup = client.post("/api/snapraid/setup/stage", {})
+        blocks = setup.get("blocks") or []
+    else:
+        setup = client.get("/api/snapraid/setup")
+        blocks = setup.get("removal") or []
+    if args.json:
+        print_json(blocks)
+        return 0
+    for block in blocks:
+        print(f"# {block['id']}. {block['title']}")
+        for command in block.get("commands") or []:
+            print(command)
+        if block.get("action") == "check":
+            print("factory snapraid helper check")
+        if block.get("expect"):
+            print(f"#   expect: {block['expect']}")
+        if block.get("then"):
+            print("#   then, only once it shows what you expect (the move runs only when its check passes again):")
+            for command in block["then"]:
+                print(command)
+        if block.get("note"):
+            print(f"#   note: {block['note']}")
+        if block.get("if_not"):
+            print(f"#   if not: {block['if_not']}")
+        print()
+    if args.helper_action == "install":
+        hint(f"staged in {setup.get('setup_dir')} (0700); run each block yourself, with sudo")
+    return 0
+
+
+def cmd_custody(args: argparse.Namespace) -> int:
+    """(server) The providers under GPU custody: the register's residency and the leases this harness holds."""
+    view = Client(load_config()).get("/api/custody" + ("?refresh=1" if args.refresh else ""))
+    if args.json:
+        print_json(view)
+        return 0
+    for row in view.get("providers") or []:
+        register = row.get("register") or {}
+        residency = register.get("residency") or {}
+        resident = ", ".join(f"{item['provider']}/{item['model']}" for item in residency.get("resident") or [])
+        follows = f"  (follows {row['custody_from']}: the same server)" if row.get("custody_from") else ""
+        print(f"{row['provider']}  needs a lease: {'yes' if row.get('needs_lease') else 'no'}  "
+              f"generation {register.get('generation')}  resident: {resident or '-'}{follows}")
+        held = row.get("held_wait_seconds")
+        if row.get("needs_lease"):
+            print(f"  HELD (the card is held by someone else): {f'waits up to {held:g}s' if held else 'no wait'}; "
+                  f"FULL (the card cannot fit the model now): the next build at once")
+        fenced = register.get("fenced")
+        if fenced:
+            print(f"  the register's generation went back from {fenced['seen']} to {fenced['answered']} (since "
+                  f"{fenced['since']}): its answers are refused until it passes {fenced['seen']}")
+        for lease in register.get("leases") or []:
+            print(f"  lease {lease['lease_id']}  {lease['model']}  {lease['state']}  until {lease['until']}  "
+                  f"({lease['purpose']})")
+        refused = [entry for entry in register.get("history") or []
+                   if entry.get("op") == "claim" and entry.get("outcome") == "denied"][-3:]
+        for entry in refused:   # the last few refusals, in the register's code and plain words
+            words = f" ({entry['words']})" if entry.get("words") else ""
+            print(f"  refused {entry.get('at')}  {entry.get('model')}  {entry.get('reason')}{words}  "
+                  f"({entry.get('purpose')})")
+    if not view.get("providers"):
+        hint("no provider names a custody register (providers.<name>.custody)")
     return 0
 
 
@@ -1481,6 +2304,8 @@ def build_parser() -> argparse.ArgumentParser:
               "Runs without the server. Exit status 1 if any error-level check fails.")
     sub.add_argument("--probe", action="store_true", help="also send each routed model the Test probes "
                      "(a plain reply and a tool call; costs model calls)")
+    sub.add_argument("--look-around", action="store_true", help="also look for model servers on this machine: "
+                     "one GET /v1/models, without a key, to each program listening here (nothing is changed)")
     sub.add_argument("--json", action="store_true", help="print the checks as JSON")
 
     repo = add(commands, "repo", None, "add, list or remove repos")
@@ -1600,6 +2425,90 @@ def build_parser() -> argparse.ArgumentParser:
               "(server) run the drift check: has the live preset changed since it was last seen?")
     chk.add_argument("name", nargs="?", help="only this persona")
     chk.add_argument("--json", action="store_true", help="print the results as JSON")
+    before = add(persona_actions, "before-import", cmd_personas_before_import,
+                 "(server) attach the operator's receipts to a persona's import as its changes before import",
+                 "At the first import the harness had no earlier copy, so the import is the baseline and\n"
+                 "there is no diff. The card lists the receipts attached here, by id only (DESIGN.md §33).")
+    before.add_argument("name", help="persona name")
+    before.add_argument("--attach", nargs="+", metavar="ID", help="receipt ids the harness has read")
+    before.add_argument("--detach", nargs="+", metavar="ID", help="receipt ids to take off again")
+    before.add_argument("--by", choices=("owner", "operator"), default="owner", help="who attaches (default owner)")
+    before.add_argument("--json", action="store_true", help="print the import record as JSON")
+    ledger = add(persona_actions, "ledger", cmd_personas_ledger,
+                 "(server) the read ledger of a persona's own memory: versions read, show, diff, prepare a restore, "
+                 "erase one",
+                 "With memory.external.ledger true the harness records each read of the persona's own\n"
+                 "memory and keeps a private copy of each file version. It never writes her store: a\n"
+                 "restore gives back the earlier text for her own tools or you to apply. --erase removes\n"
+                 "one version's copy and keeps only its sha256.")
+    ledger.add_argument("name", help="persona name")
+    what = ledger.add_mutually_exclusive_group()
+    what.add_argument("--show", metavar="SHA256", help="print one kept version")
+    what.add_argument("--diff", nargs=2, metavar=("OLDER", "NEWER"), help="a diff of two kept versions")
+    what.add_argument("--restore", metavar="SHA256", help="prepare a restore of one kept version")
+    what.add_argument("--erase", metavar="SHA256", help="erase one version: its copy goes, its sha256 stays")
+    ledger.add_argument("--file", metavar="NAME", help="with --restore: the file, when the version had several names")
+    ledger.add_argument("--json", action="store_true", help="print the result as JSON")
+
+    sub = add(commands, "activity", cmd_activity, "what an agent or persona did since a time, with evidence",
+              "Merges, oldest first: an operator's change receipts (reported by her), the agent's tracker\n"
+              "transitions, the messages and wakes audit lines that name it, and its run starts and ends.\n"
+              "Each entry names the file (and line) it was read from. Works without the server (read only).")
+    sub.add_argument("--agent", required=True, metavar="NAME", help="an agent or persona name, e.g. builder or a "
+                     "persona's name (persona:<name> and agent:<name> work too)")
+    sub.add_argument("--since", metavar="TIME", help="an ISO time or date, or a span back from now: 30m, 24h, 7d, 2w")
+    sub.add_argument("--until", metavar="TIME", help="the same forms (default: now)")
+    sub.add_argument("--limit", type=int, default=500, help="at most this many entries (1-5000, default 500)")
+    sub.add_argument("--after", metavar="CURSOR", help="continue a cut list: the next_after value it ended with")
+    sub.add_argument("--json", action="store_true", help="print the result as JSON")
+
+    sub = add(commands, "operator", cmd_operator, "the operator persona: who it is and her change receipts",
+              "The owner marks one persona the operator (agents.<name>.role: \"operator\"); she writes one\n"
+              "JSON receipt per change into operator.receipts_dir, which the harness only reads (DESIGN.md §36).")
+    sub.add_argument("--json", action="store_true", help="print the state as JSON")
+    operator_actions = sub.add_subparsers(title="actions", metavar="<action>", dest="action")
+    rec = add(operator_actions, "receipts", cmd_operator_receipts, "list her receipts, newest first",
+              "Every receipt is reported by the operator: the harness never re-runs her checks. What she\n"
+              "lists as not verified is shown first. Works without the server (read only).")
+    rec.add_argument("--since", metavar="TIME", help="only receipts from this time on (an ISO time, or 24h, 7d)")
+    rec.add_argument("--limit", type=int, default=50, help="at most this many (default 50)")
+    rec.add_argument("--rescan", action="store_true", help="(server) read the directory again first")
+    rec.add_argument("--json", action="store_true", help="print the receipts as JSON")
+    scan = add(operator_actions, "scan", cmd_operator_scan, "(server) read the receipts directory now")
+    scan.add_argument("--json", action="store_true", help="print the scan as JSON")
+
+    sub = add(commands, "notify", None, "phone messages: channel status, a test notice, or report an event")
+    notify_actions = sub.add_subparsers(title="actions", metavar="<action>", dest="action")
+    status = add(notify_actions, "status", cmd_notify_status, "(server) the phone channels and their health")
+    status.add_argument("--json", action="store_true", help="print the state as JSON")
+    test = add(notify_actions, "test", cmd_notify_test, "(server) send a test notice with a Got it button")
+    test.add_argument("--channel", metavar="NAME", help="one channel (default: each enabled one)")
+    event = add(notify_actions, "event", cmd_notify_event, "(server) report an event as the owner",
+                "Kinds: backup.failed, backup.ok, disk.low, service.down, service.up. A failure opens an\n"
+                "incident (one alert, a reminder after 6 hours); its recovery closes it.")
+    event.add_argument("kind", help="e.g. backup.failed")
+    event.add_argument("--subject", metavar="S", help="what it is about, e.g. nightly")
+    event.add_argument("--detail", metavar="TEXT", help="at most 200 characters, shown in the cockpit only")
+
+    sub = add(commands, "wake", None, "stop or restart Seraphina (the persona that messages you)")
+    wake_actions = sub.add_subparsers(title="actions", metavar="<action>", dest="action")
+    poke = add(wake_actions, "poke", cmd_wake_poke, "wake a persona now through the spool (works without the server)")
+    poke.add_argument("persona", help="e.g. seraphina")
+    poke.add_argument("--reason", metavar="TEXT", help="at most 200 characters; the persona reads it as untrusted data")
+    pause = add(wake_actions, "pause", cmd_wake_pause, "stop Seraphina at once (works without the server)")
+    pause.add_argument("--persona", metavar="P", help="stop only this persona")
+    pause.add_argument("--until", metavar="HH:MM", help="with --persona: until this local time")
+    resume = add(wake_actions, "resume", cmd_wake_resume, "(server) restart Seraphina; offline, remove the stop file")
+    resume.add_argument("--persona", metavar="P", help="restart only this persona")
+    wstatus = add(wake_actions, "status", cmd_wake_status, "whether Seraphina is stopped")
+    wstatus.add_argument("--json", action="store_true", help="print the state as JSON")
+
+    sub = add(commands, "secret", None, "store a secret in the env file without it ever being shown")
+    secret_actions = sub.add_subparsers(title="actions", metavar="<action>", dest="action")
+    sset = add(secret_actions, "set", cmd_secret_set, "read NAME's value from standard input (never echoed)",
+               "Example: factory secret set SERAPHINA_TELEGRAM_BOT_TOKEN --stdin (then paste and press Enter).")
+    sset.add_argument("name", help="e.g. SERAPHINA_TELEGRAM_BOT_TOKEN")
+    sset.add_argument("--stdin", action="store_true", help="read the value from standard input")
 
     sub = add(commands, "snapshot", cmd_snapshot, "inventory this server read-only into snapshot.json + overview.md",
               "The first Blueprint capture (DESIGN.md §28): host, GPUs, storage, network, packages,\n"
@@ -1610,6 +2519,57 @@ def build_parser() -> argparse.ArgumentParser:
                      "(created 0700; files 0600)")
     sub.add_argument("--sudo", action="store_true", help="run root-only probes through `sudo -n` (never prompts; "
                      "falls back to this user when sudo needs a password)")
+
+    sub = add(commands, "capture", cmd_capture, "bundle the harness's logs for a time window, read-only (capture "
+              "before fix)",
+              "Copies the run logs' diagnostic events (run starts and ends, failed calls with their status,\n"
+              "response body and request ids, waits, log lines, persona turn windows) between --since and\n"
+              "--until, and with --container that container's `docker logs` when this user may run it.\n"
+              "Everything is redacted; nothing is written anywhere but --out (new or empty). Take it before\n"
+              "you restart, edit or retry anything. Works without the server.")
+    sub.add_argument("--since", required=True, metavar="WHEN", help="now, 15m, 2h, 1d or an ISO-8601 time")
+    sub.add_argument("--until", default="now", metavar="WHEN", help="the same forms (default: now)")
+    sub.add_argument("--container", action="append", metavar="NAME", help="also this container's logs (repeatable)")
+    sub.add_argument("--out", required=True, metavar="DIR", help="a new or empty directory (created 0700; files 0600)")
+    sub.add_argument("--json", action="store_true", help="print the manifest as JSON")
+
+    sub = add(commands, "drift", cmd_drift, "(server) drift sources: their status, or check one now",
+              "Findings become system-scope tracker items (source drift:<name>), closed only when a fresh\n"
+              "observation no longer reports them.")
+    sub.add_argument("--json", action="store_true", help="print JSON")
+    drift_actions = sub.add_subparsers(title="actions", metavar="<action>", dest="action")
+    dcheck = add(drift_actions, "check", cmd_drift, "(server) check one drift source now")
+    dcheck.add_argument("name", help="the drift source's name")
+    dcheck.add_argument("--json", action="store_true", help="print the result as JSON")
+
+    sub = add(commands, "snapraid", cmd_snapraid, "(server) disk protection with SnapRAID",
+              "The card in plain text: the light and its reason, the disks, the SnapRAID Daemon's facts or the last\n"
+              "guard report. Actions need your go-ahead in the cockpit; there is no action command. File names stay\n"
+              "in the cockpit.")
+    sub.add_argument("--json", action="store_true", help="print JSON")
+    snapraid_actions = sub.add_subparsers(title="actions", metavar="<action>", dest="snapraid_action")
+    check = add(snapraid_actions, "check-now", cmd_snapraid, "(server) read now: status, health or diff (a guard "
+                "report: would a run be held?)")
+    check.add_argument("what", nargs="?", choices=("status", "health", "diff"), help="what to read (default status)")
+    check.add_argument("--json", action="store_true", help="print JSON")
+    jobs = add(snapraid_actions, "jobs", cmd_snapraid, "(server) the reader's runs, or one")
+    jobs.add_argument("id", nargs="?", help="a run id such as J-12")
+    jobs.add_argument("--json", action="store_true", help="print JSON")
+    guard = add(snapraid_actions, "guard", cmd_snapraid, "(server) the last guard report: counts and reasons only")
+    guard.add_argument("id", nargs="?", help="a guard report id such as G-3")
+    guard.add_argument("--json", action="store_true", help="print JSON")
+    helper = add(snapraid_actions, "helper", cmd_snapraid, "(server) the copy blocks that install or remove the "
+                 "disk protection reader, or check it")
+    helper.add_argument("helper_action", choices=("install", "check", "remove"))
+    helper.add_argument("--json", action="store_true", help="print JSON")
+    link = add(snapraid_actions, "link", cmd_snapraid, "(server) the copy blocks that install or remove Seraphina's "
+               "link to the SnapRAID Daemon, or check it")
+    link.add_argument("link_action", choices=("install", "check", "remove"))
+    link.add_argument("--json", action="store_true", help="print JSON")
+
+    sub = add(commands, "custody", cmd_custody, "(server) GPU custody: residency and the leases this harness holds")
+    sub.add_argument("--refresh", action="store_true", help="read residency from the register now")
+    sub.add_argument("--json", action="store_true", help="print JSON")
 
     sub = add(commands, "models", cmd_models, "list model entries, or test one")
     sub.add_argument("--json", action="store_true", help="print the models as JSON")

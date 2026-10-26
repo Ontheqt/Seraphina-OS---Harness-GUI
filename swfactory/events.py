@@ -131,10 +131,11 @@ class Event:
     job: str | None
     agent: str | None
     data: dict
+    instance: str | None = None   # the harness's instance name (harness.instance_name), when the bus has one
 
     def to_dict(self) -> dict:
         """The event as a JSON-serialisable object."""
-        return {
+        out = {
             "seq": self.seq,
             "ts": self.ts,
             "type": self.type,
@@ -143,6 +144,9 @@ class Event:
             "agent": self.agent,
             "data": self.data,
         }
+        if self.instance is not None:
+            out["instance"] = self.instance
+        return out
 
 
 class EventBus:
@@ -158,6 +162,9 @@ class EventBus:
         self._ring: deque[Event] = deque(maxlen=ring_size)
         self._subscribers: list[queue.Queue] = []
         self._secrets_provider = secrets_provider
+        # Every event names the harness that wrote it (Wake & Messages operator decision f); its agent field names
+        # the agent or persona that acted, by its instance name.
+        self.instance: str | None = None
 
     def _secrets(self) -> list[str]:
         provided = self._secrets_provider() if self._secrets_provider else []
@@ -193,7 +200,7 @@ class EventBus:
                 agent: str | None) -> Event:
         with self._lock:
             self._seq += 1
-            event = Event(self._seq, utc_now(), type, repo, job, agent, payload)
+            event = Event(self._seq, utc_now(), type, repo, job, agent, payload, self.instance)
             self._ring.append(event)
             for subscriber in self._subscribers:
                 _offer(subscriber, event)

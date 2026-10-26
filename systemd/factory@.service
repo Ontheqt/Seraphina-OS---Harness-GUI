@@ -9,6 +9,12 @@
 # /home/<user>/.local/bin/factory. If the home directory or the checkout is
 # elsewhere, change ExecStart and PATH with `sudo systemctl edit factory@<user>`.
 # API keys: /home/<user>/.config/software-factory/env (NAME=value lines, chmod 600).
+# A token the harness reads as a systemd credential ("token_credential": "NAME"
+# on a custody register or a drift source): whoever holds root on the server
+# adds its line with `sudo systemctl edit factory@<user>`, under [Service]:
+#   LoadCredential=NAME:<path to the token file>
+# systemd reads the file as root and gives the service its own copy in
+# $CREDENTIALS_DIRECTORY; the harness user needs no access to the original.
 # Logs: journalctl -u factory@<user> -f
 
 [Unit]
@@ -28,11 +34,27 @@ Restart=on-failure
 RestartSec=5
 # SIGTERM goes to the factory first, so it can stop its agents and save job state.
 KillMode=mixed
-TimeoutStopSec=30
+TimeoutStopSec=60
 # Hardening. No ProtectHome: the factory works in the user's home (repos,
 # worktrees, ~/.config). If harness.sandbox = "bwrap" fails under this unit,
 # compare with `factory doctor` run as the user.
-NoNewPrivileges=yes
+#
+# No NoNewPrivileges=yes: it stops every setuid sudo (sudo-rs and classic sudo
+# alike), so the root helpers the harness calls through `sudo -n` (the disk
+# protection reader, DESIGN §41) could not run. Instead, bwrap sets
+# no-new-privileges on every sandboxed command, and the harness starts what
+# runs outside bwrap (commands with harness.sandbox none, CLI agents, MCP
+# servers, and its own git, whose filter and merge drivers come from the
+# repo's config) through `setpriv --no-new-privs` (`factory doctor`: "no new
+# privileges"). Without setpriv that holds only under bwrap. Run it as its own
+# user, in none of docker, lxd, incus-admin, sudo or disk ("account"), and
+# give that user no sudo grants beyond its helpers' read-only verbs.
+#
+# A helper started through sudo stays in this unit's mount namespace. So never
+# add ProtectSystem=strict, InaccessiblePaths= or TemporaryFileSystem= over the
+# data disks (/mnt, /srv, ...) here while a helper reads them: it would lose
+# its own state folders (/var/lib, /run) and the disks. "full" keeps /usr,
+# /boot and /etc read-only and leaves those writable.
 PrivateTmp=yes
 ProtectSystem=full
 

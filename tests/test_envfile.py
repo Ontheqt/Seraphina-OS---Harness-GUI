@@ -212,3 +212,24 @@ class StatusTest(EnvFileTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ChannelSecretStatusTest(EnvFileTestCase):
+    def test_configured_channel_tokens_are_listed_before_they_are_set(self) -> None:
+        self.config.raw["notify"] = {"channels": {"phone": {"type": "ntfy", "token_env": "SERAPHINA_NTFY_TOKEN",
+                                                            "reply_token_env": "SERAPHINA_NTFY_REPLY_TOKEN"},
+                                                  "telegram": {"type": "telegram",
+                                                               "token_env": "SERAPHINA_TELEGRAM_BOT_TOKEN"}}}
+        rows = {row["name"]: row for row in envfile.secret_status(self.config)["secrets"]}
+        self.assertEqual(rows["SERAPHINA_NTFY_TOKEN"]["channels"], ["phone"])
+        self.assertFalse(rows["SERAPHINA_TELEGRAM_BOT_TOKEN"]["set"])
+        envfile.set_secret(self.config, "SERAPHINA_TELEGRAM_BOT_TOKEN", "7123:AAH-test-0123456789")
+        rows = {row["name"]: row for row in envfile.secret_status(self.config)["secrets"]}
+        self.assertTrue(rows["SERAPHINA_TELEGRAM_BOT_TOKEN"]["set"])
+        self.assertNotIn("7123:AAH", str(rows))
+
+    def test_read_secret_from_stdin(self) -> None:
+        import io
+        self.assertEqual(envfile.read_secret_from_stdin(io.StringIO("value\r\nmore\n")), "value")
+        with self.assertRaises(ValueError):
+            envfile.read_secret_from_stdin(io.StringIO(""))

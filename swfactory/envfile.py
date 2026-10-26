@@ -143,9 +143,38 @@ def secret_status(config: Config) -> dict:
         in_file = {name for name, _ in parse_env_text(read_env_file(path) or "")}
     except (OSError, UnicodeDecodeError):
         in_file = set()
-    names = set(provider_key_names(config)) | {name for name in in_file
-                                               if SECRET_NAME_RE.fullmatch(name) and is_credential_name(name)}
+    names = set(provider_key_names(config)) | set(channel_key_names(config)) | {
+        name for name in in_file if SECRET_NAME_RE.fullmatch(name) and is_credential_name(name)}
     return {"env_file": str(path), "secrets": [_entry(config, name, in_file) for name in sorted(names)]}
+
+
+def channel_key_names(config: Config) -> dict[str, list[str]]:
+    """{token_env or reply_token_env: [phone channel names]} for every notify channel (DESIGN §34), so the GUI
+    shows "set / not set" before a value exists."""
+    names: dict[str, list[str]] = {}
+    notify = config.raw.get("notify") if isinstance(config.raw.get("notify"), dict) else {}
+    channels = notify.get("channels") if isinstance(notify.get("channels"), dict) else {}
+    for channel, entry in channels.items():
+        for key in ("token_env", "reply_token_env"):
+            name = entry.get(key) if isinstance(entry, dict) else None
+            if isinstance(name, str) and SECRET_NAME_RE.fullmatch(name):
+                names.setdefault(name, []).append(str(channel))
+    return names
+
+
+def read_secret_from_stdin(stream: Any) -> str:
+    """One secret from a pipe or a terminal (never echoed): the first line, its line ending removed. ValueError
+    when nothing was given."""
+    if hasattr(stream, "isatty") and stream.isatty():
+        import getpass
+
+        value = getpass.getpass("Value (not shown): ")
+    else:
+        value = stream.readline(MAX_VALUE_CHARS + 2)
+    value = value.rstrip("\r\n")
+    if not value:
+        raise ValueError("no value on standard input")
+    return value
 
 
 def provider_key_names(config: Config) -> dict[str, list[str]]:
@@ -165,7 +194,11 @@ def _entry(config: Config, name: str, in_file: set[str]) -> dict:
         providers = config.raw.get("providers") if isinstance(config.raw.get("providers"), dict) else {}
         resolved = any(resolve_api_key(name, providers[p].get("api_key_file")) for p in users
                        if isinstance(providers.get(p), dict) and providers[p].get("api_key_file"))
-    return {"name": name, "set": resolved, "in_env_file": name in in_file, "providers": sorted(users)}
+    entry = {"name": name, "set": resolved, "in_env_file": name in in_file, "providers": sorted(users)}
+    channels = channel_key_names(config).get(name)
+    if channels:
+        entry["channels"] = sorted(channels)
+    return entry
 
 
 def _assignment(name: str, value: str) -> str:

@@ -1,0 +1,14 @@
+{
+ "body": null,
+ "headers": {
+  "Connection": "close",
+  "Content-Type": "application/json"
+ },
+ "json": {
+  "message": "Invalid limit parameter",
+  "success": false
+ },
+ "method": "GET",
+ "path": "/snapraid/v1/tasks?limit_history=-1",
+ "status": 400
+}

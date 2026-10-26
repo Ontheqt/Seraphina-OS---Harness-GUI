@@ -29,7 +29,7 @@ from swfactory.routing import Build, Reachability, Role
 from swfactory.runners import AgentRun, RunContext
 from tests.mock_llm import MockLLM
 from tests.test_chats import ChatTestCase
-from tests.helpers import commit_file
+from tests.helpers import commit_file, run_git
 from tests.test_orchestrator import REPO, TIMEOUT, USAGE, Call, FactoryTestCase, reviews, until, write_build
 from tests.test_plans import PLAN_2, PlanTestCase
 from tests.test_server import FakeFactory as HttpFactory
@@ -244,6 +244,87 @@ class SlotTest(unittest.TestCase):
         self.assertIsNotNone(routing.take_slot(provider("unlimited"), 0.0, cancel), "no limit: nothing to wait for")
 
 
+class FamilyTest(unittest.TestCase):
+    """DESIGN §23, the independence guard: what a model family is and what the guard picks."""
+
+    def test_a_family_is_the_entry_s_label_else_read_from_the_model_id(self) -> None:
+        cases = {"openai/gpt-6.1-sol": "openai", "gpt-oss-120b": "openai", "o3-mini": "openai",
+                 "claude-opus-5-5": "anthropic", "anthropic/claude-sonnet-5-5": "anthropic",
+                 "google/gemini-4-argon": "google", "gemma-4-31b-q8_0": "google", "meta/muse-spark-1.3": "meta",
+                 "meta-llama/llama-4-scout": "meta", "deepseek/deepseek-v4.1-flash-1017:thinking": "deepseek",
+                 "deepseek-v4-pro": "deepseek", "Qwen3.8-Flash-Next-Uncensored-EXL3-2.05bpw": "qwen",
+                 "Swift-1.5-Qwen3.8-27B-EXL3-5bpw": "qwen", "qwen3-coder:30b": "qwen", "xiaomi/mimo-v2.6-pro": "xiaomi",
+                 "mistralai/devstral-2": "mistral", "strata": "strata", "flash-exl3": "flash", "": "unknown"}
+        for model_id, family in cases.items():
+            with self.subTest(model_id=model_id):
+                self.assertEqual(routing.default_family(model_id), family)
+        self.assertEqual(routing.entry_family({"model": "strata", "family": " Qwen "}), "qwen")
+        self.assertEqual(routing.entry_family({"model": "strata"}), "strata")
+        self.assertEqual(routing.model_family(model("m", model_id="strata", family="qwen")), "qwen")
+        self.assertEqual(routing.model_family(model("m", model_id="claude-x")), "anthropic")
+        self.assertEqual(routing.route_family({"model": "m", "model_id": "openai/x"}), "openai",
+                         "a snapshot or job.runs entry from before families")
+        self.assertEqual(routing.route_family({"model": "m", "model_id": "openai/x", "family": "own"}), "own")
+
+    def test_hub_and_quantizer_namespaces_name_no_family(self) -> None:
+        """Ollama names a Hugging Face pull hf.co/<user>/<repo>:<quant> and vLLM serves the repo id: the family is
+        the model the id names, not the namespace it was pulled from; a quantization suffix is not a family."""
+        cases = {"unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF": "qwen", "Qwen/Qwen3-32B": "qwen",
+                 "hf.co/bartowski/Qwen2.5-Coder-32B-Instruct-GGUF:Q4_K_M": "qwen",
+                 "hf.co/bartowski/Llama-3.3-70B-Instruct-GGUF:Q4_K_M": "meta",
+                 "lmstudio-community/gemma-3-27b-it-GGUF": "google",
+                 "mlx-community/Llama-3.3-70B-Instruct-4bit": "meta",
+                 "openrouter/anthropic/claude-sonnet-4": "anthropic", "TEE/deepseek-v3.2": "deepseek",
+                 "nvidia/Llama-3.1-Nemotron-70B": "meta", "anthropic/a-new-name": "anthropic", "openai/o3": "openai",
+                 "phi-4-gptq": "microsoft", "granite-3.3-8b-instruct-gptq": "ibm", "gpt4o": "openai",
+                 "gemma3n:e4b": "google", "qwen2.5vl:7b": "qwen", "someuser/coder-7b": "coder",
+                 "hf.co/someuser/strata-gguf:Q8_0": "strata"}
+        for model_id, family in cases.items():
+            with self.subTest(model_id=model_id):
+                self.assertEqual(routing.default_family(model_id), family)
+        builder = {"model": "q-local", "model_id": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF"}
+        judge = {"model": "qwen-max", "model_id": "qwen/qwen3.8-max",
+                 "independent_alternate": {"model": "muse", "model_id": "meta/muse-spark-1.3"}}
+        self.assertEqual(routing.judge_choice(judge, {routing.route_family(builder): "q-local"})[1], "alternate",
+                         "two Qwen models are one family, whichever namespace served the builder")
+        qwen = {"model": "a", "model_id": "hf.co/bartowski/Qwen2.5-Coder-32B-Instruct-GGUF:Q4_K_M"}
+        llama = {"model": "b", "model_id": "hf.co/bartowski/Llama-3.3-70B-Instruct-GGUF:Q4_K_M"}
+        self.assertEqual(routing.judge_choice(llama, {routing.route_family(qwen): "a"}), (llama, None),
+                         "a Qwen and a Llama pulled from one namespace are independent")
+
+    def test_judges_and_the_choice(self) -> None:
+        self.assertEqual([routing.is_judge(a) for a in ("approver", "reviewer-code", "builder", "lead", "coder")],
+                         [True, True, False, False, False])
+        alternate = {"model": "alt", "model_id": "meta/a", "family": "meta"}
+        route = {"model": "sol", "model_id": "openai/sol", "family": "openai", "independent_alternate": alternate}
+        self.assertEqual(routing.judge_choice(route, {"qwen": "flash"}), (route, None))
+        self.assertEqual(routing.judge_choice(route, {"openai": "sol"}), (alternate, "alternate"))
+        self.assertEqual(routing.judge_choice(route, {"openai": "sol", "meta": "x"}), (route, "reduced"),
+                         "an alternate of a family the builder ran on too does not help")
+        bare = {key: value for key, value in route.items() if key != "independent_alternate"}
+        self.assertEqual(routing.judge_choice(bare, {"openai": "sol"}), (bare, "reduced"))
+        self.assertEqual(routing.shared_model(route, {"openai": "sol-x"}, "openai/sol@build2"),
+                         {"model": "sol", "model_id": "openai/sol@build2", "family": "openai",
+                          "builder_model": "sol-x"})
+        shared = {"model": "sol", "family": "openai", "builder_model": "sol-x"}
+        self.assertEqual(routing.placement_reason({"kind": "cost", "text": "x"}, {
+            "independence": "alternate", "shared_model": shared}),
+            {"kind": "stage-fit", "text": "independent alternate: the builder ran on the openai family (sol-x) this "
+                                          "round, like sol"})
+        self.assertEqual(routing.placement_reason({"kind": "cost", "text": "x"}, {"independence": "reduced"}),
+                         {"kind": "cost", "text": "x"}, "a reduced run keeps its route's reason")
+
+    def test_a_per_run_model_drops_the_profile_s_alternate(self) -> None:
+        base = {"reviewer-code": {"model": "sol", "independent_alternate": "alt", "reason": "stage-fit: x"}}
+        self.assertEqual(routing.merged_placements(base, {"reviewer-code": {"model": "other"}}),
+                         {"reviewer-code": {"model": "other"}})
+        self.assertEqual(routing.merged_placements(base, {"reviewer-code": {"model": "other",
+                                                                            "independent_alternate": "alt2"}}),
+                         {"reviewer-code": {"model": "other", "independent_alternate": "alt2"}})
+        self.assertEqual(routing.merged_placements(base, {"reviewer-code": {"effort": "high"}})["reviewer-code"],
+                         {**base["reviewer-code"], "effort": "high"})
+
+
 class PlacementShapeTest(unittest.TestCase):
     def test_reasons_and_efforts(self) -> None:
         self.assertEqual(routing.reason("cost: free locally"), {"kind": "cost", "text": "free locally"})
@@ -429,6 +510,48 @@ class ConfigValidationTest(unittest.TestCase):
                 settings.validate_settings(self.make(**deep_merge(claude, patch)))
         settings.validate_settings(self.make(**deep_merge(claude, {"agents": {"approver": {
             "model": "claude-x", "effort": "max"}, "reviewer-code": {"model": "opus", "effort": "minimal"}}})))
+
+    def test_independent_alternates_and_family_labels(self) -> None:
+        models = {"sol": {"provider": "tabby", "model": "openai/gpt-6.1-sol"},
+                  "sol-x": {"provider": "tabby", "model": "openai/gpt-6.1-sol", "family": "openai"},
+                  "muse": {"provider": "tabby", "model": "meta/muse-spark-1.3"}}
+        good = {"models": models, "agents": {"reviewer-code": {"model": "sol", "independent_alternate": "muse"},
+                                             "approver": {"independent_alternate": "sol"}},
+                "profiles": {"p": {"agents": {"approver": {"model": "muse", "independent_alternate": "sol-x"}}}}}
+        settings.validate_settings(self.make(**good))
+        cases = [
+            ({"agents": {"builder": {"independent_alternate": "muse"}}},
+             "agents.builder: independent_alternate is for the judges"),
+            ({"agents": {"*": {"independent_alternate": "muse"}}}, "agents.\\*: independent_alternate apply to one"),
+            ({"agents": {"reviewer-code": {"independent_alternate": "gone"}}},
+             "agents.reviewer-code.independent_alternate 'gone' is not a key of models"),
+            ({"agents": {"reviewer-code": {"independent_alternate": 3}}}, "independent_alternate must be a model key"),
+            ({"agents": {"reviewer-code": {"independent_alternate": True}}}, "or false to accept the builder's family"),
+            ({"agents": {"builder": {"independent_alternate": False}}},
+             "agents.builder: independent_alternate is for the judges"),
+            ({"agents": {"*": {"independent_alternate": False}}}, "agents.\\*: independent_alternate apply to one"),
+            ({"agents": {"reviewer-code": {"model": "sol", "independent_alternate": "sol-x"}}},
+             "agents.reviewer-code.independent_alternate 'sol-x' is of the openai family, like the judge's own model"),
+            ({"profiles": {"p": {"agents": {"lead": {"independent_alternate": "muse"}}}}},
+             "profiles.p.agents.lead: independent_alternate is for the judges"),
+            ({"profiles": {"p": {"agents": {"approver": {"model": "muse", "independent_alternate": "muse"}}}}},
+             "is of the meta family"),
+            ({"models": {"muse": {"family": "Not a label!"}}}, "models.muse.family must be a family label"),
+        ]
+        for patch, message in cases:
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                settings.validate_settings(self.make(**deep_merge({"models": models}, patch)))
+        view = settings.config_view(self.make(**good))
+        self.assertEqual({key: view["model_families"][key] for key in models},
+                         {"sol": "openai", "sol-x": "openai", "muse": "meta"})
+        code = next(agent for agent in view["agent_list"] if agent["name"] == "reviewer-code")
+        self.assertEqual(code["independent_alternate"], "muse")
+        accepted = deep_merge(good, {"agents": {"reviewer-security": {"model": "sol", "independent_alternate": False}},
+                                     "profiles": {"p": {"agents": {"reviewer-ux": {"independent_alternate": False}}}}})
+        settings.validate_settings(self.make(**accepted))   # false: the routing accepts the builder's family
+        security = next(agent for agent in settings.config_view(self.make(**accepted))["agent_list"]
+                        if agent["name"] == "reviewer-security")
+        self.assertIs(security["independent_alternate"], False)
 
     def test_profiles_are_settings_the_gui_can_post(self) -> None:
         self.assertIn("profiles", settings.UPDATABLE_SECTIONS)
@@ -803,6 +926,379 @@ class PlacementReasonTest(PlacementTestCase):
             factory.check_routing(REPO, {"approver": {"model": "claude-x", "effort": "minimal"}})
         route = factory.check_routing(REPO, {"approver": {"model": "claude-x", "effort": "low"}})["approver"]
         self.assertEqual(route["extra_body"]["output_config"], {"effort": "low"})
+
+
+class IndependenceGuardTest(PlacementTestCase):
+    """DESIGN §23, the independence guard: a judge whose model is of a family the builder ran on in its round
+    runs on its independent alternate; without one the run goes ahead and job.json, agent.start and job.runs
+    say its independence is reduced, naming the model it shares."""
+
+    def guard_config(self, **sections: Any) -> Config:
+        return self.placed_config(**deep_merge({
+            "providers": {"lensp": {"type": "openai", "base_url": "https://lens.example.invalid/v1",
+                                    "api_key_env": None}},
+            "models": {"flash": {"family": "qwen"}, "cheap": {"family": "xiaomi"},
+                       "strong": {"family": "openai"}, "stronger": {"family": "openai"},
+                       "alt": {"provider": "api2", "model": "alt-1", "max_tokens": 1000, "family": "meta"},
+                       "judge": {"provider": "api", "model": "judge-1", "max_tokens": 1000, "family": "anthropic"},
+                       "lens": {"provider": "lensp", "model": "lens-1", "max_tokens": 1000, "family": "google",
+                                "overflow": "local-lens"},
+                       "local-lens": {"provider": "api2", "model": "local-lens-1", "max_tokens": 1000,
+                                      "family": "qwen"}},
+            "agents": {"reviewer-code": {"model": "strong", "independent_alternate": "alt"},
+                       "approver": {"model": "judge"}},
+        }, sections))
+
+    def runs(self, job: dict, agent: str) -> list[dict]:
+        return [run for run in job["runs"] if run["agent"] == agent]
+
+    def test_after_an_escalation_the_code_lens_moves_to_its_alternate(self) -> None:
+        factory = self.start_placed(self.guard_config(), reviewer_code=reviews("CHANGES", "PASS"))
+        snapshot = factory.check_routing(REPO)
+        code = snapshot["reviewer-code"]
+        self.assertEqual((code["family"], code["independent_alternate"]["model"],
+                          code["independent_alternate"]["family"]), ("openai", "alt", "meta"))
+        job = self.run_job(factory)
+        self.assertEqual(job["stage"], "merged", job.get("reason"))
+        self.assertEqual([call.ctx.model.key for call in self.recorder.of("builder")], ["flash", "strong"])
+        self.assertEqual([call.ctx.model.key for call in self.recorder.of("reviewer-code")], ["strong", "alt"],
+                         "round 1's builder is local Qwen; round 2's is GPT, like the code lens")
+        starts = [e.data for e in self.events(job, "agent.start") if e.agent == "reviewer-code"]
+        self.assertNotIn("independence", starts[0])
+        shared = {"model": "strong", "model_id": "strong-1", "family": "openai", "builder_model": "strong"}
+        self.assertEqual((starts[1]["independence"], starts[1]["shared_model"], starts[1]["family"],
+                          starts[1]["model"]), ("alternate", shared, "meta", "alt"))
+        self.assertEqual(starts[1]["reason"], {"kind": "stage-fit", "text": "independent alternate: the builder ran "
+                                                                            "on the openai family (strong) this round, "
+                                                                            "like strong"})
+        runs = self.runs(job, "reviewer-code")
+        self.assertEqual([(run.get("independence"), run["model"], run["family"]) for run in runs],
+                         [(None, "strong", "openai"), ("alternate", "alt", "meta")])
+        self.assertEqual(runs[1]["shared_model"], shared, "the run's receipt names the model it left")
+        self.assertEqual([run["family"] for run in self.runs(job, "builder")], ["qwen", "openai"])
+        self.assertNotIn("independence", job, "no judge ran on the builder's family")
+        self.assertIn("reviewer-code runs on api2/alt-1: runs on its independent alternate alt instead of strong: the "
+                      "builder ran on the openai family (strong) in round 2", self.logs(job))
+        self.assertEqual(self.start_event(job, "approver").data.get("independence"), None)
+
+    def test_without_an_alternate_the_run_goes_ahead_reduced_and_says_so(self) -> None:
+        config = self.guard_config(agents={"reviewer-code": {"model": "strong", "independent_alternate": None}})
+        factory = self.start_placed(config, reviewer_code=reviews("CHANGES", "PASS"))
+        job = self.run_job(factory)
+        self.assertEqual(job["stage"], "merged", job.get("reason"))
+        self.assertEqual([call.ctx.model.key for call in self.recorder.of("reviewer-code")], ["strong", "strong"])
+        shared = {"model": "strong", "model_id": "strong-1", "family": "openai", "builder_model": "strong"}
+        start = [e.data for e in self.events(job, "agent.start") if e.agent == "reviewer-code"][1]
+        self.assertEqual((start["independence"], start["shared_model"]), ("reduced", shared))
+        self.assertNotIn("reason", start, "a reduced run keeps its route's reason (none here)")
+        run = self.runs(job, "reviewer-code")[1]
+        self.assertEqual((run["independence"], run["shared_model"]), ("reduced", shared))
+        self.assertEqual(job["independence"], "reduced")
+        self.assertEqual(job["shared_models"], [{"round": 2, "agent": "reviewer-code", **shared}])
+        saved = json.loads((Path(job["job_dir"]) / "job.json").read_text())
+        self.assertEqual((saved["independence"], saved["shared_models"]), ("reduced", job["shared_models"]))
+        self.assertIn("independence reduced: strong is of the openai family, like the builder's strong in round 2 "
+                      "(it has no independent_alternate)", self.logs(job))
+
+    def test_an_alternate_of_the_builder_s_family_too_does_not_help(self) -> None:
+        """Round 1's builder runs on two families: flash (qwen), then, for the build check's resume with both
+        local builds down, its overflow cheap (xiaomi). The code lens is Qwen and its alternate MiMo-like:
+        neither is independent of that round, so the lens runs reduced and says why."""
+        tabby, strata = f"tabby{self.suffix}", f"strata{self.suffix}"
+
+        def builder(ctx: RunContext, call: Call) -> None:
+            if call.index == 0:   # commits, but leaves a file uncommitted: the build check resumes it
+                commit_file(ctx.cwd, "feature.txt", "work\n", "work")
+                (ctx.cwd / "loose.txt").write_text("not committed\n")
+                write_build(ctx, "READY")
+                self.reach.up_map.update({tabby: False, strata: False})
+            else:
+                commit_file(ctx.cwd, "loose.txt", "committed\n", "commit the rest")
+
+        config = self.guard_config(
+            agents={"reviewer-code": {"model": "qwen-judge", "independent_alternate": "mimo-judge"}},
+            models={"qwen-judge": {"provider": "api2", "model": "qj-1", "max_tokens": 1000, "family": "qwen"},
+                    "mimo-judge": {"provider": "api2", "model": "mj-1", "max_tokens": 1000, "family": "xiaomi"}})
+        factory = self.start_placed(config, builder=builder)
+        job = self.run_job(factory)
+        self.assertEqual(job["stage"], "merged", job.get("reason"))
+        self.assertEqual([(run["round"], run["model"], run["family"]) for run in self.runs(job, "builder")],
+                         [(1, "flash", "qwen"), (1, "cheap", "xiaomi")])
+        self.assertEqual([call.ctx.model.key for call in self.recorder.of("reviewer-code")], ["qwen-judge"])
+        run = self.runs(job, "reviewer-code")[0]
+        self.assertEqual((run["independence"], run["shared_model"]["builder_model"]), ("reduced", "flash"))
+        self.assertIn("independence reduced: qwen-judge is of the qwen family, like the builder's flash in round 1 "
+                      "(its independent alternate mimo-judge is of a family the builder ran on too)", self.logs(job))
+        config = self.guard_config(agents={"reviewer-code": {"model": "flash", "independent_alternate": "stronger2"}},
+                                   models={"stronger2": {"provider": "api2", "model": "s2", "max_tokens": 1000,
+                                                         "family": "qwen"}})
+        with self.assertRaisesRegex(ValueError, "cannot route reviewer-code: independent_alternate 'stronger2' is of "
+                                                "the qwen family, like 'flash'"):
+            Factory(config, self.bus, reach=self.reach).check_routing(REPO)
+
+    def test_the_approver_moves_too_and_a_profile_can_place_it(self) -> None:
+        config = self.guard_config(profiles={"guarded": {"agents": {
+            "approver": {"model": "cheap", "independent_alternate": "judge", "reason": "cost: a cheap gate"}}}},
+            models={"cheap": {"family": "qwen"}})
+        factory = self.start_placed(config)
+        job = self.run_job(factory, profile="guarded")
+        self.assertEqual(job["stage"], "merged", job.get("reason"))
+        self.assertEqual(self.recorder.of("approver")[0].ctx.model.key, "judge")
+        start = self.start_event(job, "approver").data
+        self.assertEqual((start["independence"], start["shared_model"]["model"], start["reason"]["kind"]),
+                         ("alternate", "cheap", "stage-fit"))
+        self.assertEqual(job["routing"]["approver"]["reason"], {"kind": "cost", "text": "a cheap gate"},
+                         "the snapshot keeps the route's own reason")
+
+    def test_an_overflow_onto_the_builder_s_family_is_reduced(self) -> None:
+        self.reach.up_map["lensp"] = False
+        factory = self.start_placed(self.guard_config(agents={"reviewer-code": {"model": "lens",
+                                                                                "independent_alternate": None}}))
+        job = self.run_job(factory)
+        self.assertEqual(job["stage"], "merged", job.get("reason"))
+        self.assertEqual(self.recorder.of("reviewer-code")[0].ctx.model.key, "local-lens")
+        start = self.start_event(job, "reviewer-code").data
+        self.assertEqual((start["independence"], start["shared_model"], start["reason"]["kind"]),
+                         ("reduced", {"model": "local-lens", "model_id": "local-lens-1", "family": "qwen",
+                                      "builder_model": "flash"}, "time"))
+        self.assertEqual(job["shared_models"][0]["round"], 1)
+        self.assertIn("independence reduced: local-lens is of the qwen family, like the builder's flash in round 1 "
+                      "(its own model lens overflowed to local-lens, and it has no independent_alternate)",
+                      self.logs(job))
+
+    def test_an_overflow_onto_the_builder_s_family_takes_the_alternate(self) -> None:
+        """The code lens (google) is down and overflows to a Qwen model, the builder's family: its independent
+        alternate (meta) answers, so the lens runs there instead of reduced."""
+        self.reach.up_map["lensp"] = False
+        factory = self.start_placed(self.guard_config(agents={"reviewer-code": {"model": "lens",
+                                                                                "independent_alternate": "alt"}}))
+        job = self.run_job(factory)
+        self.assertEqual(job["stage"], "merged", job.get("reason"))
+        self.assertEqual([call.ctx.model.key for call in self.recorder.of("reviewer-code")], ["alt"])
+        start = self.start_event(job, "reviewer-code").data
+        left = {"model": "local-lens", "model_id": "local-lens-1", "family": "qwen", "builder_model": "flash"}
+        self.assertEqual((start["independence"], start["shared_model"], start["family"]), ("alternate", left, "meta"))
+        self.assertNotIn("overflow", start, "the run is not on the overflow")
+        self.assertEqual(start["reason"], {"kind": "stage-fit", "text": "independent alternate: the builder ran on "
+                                                                         "the qwen family (flash) this round, like "
+                                                                         "local-lens"})
+        self.assertNotIn("independence", job, "nothing ran reduced")
+        logs = self.logs(job)
+        self.assertIn("build lensp/lens-1 is unavailable", logs)
+        self.assertIn("its overflow local-lens is of the qwen family the builder ran on; runs on its independent "
+                      "alternate alt instead of local-lens: the builder ran on the qwen family (flash) in round 1",
+                      logs)
+
+    def test_with_its_alternate_down_the_overflow_runs_reduced_and_says_why(self) -> None:
+        self.reach.up_map.update(lensp=False, altp=False)
+        config = self.guard_config(
+            providers={"altp": {"type": "openai", "base_url": "https://alt.example.invalid/v1", "api_key_env": None}},
+            models={"alt": {"provider": "altp"}},
+            agents={"reviewer-code": {"model": "lens", "independent_alternate": "alt"}})
+        job = self.run_job(self.start_placed(config))
+        self.assertEqual(job["stage"], "merged", job.get("reason"))
+        self.assertEqual([call.ctx.model.key for call in self.recorder.of("reviewer-code")], ["local-lens"])
+        self.assertEqual(self.start_event(job, "reviewer-code").data["independence"], "reduced")
+        self.assertIn("independence reduced: local-lens is of the qwen family, like the builder's flash in round 1 "
+                      "(its own model lens overflowed to local-lens, and its independent alternate alt does not "
+                      "answer)", self.logs(job))
+
+    def test_an_alternate_that_does_not_answer_leaves_the_judge_on_its_own_model(self) -> None:
+        """After an escalation the code lens shares the builder's family; its alternate is down, so it reviews on
+        its own model (reduced, saying so) rather than failing on a server that does not answer."""
+        self.reach.up_map["altp"] = False
+        config = self.guard_config(
+            providers={"altp": {"type": "openai", "base_url": "https://alt.example.invalid/v1", "api_key_env": None}},
+            models={"alt": {"provider": "altp"}})
+        factory = self.start_placed(config, reviewer_code=reviews("CHANGES", "PASS"))
+        job = self.run_job(factory)
+        self.assertEqual(job["stage"], "merged", job.get("reason"))
+        self.assertEqual([call.ctx.model.key for call in self.recorder.of("reviewer-code")], ["strong", "strong"])
+        self.assertEqual(self.runs(job, "reviewer-code")[1]["independence"], "reduced")
+        self.assertIn("build altp/alt-1 is unavailable", self.logs(job))
+        self.assertIn("independence reduced: strong is of the openai family, like the builder's strong in round 2 "
+                      "(its independent alternate alt does not answer)", self.logs(job))
+
+    def test_a_slot_wait_overflow_onto_the_builder_s_family_takes_the_alternate(self) -> None:
+        strata = f"strata{self.suffix}"
+        config = self.guard_config(
+            providers={strata: {"overflow_after_seconds": 0.2}},
+            models={"slow-lens": {"provider": strata, "model": "slow-lens-1", "max_tokens": 1000, "family": "google",
+                                  "overflow": "local-lens"}},
+            agents={"reviewer-code": {"model": "slow-lens", "independent_alternate": "alt"}})
+        slots = provider_semaphore(strata, 1)
+        held, done = threading.Event(), threading.Event()
+
+        def hold() -> None:   # another run holds the lens's one local slot
+            slots.acquire()
+            held.set()
+            done.wait(TIMEOUT)
+            slots.release()
+
+        holder = threading.Thread(target=hold, daemon=True)
+        holder.start()
+        self.addCleanup(holder.join, 5)
+        self.addCleanup(done.set)
+        held.wait(5)
+        job = self.run_job(self.start_placed(config))
+        done.set()
+        self.assertEqual(job["stage"], "merged", job.get("reason"))
+        self.assertEqual([call.ctx.model.key for call in self.recorder.of("reviewer-code")], ["alt"],
+                         "past the wait the overflow is Qwen, like the builder: the alternate takes over")
+        start = self.start_event(job, "reviewer-code").data
+        self.assertEqual((start["independence"], start["shared_model"]["model"]), ("alternate", "local-lens"))
+        waits = [e for e in self.events(job, "agent.waiting") if e.agent == "reviewer-code"]
+        self.assertEqual(len(waits), 1, "it waited for the slot first")
+
+    def test_the_approver_is_compared_with_every_round(self) -> None:
+        """The approver judges the whole branch once: round 1's code came from Claude, round 2's from GPT, so an
+        approver on Claude moves to its alternate though round 2's builder is GPT."""
+        config = self.guard_config(agents={"builder": {"model": "judge", "escalate": ["strong"]},
+                                           "approver": {"model": "judge", "independent_alternate": "alt"}})
+        factory = self.start_placed(config, reviewer_code=reviews("CHANGES", "PASS"))
+        job = self.run_job(factory)
+        self.assertEqual(job["stage"], "merged", job.get("reason"))
+        self.assertEqual([(run["round"], run["family"]) for run in self.runs(job, "builder")],
+                         [(1, "anthropic"), (2, "openai")])
+        self.assertEqual([call.ctx.model.key for call in self.recorder.of("approver")], ["alt"])
+        start = self.start_event(job, "approver").data
+        self.assertEqual((start["independence"], start["shared_model"]["builder_model"]), ("alternate", "judge"))
+        self.assertIn("runs on its independent alternate alt instead of judge: the builder ran on the anthropic family "
+                      "(judge) in the rounds so far", self.logs(job))
+        self.assertEqual(factory._builder_families(job, 2, "approver"), {"anthropic": "judge", "openai": "strong"})
+        self.assertEqual(factory._builder_families(job, 2, "reviewer-code"), {"openai": "strong"},
+                         "a reviewer is compared with its own round: each round's code met independent lenses")
+
+    def chat_branch(self) -> str:
+        branch = "chat/c-0123456789"
+        run_git(self.repo, "branch", branch)
+        worktree = self.tmp / "chat"
+        run_git(self.repo, "worktree", "add", "-q", str(worktree), branch)
+        commit_file(worktree, "chat.txt", "built in chat\n", "chat work")
+        run_git(self.repo, "worktree", "remove", str(worktree))
+        return branch
+
+    def test_a_hand_off_counts_the_chat_s_models_as_round_one(self) -> None:
+        config = self.guard_config(agents={"approver": {"model": "judge", "independent_alternate": "alt"}})
+        factory = self.start_placed(config)
+        chat = [{"model": "judge", "provider": "api", "model_id": "judge-1", "family": "anthropic"}]
+        job = self.run_job(factory, "Ship the chat work", from_branch=self.chat_branch(), handoff_models=chat)
+        self.assertEqual(job["stage"], "merged", job.get("reason"))
+        self.assertEqual(job["handoff_models"], chat)
+        self.assertEqual(self.runs(job, "builder"), [], "the chat wrote the code")
+        self.assertEqual([call.ctx.model.key for call in self.recorder.of("approver")], ["alt"])
+        self.assertEqual(self.start_event(job, "approver").data["shared_model"],
+                         {"model": "judge", "model_id": "judge-1", "family": "anthropic", "builder_model": "judge"})
+        self.assertNotIn("independence", self.start_event(job, "reviewer-code").data, "GPT is not Claude")
+        with self.assertRaisesRegex(ValueError, "handoff_models must be a list"):
+            factory.submit(REPO, "x", from_branch="chat/c-0123456789",
+                           handoff_models="judge")   # type: ignore[arg-type]
+
+    def test_a_hand_off_without_its_models_is_unknown(self) -> None:
+        factory = self.start_placed(self.guard_config())
+        job = self.run_job(factory, "Ship the chat work", from_branch=self.chat_branch())
+        self.assertEqual(job["stage"], "merged", job.get("reason"))
+        self.assertEqual([self.start_event(job, agent).data.get("independence") for agent in ("reviewer-code",
+                                                                                              "approver")],
+                         ["unknown", "unknown"])
+        self.assertEqual([run.get("independence") for run in job["runs"] if run["agent"] in ("reviewer-code",
+                                                                                            "approver")],
+                         ["unknown", "unknown"])
+        self.assertEqual(job["independence"], "unknown")
+        self.assertNotIn("shared_models", job, "there is no model to name")
+        self.assertIn("independence unknown: the code it judges was written in a chat whose models the job does not "
+                      "record", self.logs(job))
+
+    def test_an_accepted_shared_family_is_not_a_reduction(self) -> None:
+        """independent_alternate: false says the routing accepts this judge on the builder's family (say a local
+        security fine-tune whose findings stay local): its run says "accepted", and so does the job."""
+        config = self.guard_config(agents={"reviewer-code": {"model": "flash", "independent_alternate": False}})
+        factory = self.start_placed(config)
+        snapshot = factory.check_routing(REPO)
+        self.assertIs(snapshot["reviewer-code"]["independent_alternate"], False)
+        job = self.run_job(factory)
+        self.assertEqual(job["stage"], "merged", job.get("reason"))
+        start = self.start_event(job, "reviewer-code").data
+        shared = {"model": "flash", "model_id": "flash-exl3", "family": "qwen", "builder_model": "flash"}
+        self.assertEqual((start["independence"], start["shared_model"]), ("accepted", shared))
+        self.assertEqual(job["independence"], "accepted")
+        self.assertEqual(job["shared_models"], [{"round": 1, "agent": "reviewer-code", **shared, "accepted": True}])
+        self.assertIn("independence accepted: flash is of the qwen family, like the builder's flash in round 1 (the "
+                      "routing accepts it: independent_alternate is false)", self.logs(job))
+        estimate = factory.estimate(REPO)
+        self.assertEqual(estimate["independence"][0]["accepted"], {"reviewer-code": "flash"})
+        row = next(row for row in estimate["roles"] if row["agent"] == "reviewer-code")
+        self.assertEqual((row["model"], row["independence"]), ("flash", "accepted"))
+        with self.assertRaisesRegex(ValueError, "routing for builder: independent_alternate is for the judges"):
+            factory.check_routing(REPO, {"builder": {"independent_alternate": False}})
+
+    def test_a_reduced_run_outranks_an_accepted_one_on_the_job(self) -> None:
+        config = self.guard_config(agents={"reviewer-code": {"model": "flash", "independent_alternate": False},
+                                           "reviewer-security": {"model": "flash"}},
+                                   pipeline={"reviewers": ["code", "security"]})
+        job = self.run_job(self.start_placed(config))
+        self.assertEqual(job["stage"], "merged", job.get("reason"))
+        self.assertEqual(job["independence"], "reduced")
+        self.assertEqual(sorted((entry["agent"], entry.get("accepted", False)) for entry in job["shared_models"]),
+                         [("reviewer-code", True), ("reviewer-security", False)])
+
+    def test_the_guard_compares_the_round_s_builder_runs_only(self) -> None:
+        factory = self.start_placed(self.guard_config())
+        job = {"repo": REPO, "id": "001-x", "runs": [
+            {"agent": "builder", "round": 1, "model": "flash", "model_id": "Qwen3.8-x"},   # before families
+            {"agent": "builder", "round": 2, "model": "strong", "model_id": "strong-1", "family": "openai"},
+            {"agent": "builder", "round": 2, "model": "cheap", "model_id": "cheap-1", "family": "xiaomi"},
+            {"agent": "reviewer-code", "round": 2, "model": "alt", "model_id": "alt-1", "family": "meta"}]}
+        self.assertEqual(factory._builder_families(job, 1), {"qwen": "flash"})
+        self.assertEqual(factory._builder_families(job, 2), {"openai": "strong", "xiaomi": "cheap"})
+        self.assertEqual(factory._builder_families(job, 3), {}, "a round with no builder run: nothing to compare")
+        self.assertEqual(factory._builder_families(job, None), {})
+
+    def test_a_per_run_route_and_the_estimate(self) -> None:
+        factory = self.start_placed(self.guard_config())
+        with self.assertRaisesRegex(ValueError, "routing for builder: independent_alternate is for the judges"):
+            factory.check_routing(REPO, {"builder": {"independent_alternate": "alt"}})
+        snapshot = factory.check_routing(REPO, {"reviewer-code": {"model": "judge"}})
+        self.assertNotIn("independent_alternate", snapshot["reviewer-code"], "agents.<name>'s alternate went with "
+                                                                              "its model")
+        own = factory.check_routing(REPO, {"reviewer-code": {"model": "judge", "independent_alternate": "alt"}})
+        self.assertEqual(own["reviewer-code"]["independent_alternate"]["model"], "alt")
+        estimate = factory.estimate(REPO)
+        self.assertEqual([(row["builder"]["via"], row["builder"]["model"], row["alternate"], row["reduced"])
+                          for row in estimate["independence"]],
+                         [("route", "flash", {}, {}), ("overflow", "cheap", {}, {}),
+                          ("rung 1", "strong", {"reviewer-code": "alt"}, {}),
+                          ("rung 2", "stronger", {"reviewer-code": "alt"}, {})])
+        code = next(row for row in estimate["roles"] if row["agent"] == "reviewer-code")
+        self.assertEqual((code["model"], code.get("independence")), ("strong", None),
+                         "on the builder's own model (Qwen) the code lens stays on its own")
+
+    def test_the_estimate_prices_a_judge_where_the_guard_puts_it(self) -> None:
+        config = self.guard_config(agents={"builder": {"model": "strong"},
+                                           "reviewer-code": {"model": "strong", "independent_alternate": "alt"}},
+                                   models={"alt": {"price_in": 3, "price_out": 7}})
+        estimate = self.start_placed(config).estimate(REPO)
+        code = next(row for row in estimate["roles"] if row["agent"] == "reviewer-code")
+        self.assertEqual((code["model"], code["provider"], code["model_id"], code["independence"],
+                          code["instead_of"]), ("alt", "api2", "alt-1", "alternate", "strong"))
+        tokens = code["tokens"]
+        self.assertAlmostEqual(code["cost_usd"], (tokens["input_tokens"] * 3 + tokens["output_tokens"] * 7) / 1e6,
+                               places=5)
+        self.assertEqual(code["reason"], {"kind": "stage-fit", "text": "independent alternate: the builder ran on "
+                                                                        "the openai family (strong) this round, like "
+                                                                        "strong"})
+        self.assertTrue(any("priced on its independent alternate" in note for note in estimate["notes"]))
+
+    def test_the_alternate_s_provider_secret_is_redacted(self) -> None:
+        key = "sk-alternate-key-0123456789"
+        config = self.guard_config(providers={"api2": {"api_key_env": "ALTERNATE_TEST_KEY"}},
+                                   agents={"builder": {"model": "flash", "escalate": ["strong"]}})
+        factory = self.start_placed(config)
+        with mock.patch.dict(os.environ, {"ALTERNATE_TEST_KEY": key}):
+            job = factory.submit(REPO, "x")
+            factory.wait(REPO, job["id"], timeout=TIMEOUT)
+            factory.reload_config(self.config())
+            self.assertIn(key, factory.secret_values(), "the alternate's provider is only in the snapshot now")
 
 
 class ScoutPlacementTest(PlacementTestCase):
@@ -1225,7 +1721,8 @@ class DoctorTest(unittest.TestCase):
         self.assertIn("used by good build 2", checks["provider down reachable"]["detail"],
                       "a build's provider is checked like a routed one")
         servers = checks["local servers"]
-        self.assertEqual(servers["detail"], "up: tabbymock (mock-model loaded); down: down")
+        self.assertEqual(servers["detail"], "up: tabbymock (mock-model loaded); down: down; "
+                         + doctor.LOOK_AROUND_ADVICE, "with a server down it says how to look, and never looks itself")
         self.assertIn("1 extra builds", checks["placement"]["detail"])
 
     def test_bad_references_are_an_error(self) -> None:

@@ -1,0 +1,146 @@
+{
+ "body": null,
+ "headers": {
+  "Connection": "close",
+  "Content-Type": "application/json"
+ },
+ "json": {
+  "block_begin": 0,
+  "block_end": 500,
+  "block_idx": 50,
+  "blocks_count": 25,
+  "blocks_done": 1,
+  "command": "scrub",
+  "cpu_usage": 0,
+  "elapsed_seconds": 0,
+  "error_data": 0,
+  "error_io": 0,
+  "error_soft": 0,
+  "eta_seconds": 0,
+  "exit_code": 0,
+  "finished_at": "2026-10-25T15:07:03",
+  "health": "passed",
+  "high_command": "maintenance",
+  "log_file": "/var/log/20261025-150703-scrub.log",
+  "messages": [
+   {
+    "level": "info",
+    "text": "Self-test..."
+   },
+   {
+    "level": "info",
+    "text": "Loading state from /var/content/snapraid.content..."
+   },
+   {
+    "level": "info",
+    "text": "Loaded state in 0 seconds"
+   },
+   {
+    "level": "verbose",
+    "text": "364 files"
+   },
+   {
+    "level": "verbose",
+    "text": "0 hardlinks"
+   },
+   {
+    "level": "verbose",
+    "text": "0 symlinks"
+   },
+   {
+    "level": "verbose",
+    "text": "0 empty dirs"
+   },
+   {
+    "level": "info",
+    "text": "Using 0 MiB of memory for the file-system."
+   },
+   {
+    "level": "info",
+    "text": "Initializing..."
+   },
+   {
+    "level": "info",
+    "text": "Scrub plan: auto. 5.0% of the array, older than 0 days, will be checked."
+   },
+   {
+    "level": "info",
+    "text": "Using 64 MiB of memory for 64 cached blocks."
+   },
+   {
+    "level": "info",
+    "text": "Scrubbing..."
+   },
+   {
+    "level": "info",
+    "text": "Saving state to /var/content/snapraid.content..."
+   },
+   {
+    "level": "info",
+    "text": "Saving state to /mnt/d1/snapraid.content..."
+   },
+   {
+    "level": "info",
+    "text": "Saving state to /mnt/d2/snapraid.content..."
+   },
+   {
+    "level": "info",
+    "text": "Saved state in 0 seconds"
+   },
+   {
+    "level": "info",
+    "text": "Verifying..."
+   },
+   {
+    "level": "info",
+    "text": "Verified /var/content/snapraid.content in 0 seconds"
+   },
+   {
+    "level": "info",
+    "text": "Verified /mnt/d1/snapraid.content in 0 seconds"
+   },
+   {
+    "level": "info",
+    "text": "Verified /mnt/d2/snapraid.content in 0 seconds"
+   },
+   {
+    "level": "verbose",
+    "text": "364 files"
+   },
+   {
+    "level": "verbose",
+    "text": "0 hardlinks"
+   },
+   {
+    "level": "verbose",
+    "text": "0 symlinks"
+   },
+   {
+    "level": "verbose",
+    "text": "0 empty dirs"
+   },
+   {
+    "level": "info",
+    "text": "Everything OK"
+   }
+  ],
+  "number": 34,
+  "progress": 100,
+  "pulse": {
+   "activity": 644,
+   "array": 132,
+   "config": 3,
+   "current_at": "2026-10-25T15:08:23",
+   "disks": 154,
+   "tasks": 570
+  },
+  "scheduled_at": "2026-10-25T15:07:00",
+  "size_done_bytes": 6358,
+  "speed_mbs": 0,
+  "started_at": "2026-10-25T15:07:03",
+  "status": "terminated"
+ },
+ "method": "GET",
+ "path": "/snapraid/v1/activity",
+ "status": 200
+}

@@ -1,28 +1,40 @@
 """Tests for where the v1 features meet: the routing engine (DESIGN.md section 23), the Housekeeping Tracker
-(section 32) and Grid delivery with the (product) confirmations (sections 7 and 26).
+(section 32), Grid delivery with the (product) confirmations (sections 7 and 26), Open WebUI personas (section
+33) and Wake & Messages (sections 34 and 35).
 
 Each feature has its own suite; these pin the interactions: an escalated builder's fresh session still gets
 its items and the Grid Card, a person's confirmation and the tracker's decision item stay one answer, a chat
-that moves to another model numbers its turns across sessions, and the card and the map state the gate's
-items rule only while the tracker holds jobs.
+that moves to another model numbers its turns across sessions, the card and the map state the gate's items
+rule only while the tracker holds jobs, an outside agent's token and an event source's token never open each
+other's routes, overdue items of the system scope reach the inbox as references only, and an offline
+snapshot is decision e's imported copy: enabled by its import, labelled on every reply, stopped by its switch.
 """
 
 from __future__ import annotations
 
 import json
 import uuid
+from datetime import date, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest import mock
 
-from swfactory import docs
+from swfactory import docs, personas, settings
 from swfactory.chats import ChatManager
+from swfactory.config import Config
+from swfactory.events import EventBus
 from swfactory.gridcard import HERE, factory_grid
 from swfactory.gridcard import receipt as grid_receipt
 from swfactory.runners import AgentRun, RunContext
 from tests.test_chats import ChatTestCase
 from tests.test_orchestrator import (CONFIRMED_FREE, FREE, REPO, TIMEOUT, Call, FactoryTestCase, build, escalate,
                                      product_spec, reviews, until, verifying_reviewer)
+from tests.mock_llm import MockLLM
+from tests.mock_openwebui import MockOpenWebUI
+from tests.test_personas import KATE_META, KATE_PARAMS, KATE_PROMPT, PersonaTestCase, _Factory, finished_turn
 from tests.test_routing import LOCAL, FakeReach, PlacementTestCase, session_writer
+from tests.test_server import RealFactoryCase
 
 CRITERIA_SPEC = "# Spec\n\nAdd a greeting.\n\n## Acceptance criteria\n1. The page says Hello.\n"
 
@@ -230,3 +242,164 @@ class GateRuleTextTest(FactoryTestCase):
                  for config in (self.config(), self.config(housekeeping={"enabled": False}))]
         self.assertEqual(gates, ["Gate (code)\nreviews · items · conflicts · paths · size",
                                  "Gate (code)\nreviews · conflicts · paths · size"])
+
+
+class TokensStayInTheirLanesTest(RealFactoryCase):
+    """An outside agent's token (section 32) and an event source's token (section 34) each open their own routes
+    and nothing else: neither is the other, and neither reaches the messages, the wakes or a persona."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.server.hook_fail_delay = 0.01
+
+    def test_neither_token_opens_the_other_s_routes(self) -> None:
+        created = self.request("POST", "/api/agent-tokens", {"name": "qwen-code"})
+        self.assertEqual(created.status, 201, created.body)
+        agent = created.json()["token"]
+        added = self.request("POST", "/api/notify/hooks", {"name": "backup-script", "events": ["backup.failed"],
+                                                          "subjects": ["nightly"]})
+        self.assertEqual(added.status, 201, added.body)
+        hook = added.json()["token"]
+        event = {"kind": "backup.failed", "subject": "nightly"}
+        self.assert_error(self.request("POST", "/api/hooks/event", event, token=agent), 401)
+        self.assert_error(self.request("POST", "/api/hooks/wake", {"persona": "seraphina"}, token=agent), 401)
+        for method, path, body in (("GET", "/api/items", None), ("GET", "/api/system/items", None),
+                                   ("POST", "/api/items/propose", {"scope": "system", "title": "x"}),
+                                   ("GET", "/api/messages", None), ("GET", "/api/wakes", None)):
+            with self.subTest(token="hook", path=path):
+                self.assert_error(self.request(method, path, body, token=hook), 401, "authentication required")
+        for method, path in (("GET", "/api/messages"), ("GET", "/api/notify"), ("GET", "/api/notify/hooks"),
+                             ("GET", "/api/wakes"), ("GET", "/api/notify/rules"), ("POST", "/api/wakes/control"),
+                             ("POST", "/api/personas/seraphina/messages"), ("GET", "/api/personas")):
+            with self.subTest(token="agent", path=path):
+                self.assert_error(self.request(method, path, {} if method == "POST" else None, token=agent), 403,
+                                  "valid only for the item routes")
+        self.assertEqual(self.request("POST", "/api/hooks/event", event, token=hook).status, 202)
+        self.assertEqual(self.request("GET", "/api/items", token=agent).status, 200)
+        dumped = json.dumps([e.to_dict() for e in self.bus.since(0)])
+        for token in (agent, hook):
+            self.assertNotIn(token, dumped, "no event carries a token")
+
+
+class OverdueItemsReachTheInboxTest(RealFactoryCase):
+    """The Notifier's tracker rule (section 34) reads the real tracker, the system scope included (section 32):
+    overdue items become one inbox notice that names their references, never their titles, so a persona's private
+    promise (section 35) stays on the machine."""
+
+    def test_overdue_system_and_persona_items_are_listed_by_reference_only(self) -> None:
+        past = (date.today() - timedelta(days=3)).isoformat()
+        added = self.request("POST", "/api/system/items", {"title": "Renew the TLS certificate", "due": past})
+        self.assertEqual(added.status, 201, added.body)
+        self.factory.open_persona_item("seraphina", "Ask about the clinic appointment on Friday", due=past,
+                                       taint=["private"])
+        notifier = self.factory._notify_manager()
+        notifier.reconcile()            # the first pass only records
+        self.assertEqual(self.request("GET", "/api/messages?kind=items.overdue").json()["messages"], [])
+        notifier.rules_tick([SimpleNamespace(type="items.updated", data={"ref": "system"})])
+        notices = self.request("GET", "/api/messages?kind=items.overdue").json()["messages"]
+        self.assertEqual(len(notices), 1, notices)
+        body = notices[0]["body"]
+        self.assertIn("2 tracked promises are overdue: system:S-1, system:S-2.", body)
+        self.assertEqual(notices[0]["deliveries"], {}, "in the inbox and the next summary only")
+        for text in ("TLS", "clinic"):
+            self.assertNotIn(text, json.dumps(notices))
+        dumped = json.dumps([e.to_dict() for e in self.bus.since(0) if e.type.startswith("notify.")])
+        self.assertNotIn("system:S-1", dumped, "notify events carry ids, never a notice's text")
+        notifier.rules_tick([SimpleNamespace(type="items.updated", data={"ref": "system"})])
+        self.assertEqual(len(self.request("GET", "/api/messages?kind=items.overdue").json()["messages"]), 1,
+                         "once a day")
+
+
+class OfflineCopyChatTest(PersonaTestCase):
+    """An offline snapshot (section 33) is the imported copy of operator decision e (section 35): its import turns
+    agents.<name>.offline on, every reply it writes is labelled, and turning the switch off stops its chat at
+    the next turn, before anything is sent."""
+
+    def test_the_import_enables_the_copy_and_its_switch_stops_it(self) -> None:
+        with MockLLM([{"text": "Offline Kate here."}, {"text": "never sent"}]) as llm:
+            local = {"local": {"type": "openai", "base_url": llm.base_url, "api_key_env": None}}
+            models = {"flash": {"provider": "local", "model": "qwen3.8-flash", "max_tokens": 1024}}
+            config = self.make_config(providers=local, models=models)
+            config.save()
+            config = Config.load(config.path)
+            personas.import_profile(config, records=self.owui.export_file("kate"), snapshot={"name": "kate-offline"})
+            config = Config.load(config.path)
+            self.assertIs(config.raw["agents"]["kate-offline"]["offline"], True)
+            rows = {name: personas.persona_view(config, persona)
+                    for name, persona in personas.discover_personas(config).items()}
+            self.assertEqual((rows["kate-offline"]["kind"], rows["kate-offline"]["offline"]), ("snapshot", True))
+            self.assertIsNone(rows["kate"]["offline"], "only a snapshot has the switch")
+            manager = ChatManager(config, EventBus(), _Factory())
+            self.addCleanup(manager.stop)
+            chat = manager.new_chat(None, persona="kate-offline")
+            done = finished_turn(manager, chat, "hi")
+            self.assertEqual(done["status"], "idle", done["error"])
+            asked, reply = done["messages"]
+            self.assertEqual((reply["role"], reply["text"]), ("assistant", "Offline Kate here."))
+            self.assertEqual(reply["label"], "from the imported copy: " + chat["persona"]["label"])
+            self.assertNotIn("label", asked, "only the copy's own words are labelled")
+            manager.config = settings.update_config(config, {"agents": {"kate-offline": {"offline": False}}})
+            refused = finished_turn(manager, chat, "again")
+            self.assertEqual(refused["status"], "error")
+            self.assertIn("offline mode is not enabled", refused["error"])
+            self.assertEqual(len(llm.requests), 1, "nothing was sent once the copy was turned off")
+            with self.assertRaisesRegex(ValueError, "offline mode is not enabled"):
+                manager.new_chat(None, persona="kate-offline")
+            self.assertIs(personas.persona_view(manager.config, personas.discover_personas(manager.config)[
+                "kate-offline"])["offline"], False)
+
+    def test_the_switch_is_a_named_copy_s_boolean_and_a_failed_import_takes_it_back(self) -> None:
+        local = {"tabby": {"type": "openai", "base_url": "http://127.0.0.1:5000/v1", "api_key_env": None}}
+        models = {"flash": {"provider": "tabby", "model": "qwen3.8-flash", "max_tokens": 1024}}
+        config = self.make_config(providers=local, models=models)
+        config.save()
+        config = Config.load(config.path)
+        with self.assertRaisesRegex(ValueError, r"agents\.kate-offline\.offline must be true or false"):
+            settings.update_config(config, {"agents": {"kate-offline": {"offline": "yes"}}})
+        with self.assertRaisesRegex(ValueError, r"agents\.\*\.offline: .* per imported copy"):
+            settings.update_config(config, {"agents": {"*": {"offline": True}}})
+        with mock.patch.object(settings, "save_agent", side_effect=OSError("disk full")):
+            with self.assertRaisesRegex(OSError, "disk full"):
+                personas.import_profile(config, records=self.owui.export_file("kate"),
+                                        snapshot={"name": "kate-offline", "model": "flash"})
+        saved = json.loads(config.path.read_text())
+        self.assertNotIn("kate-offline", saved.get("models", {}))
+        self.assertNotIn("kate-offline", saved.get("agents", {}),
+                         "no switch is left for a later file of that name to run on")
+        self.user_agent("kate-offline", "source: openwebui\nsource_model: kate\noffline: true\nmodel: flash\n")
+        written = Config.load(config.path)
+        with self.assertRaisesRegex(ValueError, "offline mode is not enabled"):
+            personas.check_offline(written, personas.discover_personas(written)["kate-offline"])
+
+
+class SoulImportThroughTheProfileRouteTest(RealFactoryCase):
+    """POST /api/personas/import (section 33) with a name and no snapshot makes a persona that wakes herself from
+    an Open WebUI profile (section 35): she is listed as a wake persona, private, never a chat; her page is the
+    wake page; a second import of that name and an agent's name are refused."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.owui = MockOpenWebUI()
+        self.owui.start()
+        self.addCleanup(self.owui.stop)
+        self.owui.add_workspace_model("kate", system=KATE_PROMPT, params=KATE_PARAMS, meta=KATE_META)
+
+    def test_a_soul_import_is_a_wake_persona_not_a_chat(self) -> None:
+        body = {"name": "kate-wake", "export": self.owui.export_file("kate"), "model_id": "kate"}
+        imported = self.request("POST", "/api/personas/import", body)
+        self.assertEqual(imported.status, 201, imported.body)
+        self.assertEqual((imported.json()["persona"], imported.json()["privacy"]), ("kate-wake", "private"))
+        self.assertNotIn("KATE-MARKER", imported.body.decode(), "the prompt never comes back")
+        rows = {row["name"]: row for row in self.request("GET", "/api/personas").json()["personas"]}
+        row = rows["kate-wake"]
+        self.assertEqual((row["kind"], row["model"], row["appended_text"], row["offline"]), ("wake", None, None, None))
+        page = self.request("GET", "/api/personas/kate-wake").json()
+        self.assertEqual((page["card"], page["drift"]), (None, None))
+        self.assertIn("soul", page)
+        self.assert_error(self.request("POST", "/api/chats", {"persona": "kate-wake"}), 400, "kate-wake")
+        self.assert_error(self.request("POST", "/api/personas/import", body), 409, "re-import her soul from her page")
+        self.assert_error(self.request("POST", "/api/personas/import", {**body, "name": "coder"}), 400,
+                          "an agent called coder exists")
+        events = [e.to_dict() for e in self.bus.since(0) if e.type == "persona.imported"]
+        self.assertEqual([(e["data"]["persona"], e["data"]["wake"]) for e in events], [("kate-wake", True)])
+        self.assertNotIn("KATE-MARKER", json.dumps(events))

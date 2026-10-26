@@ -1,0 +1,32 @@
+Self test...
+Loading state from /var/snapraid/snapraid.content...
+UUID change for disk 'd1' from '7e387000-0cc5-4f60-9c08-c27504b3227b' to '3868881d-8c01-4159-9261-d03217b5a6a3'
+Searching disk d1...
+Searching disk d2...
+Searching disk d3...
+Selecting...
+Using 0 MiB of memory for the file-system.
+Initializing...
+Selecting...
+Fixing...
+0%, 0 MB
+recovered media/big.bin
+recovered media/notes/a:b.txt
+recovered media/notes/back\\slash.txt
+recovered media/movie3.mkv
+recovered live/db3.dat
+recovered live/db4.dat
+recovered live/db1.dat
+recovered live/db2.dat
+recovered live/db5.dat
+recovered live/db6.dat
+recovered live/db7.dat
+recovered live/db8.dat
+recovered docs
+recovered media/photos
+100% completed, 28 MB accessed in 0:00
+
+     378 errors
+     347 recovered errors
+       0 unrecoverable errors
+Everything OK

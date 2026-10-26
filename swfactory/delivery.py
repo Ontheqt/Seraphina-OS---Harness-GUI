@@ -171,6 +171,7 @@ def report_markdown(job: dict, *, tip: str, written: list[str], skipped: list[tu
                          + " |")
     else:
         lines.append("No review rounds recorded.")
+    lines += _independence_lines(job)
     lines += ["", "## Decision", ""]
     if job.get("approved_by") == "human":
         lines += ["Approved for delivery by a human in the factory, after the line stopped for a human. "
@@ -187,6 +188,31 @@ def report_markdown(job: dict, *, tip: str, written: list[str], skipped: list[tu
         lines.append("- Deleted on the branch: " + ", ".join(f"`{path}`" for path in deleted) + ".")
     lines.append("")
     return "\n".join(lines)
+
+
+def _independence_lines(job: dict) -> list[str]:
+    """The independence guard's record for REPORT.md (DESIGN §23): each judge run on a model family the
+    builder ran on (job.shared_models: model keys and families only), or that the code came from a chat
+    whose models the job does not record. [] when every judge was independent."""
+    status = job.get("independence")
+    if status not in ("reduced", "accepted", "unknown"):
+        return []
+    lines = [""]
+    if status == "reduced":
+        lines.append("Independence reduced: a judge ran on a model family the builder ran on, with no way out.")
+    elif status == "unknown":
+        lines.append("Independence unknown: the code it judged was written in a chat whose models the job does "
+                     "not record.")
+    else:
+        lines.append("Independence: a judge shared the builder's model family, as the routing chose "
+                     "(independent_alternate: false).")
+    for entry in job.get("shared_models") or []:
+        if isinstance(entry, dict):
+            accepted = " (accepted by the routing)" if entry.get("accepted") else ""
+            lines.append(f"- round {entry.get('round')}: {entry.get('agent')} on `{entry.get('model')}` "
+                         f"({entry.get('family')} family), like the builder's `{entry.get('builder_model')}`"
+                         f"{accepted}")
+    return lines
 
 
 def _read(path: Path) -> str:

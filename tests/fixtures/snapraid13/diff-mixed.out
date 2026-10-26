@@ -1,0 +1,24 @@
+Loading state from /var/snapraid/snapraid.content...
+Comparing...
+update media/big.bin
+move docs/readme.txt -> docs/readme-moved.txt
+add media/new.bin
+remove docs/readme.txt
+remove media/photos/img1.jpg
+remove media/photos/img2.jpg
+remove media/photos/img3.jpg
+remove media/photos/img4.jpg
+remove media/photos/img5.jpg
+remove media/photos/img1.jpg
+remove media/photos/img2.jpg
+remove media/photos/img3.jpg
+remove media/big.bin
+
+      18 equal
+       1 added
+      10 removed
+       1 updated
+       1 moved
+       0 copied
+       0 restored
+There are differences!

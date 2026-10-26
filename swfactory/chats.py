@@ -46,8 +46,12 @@ from . import items as tracker
 from .agentdefs import AgentDef, discover_agents
 from .config import agent_dirs, deep_merge, expand_path
 from .events import utc_now
-from .routing import (REACHABILITY, Reachability, add_cost, effort_body, merged_placements, place_live, placement_reason,
-                      price_table, profile_name, profile_routes, reason, run_cost, wait_live, zero_cost)
+from .capture import stamp
+from .custody import Claims, CustodyDenied
+from .custody import needs_lease as custody_needs_lease
+from .routing import (REACHABILITY, Reachability, add_cost, effort_body, entry_family, merged_placements, model_family,
+                      place_live, placement_reason, price_table, profile_name, profile_routes, reason, route_family,
+                      run_cost, wait_live, zero_cost)
 from .runners import AgentRun, RunContext, Runner, add_usage, launch_model, make_runner
 from .skills import skill_dirs
 
@@ -78,7 +82,7 @@ class FactoryApi(Protocol):
 
     def submit(self, repo: str, feature: str, from_branch: str | None = None,
                routing: Any = None, delivery: str | None = None, profile: str | None = None,
-               items: list[dict] | None = None) -> dict: ...
+               items: list[dict] | None = None, handoff_models: list[dict] | None = None) -> dict: ...
 
     def job(self, repo: str, job_id: str) -> dict: ...
 
@@ -94,6 +98,13 @@ class FactoryApi(Protocol):
 
     def defer_to_followups(self, repo: str, ledger: Any, item_id: str, reason: str, due: str | None = None,
                            by: str = "human") -> str: ...
+
+    # Chat check-ins (Wake & Messages §5.8): the Wake tool's context, a deleted chat's wakes, a check-in's end.
+    def wake_chat_context(self, chat_id: str, chain: int, *, checkin: bool) -> Any: ...
+
+    def wake_cancel_chat(self, chat_id: str) -> int: ...
+
+    def wake_chat_done(self, chat_id: str, wake_id: str, log_stem: str | None, ok: bool) -> None: ...
 
 
 # ---------------------------------------------------------------- running one standalone agent
@@ -236,24 +247,70 @@ def _is_cli(config: Config, driver: str) -> bool:
 
 
 def place_run(config: Config, route: Route, reach: Reachability | None, cancel: threading.Event,
-              emit: Emit) -> tuple[ModelConfig, dict, list[str], Callable[[], None]] | None:
+              emit: Emit, purpose: str = "chat turn") -> tuple[ModelConfig, dict, list[str], Callable[[], None]] | None:
     """Where a chat turn or lead run of route goes, as a job's run is placed: placed_model, then the slot
     wait (routing.wait_live: agent.waiting {provider, overflow_after_seconds} when the slot is busy,
-    the overflow past overflow_after_seconds). Returns (the model, placement info for agent.start with
-    the placement's reason, notes, the slot's release: call it when the run ends), or None when cancel
-    was set while waiting."""
+    the overflow past overflow_after_seconds). On a server under GPU custody the run's request lease is
+    taken in the placement (purpose: what the run is, for the register; DESIGN §37): a build the register
+    gives none for is passed over, and a CLI route that gets none raises CustodyDenied. A HELD answer waits
+    first, for at most the provider's overflow_after_seconds (agent.waiting {provider, overflow_after_seconds,
+    custody: "HELD"}); FULL passes the build over at once. Returns (the model, with its lease, placement info
+    for agent.start with the placement's reason, notes, the release: call it when the run ends, it gives back
+    the slot and the lease), or None when cancel was set while waiting."""
     reach = reach or REACHABILITY
     cli = _is_cli(config, route.driver)
     base = route.model_config(config)
-    model, info, notes = place_live(config, base, reach, cli)
-    provider = model.provider
-    waited = wait_live(config, base, model, info, cancel, lambda: emit("agent.waiting", {
-        "provider": provider.name, "overflow_after_seconds": provider.overflow_after_seconds}), reach, cli)
+
+    def held(provider: str, seconds: float, denied: CustodyDenied) -> None:
+        emit("agent.waiting", {"provider": provider, "overflow_after_seconds": seconds, "custody": denied.code})
+        emit("log", {"level": "info", "message": f"waits up to {seconds:g}s for {provider}: GPU custody: {denied}"})
+
+    claims = Claims(purpose, cancel=cancel, on_wait=held)
+    try:
+        if cli and custody_needs_lease(base.provider):
+            granted, _ = claims(base.provider, base.model)
+            if not granted:
+                raise claims.denied[(base.provider.name, base.model)]
+        model, info, notes = place_live(config, base, reach, cli, claims)
+        provider = model.provider
+        waited = wait_live(config, base, model, info, cancel, lambda: emit("agent.waiting", {
+            "provider": provider.name, "overflow_after_seconds": provider.overflow_after_seconds}), reach, cli,
+            claims)
+    except BaseException:
+        claims.release("the placement failed")
+        raise
     if waited is None:
+        claims.release("cancelled while waiting for a slot")
+        return None
+    if claims.waited and cancel.is_set():   # cancelled while the placement waited out a HELD answer
+        try:
+            waited[3]()
+        finally:
+            claims.release("cancelled while waiting for GPU custody")
         return None
     model, info, more, release = waited
-    found = placement_reason(route.reason, info)
-    return model, {**info, **({"reason": found} if found else {})}, notes + more, release
+    try:   # a placement that fails after its slot wait gives back the slot and the lease it holds
+        model = claims.attach(model)
+        info = {**info, **claims.info()}
+        found = placement_reason(route.reason, info)
+    except BaseException:
+        try:
+            release()
+        finally:
+            claims.release("the placement failed")
+        raise
+
+    def release_all() -> None:
+        try:
+            release()
+        finally:
+            for view in claims.release("cancelled" if cancel.is_set() else "the run ended"):
+                if view["state"] != "held":
+                    after = ", ".join(name for _, name in view.get("resident_after") or []) or "nothing"
+                    emit("log", {"level": "info" if view["state"] == "released" else "warn",
+                                 "message": f"GPU custody lease {view['lease_id']} on {view['provider']}/"
+                                            f"{view['model']} {view['state']}; resident afterwards: {after}"})
+    return model, {**info, **({"reason": found} if found else {})}, notes + more, release_all
 
 
 def event_emitter(bus: EventBus, repo: str, agent: str, log_path: Path, **labels: str) -> Emit:
@@ -476,6 +533,7 @@ class ChatManager:
         record = None
         if bound is not None:
             personas.check_driver(self.config, bound, route.driver)
+            personas.check_offline(self.config, bound)
             record = personas.start_binding(self.config, bound, route.model_config(self.config),
                                             open_item=getattr(self.factory, "system_item", None))
         chat_id, chat_dir = self._allocate()
@@ -497,7 +555,7 @@ class ChatManager:
                 "agent": agent, "model": route.model, "driver": route.driver,
                 "extra_body": route.extra_body, "reason": route.reason, "profile": name, "mode": mode,
                 "base": base, "branch": branch, "worktree": worktree, "cwd": str(cwd), "status": "idle",
-                "error": None, "session": None, "session_model": None, "turns": 0, "usage": zero_usage(),
+                "error": None, "session": None, "session_model": None, "turns": 0, "models": [], "usage": zero_usage(),
                 "cost": zero_cost(), "job": None, "created_at": now, "updated_at": now,
             }
             if record is not None:
@@ -511,18 +569,29 @@ class ChatManager:
             shutil.rmtree(chat_dir, ignore_errors=True)
             raise
 
-    def chat_send(self, chat_id: str, text: str) -> dict:
-        """Start a turn with text in a thread and return the chat ("running"); ActionError if one runs."""
+    def chat_send(self, chat_id: str, text: str, origin: str = "user", wake_id: str | None = None,
+                  wake_item: str | None = None) -> dict:
+        """Start a turn with text in a thread and return the chat ("running"); ActionError if one runs. origin
+        "wake" is a scheduled check-in the WakeManager fires (Wake & Messages §5.8): its text is a harness message,
+        never the user's, chat.json's wake_chain counts it (a user's message resets it to 0), and the turn is a
+        check-in (read-only tools, smaller limits, a background slot)."""
         if not isinstance(text, str) or not text.strip():
             raise ValueError("message text must be a non-empty string")
+        if origin not in ("user", "wake"):
+            raise ValueError("origin must be user or wake")
         with self._lock:
             chat = self._load(chat_id)
             if chat_id in self._turns:
                 raise action_error(f"chat {chat_id} is already running a turn")
-            chat["title"] = chat.get("title") or _title(text)
+            if origin == "user":
+                chat["title"] = chat.get("title") or _title(text)
+                chat["wake_chain"] = 0
+            else:
+                chat["wake_chain"] = int(chat.get("wake_chain") or 0) + 1
             chat.update(status="running", error=None)
             cancel = threading.Event()
-            thread = threading.Thread(target=self._turn, args=(chat_id, text, cancel),
+            wake = {"id": wake_id, "item": wake_item} if origin == "wake" else None
+            thread = threading.Thread(target=self._turn, args=(chat_id, text, cancel, wake),
                                       name=f"chat-{chat_id}", daemon=True)
             self._save(chat)
             self._turns[chat_id] = (thread, cancel)
@@ -560,7 +629,9 @@ class ChatManager:
         Needs a worktree-mode chat that is not running, with commits ahead of base, a clean
         tree and no earlier handoff job still in progress (else ActionError). delivery (merge,
         branch or folder; None: the config's merge.delivery) is the job's delivery mode, profile
-        its routing profile (None: the default profile; "": none).
+        its routing profile (None: the default profile; "": none). The models the chat's turns ran on
+        go with it (job.handoff_models, _chat_models): the code was written on them, so the job's judges
+        must be independent of them (DESIGN §23).
         """
         if not isinstance(feature, str) or not feature.strip():
             raise ValueError("feature must be a non-empty string")
@@ -592,6 +663,9 @@ class ChatManager:
                 # writes a job's file, and nothing races the worker
                 extra["items"] = [tracker.transfer_copy(item, store.scope, owner="builder", verifier="approver",
                                                         reason="handed off from the chat") for item in waiting]
+            authors = self._chat_models(chat)
+            if authors is not None:
+                extra["handoff_models"] = authors
             job = self.factory.submit(chat["repo"], feature, from_branch=branch, delivery=delivery, **extra)
             chat["job"] = job["id"]
             if waiting:
@@ -599,17 +673,37 @@ class ChatManager:
             self._save(chat)
             return job
 
+    def _chat_models(self, chat: dict) -> list[dict] | None:
+        """The models a chat's turns ran on ([{model, provider, model_id, family}]): chat.models; for a
+        chat.json from before it, the models its sessions ran on (earlier_sessions and session_model, each
+        family from its model entry's label, else its model id); None when a chat that took turns
+        recorded none of them (the job then says its judges' independence is unknown)."""
+        if isinstance(chat.get("models"), list):
+            return [dict(entry) for entry in chat["models"] if isinstance(entry, dict)]
+        models = self.config.raw.get("models") if isinstance(self.config.raw.get("models"), dict) else {}
+        found: list[dict] = []
+        for entry in [*(chat.get("earlier_sessions") or []), chat.get("session_model")]:
+            if isinstance(entry, dict) and entry.get("model"):
+                item = {"model": str(entry["model"]), "provider": str(entry.get("provider") or ""),
+                        "model_id": str(entry.get("model_id") or ""),
+                        "family": entry_family(models.get(str(entry["model"])), entry.get("model_id"))}
+                if item not in found:
+                    found.append(item)
+        return found or (None if int(chat.get("turns") or 0) else [])
+
     # -- internals ----------------------------------------------------------------
 
-    def _turn(self, chat_id: str, text: str, cancel: threading.Event) -> None:
+    def _turn(self, chat_id: str, text: str, cancel: threading.Event, wake: dict | None = None) -> None:
         cost: tuple[float | None, bool] | None = None
         switch: dict = {}
         log_path: Path | None = None
         try:
             log_path = next_log_path(self.root / chat_id / "logs", "turn")
-            result, cost, switch = self._run_turn(self._load(chat_id), text, cancel, log_path)
+            result, cost, switch = self._run_turn(self._load(chat_id), text, cancel, log_path, wake=wake)
         except Exception as exc:  # the route, agent or repo no longer resolves
             result = AgentRun(ok=False, error=str(exc))
+        if wake is not None:
+            self._wake_done(chat_id, wake, result, log_path)
         # the ingest numbers the reply's turn from the sessions as _turn is about to record them
         summary = self._ingest_turn(self._switched(self._load(chat_id), result, switch), result,
                                     log_path.stem if log_path is not None else None)
@@ -620,6 +714,15 @@ class ChatManager:
             if cost is not None:
                 add_cost(chat.setdefault("cost", zero_cost()), *cost)
             chat["turns"] = int(chat.get("turns") or 0) + 1
+            ran = switch.get("model")
+            if isinstance(ran, dict) and ran.get("model"):   # the models a hand-off's code was written on (§23)
+                entry = {"model": ran["model"], "provider": ran.get("provider"), "model_id": ran.get("model_id"),
+                         "family": switch.get("family") or route_family(ran)}
+                listed = chat.get("models") if isinstance(chat.get("models"), list) else self._chat_models(chat)
+                if listed is not None:   # a chat.json from before chat.models starts from what its sessions say
+                    if entry not in listed:
+                        listed.append(entry)
+                    chat["models"] = listed
             if summary is not None or chat.get("items") is not None:
                 with contextlib.suppress(OSError, ValueError):   # read now: a person may have acted meanwhile
                     chat["items"] = self._items_store(chat).ledger().summary()
@@ -646,8 +749,25 @@ class ChatManager:
             chat["session_model"] = switch["model"]
         return chat
 
-    def _run_turn(self, chat: dict, text: str, cancel: threading.Event, log_path: Path | None = None
-                  ) -> tuple[AgentRun, tuple[float | None, bool] | None, dict]:
+    def _wake_done(self, chat_id: str, wake: dict, result: AgentRun, log_path: Path | None) -> None:
+        """A check-in turn ended: its tracker item is closed through the chat's ItemsContext (verified with the run
+        as its receipt when the turn ran, left open when it failed), then the WakeManager hears of it. ChatManager
+        never calls the WakeManager while holding its own lock (§5.8)."""
+        stem = log_path.stem if log_path is not None else None
+        if result.ok and wake.get("item"):
+            with contextlib.suppress(Exception):
+                chat = self._load(chat_id)
+                context = tracker.ItemsContext(self._items_store(chat), "coder", self.root / chat_id / JOURNAL_FILE,
+                                               settings=self._housekeeping(), stop_guard=False,
+                                               secrets=self._item_secrets())
+                context.close_wake(str(wake["item"]), f"{chat_id}/{stem}")
+        done = getattr(self.factory, "wake_chat_done", None)
+        if callable(done) and wake.get("id"):
+            with contextlib.suppress(Exception):
+                done(chat_id, str(wake["id"]), stem, bool(result.ok))
+
+    def _run_turn(self, chat: dict, text: str, cancel: threading.Event, log_path: Path | None = None,
+                  wake: dict | None = None) -> tuple[AgentRun, tuple[float | None, bool] | None, dict]:
         """One turn on the chat's route, placed like a job's run (place_run: the first build of its model
         that answers, else its overflow, and the slot wait). (the run, its cost or None when it never
         started, the session switch for _turn: {model: what it ran on, earlier?: the archived session,
@@ -677,12 +797,13 @@ class ChatManager:
         if found is not None:
             # the live binding, read again: which version answers this turn, its knowledge and filters (§33)
             body, update, persona_notes, event = personas.persona_turn(
-                self.config, found, record, turn=int(chat.get("turns") or 0) + 1,
+                self.config, found, record, turn=self._transcript_turn(chat),
                 open_item=getattr(self.factory, "system_item", None))
             route.extra_body = deep_merge(route.extra_body, body)
             for level, message in persona_notes:
                 emit("log", {"level": level, "message": message})
             emit("persona.turn", event)
+            items = self._operator_items(found, {**record, **(update or {})}, emit)
         else:
             def changed(ledger: Any) -> None:
                 self.bus.publish("items.updated", {"ref": ledger.scope.ref, "summary": ledger.summary(),
@@ -696,7 +817,7 @@ class ChatManager:
             except (OSError, ValueError):
                 items = None   # the ledger cannot be read: the turn runs without it; the ingest after it says why
         kept = {"persona": update} if update else {}
-        placed = place_run(self.config, route, self.reach, cancel, emit)
+        placed = place_run(self.config, route, self.reach, cancel, emit, f"chat {chat['id']}")
         if placed is None:
             return AgentRun(ok=False, error="cancelled while waiting for a slot"), None, kept
         model, info, notes, release = placed
@@ -704,10 +825,14 @@ class ChatManager:
             if found is not None:   # neither a placement nor an edited route takes a persona elsewhere
                 personas.check_driver(self.config, found, route.driver)
                 personas.check_model(self.config, found, model)
+                personas.check_offline(self.config, found)
+            checkin = wake is not None
             ctx = agent_context(
                 self.config, repo_path, agent, model, job=chat, cwd=cwd,
-                job_dir=chat_dir, write_paths=[cwd], read_roots=[cwd], log_path=log_path,
+                job_dir=chat_dir, write_paths=[] if checkin else [cwd], read_roots=[cwd], log_path=log_path,
                 emit=emit, cancel=cancel, session_path=chat_dir / SESSION_FILE, items=items)
+            if found is None:
+                self._wake_context(chat, ctx, checkin)
             if found is not None:
                 ctx.persona = personas.prompt_context(found, {**record, **(update or {})})
             if notes:
@@ -717,11 +842,94 @@ class ChatManager:
             session, switch, prompt = self._session_for(chat, now, text)
             if switch.get("handover"):
                 info = {**info, "handover": True}
+            started = time.time()
             result = run_agent(self.runner_factory, self.config, route, ctx, prompt, session, info)
+            if found is not None and found.kind == "openwebui":   # an Open WebUI-backed persona (§33)
+                self._persona_window(emit, found.name, model, started, result, update)
         finally:
             release()
         switch.pop("handover", None)
-        return result, run_cost_of(ctx, result), {**switch, "model": now, **kept}
+        return result, run_cost_of(ctx, result), {**switch, "model": now, "family": model_family(model), **kept}
+
+    def _transcript_turn(self, chat: dict) -> int:
+        """The turn the transcript (_messages) gives the message and reply of the turn about to run: one past the
+        person's messages so far, or the last one's own number while it is unanswered in the session this turn
+        resumes (the loop folds the new text into it). Not chat.turns + 1: chat.turns also counts refused turns,
+        which write no message, so a persona.turns entry numbered from it would sit under another reply (§15)."""
+        entries = self._messages(chat)
+        users = sum(1 for entry in entries if entry.get("role") == "user")
+        if users and chat.get("session"):
+            current = self._session_messages(chat, [{"file": SESSION_FILE, "handover_text": chat.get("handover_text")}])
+            if current and current[-1].get("role") == "user":
+                return users
+        return users + 1
+
+    def _operator_items(self, persona: Any, binding: dict, emit: Emit) -> Any:
+        """An operator persona's open system-scope items, read-only, for the start of her turn (DESIGN §36): the
+        Factory's ItemsView (her receipts scanned first), or None for any other persona. Her item titles are her own
+        words and may be private: they go into the turn only when Open WebUI labels the base model's connection
+        local and the binding has no warning; otherwise the note names the items without their titles."""
+        from .operator import role
+
+        view = getattr(self.factory, "operator_items_view", None)
+        if not callable(view) or role(self.config, persona) is None:
+            return None
+        base = binding.get("base_model") if isinstance(binding.get("base_model"), dict) else {}
+        local = binding.get("type") != "openwebui" or (not binding.get("warnings")
+                                                      and base.get("connection_type") == "local")
+        try:
+            items = view(persona.name, titles=local)
+        except Exception as exc:  # noqa: BLE001 - the turn runs without them; the log says why
+            emit("log", {"level": "warn", "message": f"open items not shown: {type(exc).__name__}: {exc}"})
+            return None
+        if items is not None and not local:
+            emit("log", {"level": "info", "message": "your open items are shown without their titles: Open WebUI "
+                                                     "does not label the base model's connection local"})
+        return items
+
+    @staticmethod
+    def _persona_window(emit: Emit, persona: str, model: ModelConfig, started: float, result: AgentRun,
+                        update: dict | None) -> None:
+        """An Open WebUI-backed persona's turn: the workspace model id it asked for and the turn's time window
+        (UTC, milliseconds), in the run log (persona.window) and in the chat's turn record, so Open WebUI's own
+        log can be matched (DESIGN §39)."""
+        window = {"model": model.model, "provider": model.provider.name, "started_at": stamp(started),
+                  "ended_at": stamp(time.time()), "ok": bool(result.ok)}
+        emit("persona.window", {"persona": persona, **window})
+        turns = (update or {}).get("turns")
+        if isinstance(turns, list) and turns and isinstance(turns[-1], dict):
+            turns[-1]["window"] = {key: window[key] for key in ("model", "started_at", "ended_at")}
+
+    def _wake_context(self, chat: dict, ctx: Any, checkin: bool) -> None:
+        """The Wake tool (§5.8): the factory's context for this chat, only with wakes, chat wakes, the chat's own
+        switch, worktree mode, the builtin driver and bwrap. A check-in turn gets its smaller run: only Read, Glob,
+        Grep, Wake and RunCheck, wakes.chat_wakes' limits, and a background slot that yields to people."""
+        context = getattr(self.factory, "wake_chat_context", None)
+        wake = None
+        if callable(context):
+            with contextlib.suppress(Exception):
+                wake = context(chat["id"], int(chat.get("wake_chain") or 0), checkin=checkin)
+        ctx.wake = wake
+        if not checkin:
+            return
+        if wake is None:
+            # the switches the WakeManager checked when the check-in fired no longer hold (bwrap, worktree mode, the
+            # builtin driver, the chat's own switch): the check-in does not run at all (S46)
+            raise action_error("check-ins are off for this chat now (they need wakes and chat wakes on, the chat's "
+                               "switch, worktree mode, the builtin driver and the bwrap sandbox)")
+        from .config import Limits
+        from .wakes import chat_wake_commands, chat_wake_settings
+
+        settings = chat_wake_settings(self.config)
+        ctx.checkin = True
+        ctx.background = True
+        ctx.message_origin = "wake"
+        ctx.checkin_commands = chat_wake_commands(self.config)   # [] offers no RunCheck at all
+        ctx.max_output_tokens = int(settings.get("max_output_tokens") or 20000)
+        ctx.limits = Limits(max_turns=int(settings.get("max_turns") or 30),
+                            max_wall_seconds=float(settings.get("max_wall_seconds") or 900),
+                            bash_timeout=ctx.limits.bash_timeout, tool_output_chars=ctx.limits.tool_output_chars,
+                            max_context_chars=ctx.limits.max_context_chars)
 
     def _session_for(self, chat: dict, now: dict, text: str) -> tuple[str | None, dict, str]:
         """(the session to resume or None, the switch for _turn, the prompt) for a turn running on now.
@@ -1017,9 +1225,13 @@ class ChatManager:
         entries = self._session_messages(chat, [*(chat.get("earlier_sessions") or []),
                                                 {"file": SESSION_FILE, "handover_text": chat.get("handover_text")}])
         turn = 0
+        persona = chat.get("persona") if isinstance(chat.get("persona"), dict) else {}
+        copy_label = f"from the imported copy: {persona.get('label')}" if persona.get("type") == "snapshot" else None
         for entry in entries:
             turn += entry.get("role") == "user"
             entry["turn"] = turn or None
+            if copy_label and entry.get("role") == "assistant":
+                entry["label"] = copy_label   # decision e: every offline reply is labelled
         return entries
 
     def _session_messages(self, chat: dict, sessions: list[dict]) -> list[dict]:

@@ -3,13 +3,20 @@
 Every command runs as ``git -C <path> ...`` through subprocess with an argument
 list (never a shell), ``LC_ALL=C`` so messages are parseable, and
 ``GIT_TERMINAL_PROMPT=0`` so nothing ever waits for a password. Nothing here
-pushes or force-updates a ref.
+force-updates a ref, and the only push is push(): one branch, never forced
+(merge.push), whose answer per ref is git's porcelain line (push_line,
+push_refused; push_never_left for a push that never reached the remote), and
+remote_head() looks at the remote again, read only (DESIGN.md section 40).
 
 Host-side git must never run code a repository or an agent controls: every
 command (the final merge commit included) runs with ``-c core.hooksPath=/dev/null
 -c core.fsmonitor=false`` (HARDENING), which beats any config file and is passed
-on to the git processes git itself starts. Error messages show the command
-without those flags. Status and stash on a worktree an agent could write
+on to the git processes git itself starts. Filter and merge drivers from the
+repository's config still run, so every command also starts with no new
+privileges (``setpriv --no-new-privs``, sandbox.without_new_privileges): the
+harness keeps sudo for its root helpers (DESIGN §17), and a driver an agent
+slipped into ``.git/config`` must never reach it. Git itself never needs sudo.
+Error messages show the command without those flags. Status and stash on a worktree an agent could write
 (is_clean, stash_all, and the checkout a merge lands in) first check with
 verify_worktree that its ``.git`` file and git dir still lead back to the repo.
 """
@@ -29,6 +36,8 @@ from contextlib import suppress
 from functools import lru_cache
 from pathlib import Path
 from typing import IO
+
+from .harness.sandbox import without_new_privileges
 
 DEFAULT_TIMEOUT = 120
 SLOW_TIMEOUT = 600  # checkouts and merges of big repos
@@ -60,8 +69,11 @@ class GitError(Exception):
 
     ``cmd`` is the argv, ``stderr`` git's error output (its stdout when stderr was
     empty, as for merge conflicts) and ``returncode`` the exit status (None when the
-    command never ran to completion or no command failed).
+    command never ran to completion or no command failed). ``timed_out``: git was
+    killed at its timeout, so what it did is unknown (a push may have landed).
     """
+
+    timed_out = False
 
     def __init__(self, cmd: Sequence[str], stderr: str, returncode: int | None = None):
         self.cmd = [str(part) for part in cmd]
@@ -360,6 +372,90 @@ def merge(repo: Path, base: str, branch: str, message: str, tmp_dir: Path) -> st
         return rev_parse(repo, f"refs/heads/{base}")
 
 
+def push(repo: Path, remote: str, branch: str, timeout: float = SLOW_TIMEOUT) -> subprocess.CompletedProcess:
+    """git push --porcelain <remote> refs/heads/<branch>:refs/heads/<branch>: one branch, never forced. Returns the
+    finished process whatever its exit status: its stdout holds the remote's answer for the ref (push_line). GitError
+    when git could not run (nothing left this machine) or when it was killed at its timeout (timed_out: the remote may
+    have the commit, so it is looked at again, never pushed again by itself)."""
+    if not remote or remote.startswith("-"):
+        raise GitError(["git", "push"], f"refusing remote name {remote!r}")
+    ref = f"refs/heads/{_ref(branch)}"
+    return _run(repo, ["push", "--porcelain", "--", remote, f"{ref}:{ref}"], timeout)
+
+
+def push_line(output: str, ref: str) -> tuple[str, str] | None:
+    """(flag, summary) of ref's line in git push --porcelain output (``<flag>\\t<from>:<to>\\t<summary>``), or None
+    when there is none. flag: ' ' fast-forward, '+' forced, '-' deleted, '*' new, '=' up to date, '!' not done or not
+    confirmed: a refusal ("[rejected]", "[remote rejected]", push_refused) or "[remote failure] (remote failed to
+    report status)", where the pack was sent and the ref may have moved."""
+    for line in output.splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 3 and len(parts[0]) == 1 and parts[1].rpartition(":")[2] == ref:
+            return parts[0], parts[2].strip()
+    return None
+
+
+PUSH_DONE_FLAGS = " +-*="   # push_line flags for a ref the remote updated, or already had
+
+
+def push_refused(line: tuple[str, str] | None) -> bool:
+    """Whether ref's porcelain line (push_line) is a refusal: flag '!' and "[rejected]" (refused here, before the
+    pack) or "[remote rejected]" (the remote refused the update). Any other '!' is not a refusal: "[remote failure]"
+    means the remote never reported, so the outcome is unknown (DESIGN.md section 40; from git's transport.c,
+    checked with git 2.43)."""
+    return line is not None and line[0] == "!" and line[1].startswith(("[rejected]", "[remote rejected]"))
+
+
+# git's own words for a push that stopped before it reached a remote that could take it: the remote name or
+# path is no repository, the host cannot be resolved or connected to, or the remote refused the login before it
+# listed its refs (from git's connect.c and remote-curl.c, and ssh; with LC_ALL=C). Checked with git 2.43 for a
+# missing remote, a missing path, an unresolvable ssh host and a refused HTTP connection.
+_NEVER_REACHED = ("does not appear to be a git repository", "Could not resolve host", "ssh: connect to host",
+                  "Host key verification failed", "Permission denied (publickey", "unable to access '",
+                  "Authentication failed for", "could not read Username", "could not read Password")
+
+
+def push_never_left(proc: subprocess.CompletedProcess, ref: str) -> bool:
+    """Whether a finished git push provably sent nothing: it failed, printed no line for ref, and its error is one
+    of _NEVER_REACHED. Anything else that failed with no line (a hang-up after the pack, a signal) may have
+    landed."""
+    return proc.returncode != 0 and push_line(proc.stdout, ref) is None and \
+        any(marker in (proc.stderr or "") for marker in _NEVER_REACHED)
+
+
+def complaint(stderr: str) -> str:
+    """git's first "fatal:" or "error:" line (its own reason; later lines are hints), else its first non-empty
+    line, else ""."""
+    lines = [line.strip() for line in (stderr or "").splitlines() if line.strip()]
+    return next((line for line in lines if line.startswith(("fatal:", "error:"))), lines[0] if lines else "")
+
+
+def remote_head(repo: Path, remote: str, branch: str, timeout: float = DEFAULT_TIMEOUT) -> str | None:
+    """The sha the remote's branch points at now (git ls-remote: read only), or None when the remote has no such
+    branch. GitError when the remote cannot be asked."""
+    if not remote or remote.startswith("-"):
+        raise GitError(["git", "ls-remote"], f"refusing remote name {remote!r}")
+    ref = f"refs/heads/{_ref(branch)}"
+    proc = _run(repo, ["ls-remote", "--exit-code", "--", remote, ref], timeout)
+    if proc.returncode == 2:
+        return None
+    if proc.returncode != 0:
+        raise _error(proc)
+    for line in proc.stdout.splitlines():
+        sha, _, name = line.partition("\t")
+        if name.strip() == ref:
+            return sha.strip()
+    return None
+
+
+def is_ancestor(repo: Path, commit: str, ref: str) -> bool:
+    """Whether commit is ref or one of its ancestors (git merge-base --is-ancestor; read only)."""
+    proc = _run(repo, ["merge-base", "--is-ancestor", _ref(commit), _ref(ref)], DEFAULT_TIMEOUT)
+    if proc.returncode not in (0, 1):
+        raise _error(proc)
+    return proc.returncode == 0
+
+
 def stash_all(worktree: Path, message: str, repo: Path | None = None) -> bool:
     """Stash every change, untracked files included. True if anything was stashed.
 
@@ -404,8 +500,8 @@ def _cmd(repo: Path | None, args: Sequence[object]) -> list[str]:
 
 
 def _argv(cmd: list[str]) -> list[str]:
-    """The command as it runs: HARDENING right after "git"."""
-    return [cmd[0], *HARDENING, *cmd[1:]]
+    """The command as it runs: HARDENING right after "git", the whole started with no new privileges."""
+    return without_new_privileges([cmd[0], *HARDENING, *cmd[1:]])
 
 
 def _git_env() -> dict[str, str]:
@@ -425,7 +521,9 @@ def _run(repo: Path | None, args: Sequence[object], timeout: float,
         proc.args = cmd   # errors show the command without HARDENING
         return proc
     except subprocess.TimeoutExpired as exc:
-        raise GitError(cmd, f"timed out after {timeout}s") from exc
+        error = GitError(cmd, f"timed out after {timeout}s")
+        error.timed_out = True
+        raise error from exc
     except OSError as exc:
         raise GitError(cmd, str(exc)) from exc
 

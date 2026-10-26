@@ -1,0 +1,12 @@
+{
+ "body": null,
+ "headers": {
+  "Connection": "close",
+  "Content-Type": "text/plain; charset=utf-8",
+  "WWW-Authenticate": "Basic realm=\"SnapRAID Daemon REST API\""
+ },
+ "method": "GET",
+ "path": "/snapraid/v1/state",
+ "status": 401,
+ "text": ""
+}

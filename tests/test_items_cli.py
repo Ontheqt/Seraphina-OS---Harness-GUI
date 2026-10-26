@@ -10,6 +10,7 @@ import io
 import json
 import os
 import shutil
+import socket
 import subprocess
 import tempfile
 import threading
@@ -105,6 +106,51 @@ class CommandTest(ItemsCliCase):
         self.assertIn("set SF_ITEMS_TOKEN", missing.stderr)
         self.factory.revoke_agent_token("claude-code")
         self.assertIn("refused the token", self.sf_items("list").stderr)
+
+
+class NoAnswerTest(unittest.TestCase):
+    """DESIGN §40: for an agent outside the harness the harness is the other side. A request that reached it and
+    got no answer may have been recorded; only one that never connected "cannot reach" it."""
+
+    def test_a_request_with_no_answer_may_have_been_recorded(self) -> None:
+        received: list[bytes] = []
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        self.addCleanup(listener.close)
+        hold = threading.Event()
+        self.addCleanup(hold.set)
+
+        def accept() -> None:
+            conn, _ = listener.accept()
+            with conn:
+                conn.settimeout(5)
+                data = b""
+                while b"Check the backup" not in data:   # the whole request arrives; no answer is ever sent
+                    chunk = conn.recv(65536)
+                    if not chunk:
+                        break
+                    data += chunk
+                received.append(data)
+                hold.wait(10)
+
+        threading.Thread(target=accept, daemon=True).start()
+        api = items_cli.ItemsApi(f"http://127.0.0.1:{listener.getsockname()[1]}", "sfi_token")
+        with mock.patch.object(items_cli, "TIMEOUT", 0.5), self.assertRaises(items_cli.ItemsCliError) as caught:
+            api.add("Check the backup")
+        self.assertTrue(received and b"Check the backup" in received[0], "the harness got the request")
+        self.assertIn("no answer from the harness", str(caught.exception))
+        self.assertIn("it may have been recorded, so list the items before you send it again", str(caught.exception))
+        self.assertNotIn("cannot reach", str(caught.exception))
+
+    def test_a_request_that_never_connected_cannot_reach_it(self) -> None:
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        with self.assertRaises(items_cli.ItemsCliError) as caught:
+            items_cli.ItemsApi(f"http://127.0.0.1:{port}", "sfi_token").add("Check the backup")
+        self.assertIn("cannot reach the harness", str(caught.exception))
+        self.assertNotIn("may have been recorded", str(caught.exception))
 
 
 class McpServerTest(ItemsCliCase):

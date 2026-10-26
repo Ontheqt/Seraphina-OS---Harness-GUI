@@ -1,0 +1,16 @@
+{
+ "body": {
+  "enabled": true
+ },
+ "headers": {
+  "Connection": "close",
+  "Content-Type": "application/json"
+ },
+ "json": {
+  "message": "Hold off enabled",
+  "success": true
+ },
+ "method": "POST",
+ "path": "/snapraid/v1/hold_off",
+ "status": 200
+}

@@ -5,11 +5,18 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <meta name="referrer" content="no-referrer">
-<title>Software Factory</title>
-<link rel="icon" href="data:,">
+<title>Seraphina OS Harness</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234a51d6'/%3E%3Ctext x='16' y='22.5' font-family='system-ui,sans-serif' font-size='19' font-weight='700' text-anchor='middle' fill='%23ffffff'%3ES%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="/style.css">
 <script src="/flows.js" defer></script>
 <script src="/app.js" defer></script>
+<!-- View modules (swfactory/web/views/<area>.js): each registers itself with window.SF; app.js boots after them. -->
+<script src="/views/routing.js" defer></script>
+<script src="/views/tracker.js" defer></script>
+<script src="/views/personas.js" defer></script>
+<script src="/views/messages.js" defer></script>
+<script src="/views/operator.js" defer></script>
+<script src="/views/backups.js" defer></script>
 </head>
 <body>
 <svg id="sprite" aria-hidden="true" focusable="false" style="position:absolute;width:0;height:0;overflow:hidden">
@@ -75,15 +82,20 @@
   <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 5.5A2 2 0 0 1 6 3.5h5.5v16H6a2 2 0 0 0-2 2z"/><path d="M20 5.5a2 2 0 0 0-2-2h-5.5v16H18a2 2 0 0 1 2 2z"/></symbol>
   <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7 10.5l5 5 5-5M5 19.5h14"/></symbol>
   <symbol id="i-gauge" viewBox="0 0 24 24"><path d="M4.2 17.5a8.5 8.5 0 1 1 15.6 0"/><path d="m12 13.5 4-5"/><circle cx="12" cy="13.5" r="1.4"/></symbol>
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="M3.5 11 12 4l8.5 7"/><path d="M5.5 9.5V19a1.5 1.5 0 0 0 1.5 1.5h3.5v-5.5h3v5.5H17a1.5 1.5 0 0 0 1.5-1.5V9.5"/></symbol>
+  <symbol id="i-checklist" viewBox="0 0 24 24"><path d="m4 6.5 1.5 1.5L8.5 5M4 12.5 5.5 14l3-3M4 18.5 5.5 20l3-3"/><path d="M11.5 6.5H20M11.5 12.5H20M11.5 18.5H17"/></symbol>
+  <symbol id="i-persona" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.8"/><path d="M4.5 20.5a7.5 7.5 0 0 1 15 0"/><path d="M18.5 3.5v3M17 5h3"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3.5 19 6v5.5c0 4.5-3 7.8-7 9-4-1.2-7-4.5-7-9V6z"/><path d="m9 12 2 2 4-4"/></symbol>
 </svg>
 
 <a class="skip-link" href="#main">Skip to content</a>
 
 <div class="app" id="app">
   <header class="topbar">
-    <a class="brand" href="#/welcome" aria-label="Software Factory: welcome">
+    <a class="brand" href="#/home" aria-label="Seraphina OS Harness: Home">
       <span class="logo"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-logo"/></svg></span>
-      <span class="brand-name">Software Factory</span>
+      <span class="brand-name">Seraphina OS Harness</span>
       <span class="brand-ver" id="brand-ver" hidden></span>
     </a>
     <span class="topbar-sep" aria-hidden="true"></span>
@@ -112,18 +124,25 @@
     </div>
   </header>
 
+  <!-- data-order places the view modules' entries (SF.registerView nav.order) among these. On a phone the bar holds
+       the entries without rail-extra (six); Home reaches every section from there. -->
   <nav class="rail" aria-label="Main">
-    <a class="rail-item" href="#/grid" data-view="grid"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-grid"/></svg><span>Grid</span></a>
-    <a class="rail-item" href="#/factory" data-view="factory"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-factory"/></svg><span>Factory</span><span class="rail-badge" id="rail-human" hidden></span></a>
-    <a class="rail-item" href="#/plans" data-view="plans"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-plan"/></svg><span>Plans</span><span class="rail-badge" id="rail-plans" hidden></span></a>
-    <a class="rail-item" href="#/chat" data-view="chat"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-chat"/></svg><span>Chat</span></a>
-    <a class="rail-item" href="#/agents" data-view="agents"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-agents"/></svg><span>Agents</span></a>
-    <a class="rail-item" href="#/settings" data-view="settings"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-settings"/></svg><span>Settings</span></a>
-    <a class="rail-item rail-extra" href="#/procedures" data-view="procedures"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-book"/></svg><span>Procedures</span></a>
-    <a class="rail-item rail-extra" href="#/doctor" data-view="doctor"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-doctor"/></svg><span>Doctor</span></a>
+    <a class="rail-item" href="#/home" data-view="home" data-order="0"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-home"/></svg><span>Home</span></a>
+    <a class="rail-item" href="#/factory" data-view="factory" data-order="10"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-factory"/></svg><span>Factory</span><span class="rail-badge" id="rail-human" hidden></span></a>
+    <a class="rail-item" href="#/plans" data-view="plans" data-order="20"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-plan"/></svg><span>Plans</span><span class="rail-badge" id="rail-plans" hidden></span></a>
+    <a class="rail-item" href="#/chat" data-view="chat" data-order="30"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-chat"/></svg><span>Chat</span></a>
+    <a class="rail-item rail-extra" href="#/agents" data-view="agents" data-order="80"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-agents"/></svg><span>Agents</span></a>
+    <a class="rail-item" href="#/settings" data-view="settings" data-order="90"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-settings"/></svg><span>Settings</span></a>
+    <a class="rail-item rail-extra" href="#/grid" data-view="grid" data-order="100"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-grid"/></svg><span>Grid</span></a>
+    <a class="rail-item rail-extra" href="#/procedures" data-view="procedures" data-order="110"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-book"/></svg><span>Procedures</span></a>
+    <a class="rail-item rail-extra" href="#/doctor" data-view="doctor" data-order="120"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-doctor"/></svg><span>Doctor</span></a>
   </nav>
 
   <main class="main" id="main" tabindex="-1">
+    <section class="view" id="view-home" aria-label="Home" hidden>
+      <div class="view-pad view-pad-wide home-pad" id="home-root"></div>
+    </section>
+
     <section class="view view-factory" id="view-factory" aria-label="Factory" hidden>
       <div class="factory-top">
         <div class="strip-card" id="strip-card">

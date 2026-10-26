@@ -1,14 +1,32 @@
 // GUI smoke test: drives swfactory/web against tests/gui_mock_server.py in headless Chromium.
 //
-//   cd /home/user/software-factory && NODE_PATH=$(npm root -g) PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node tests/gui/smoke.mjs
+//   cd <the checkout> && NODE_PATH=$(npm root -g) PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node tests/gui/smoke.mjs
 //
-// Exits non-zero when any check fails. Screenshots go to $GUI_SHOTS (default below).
+// Exits non-zero when any check fails. Screenshots go to $GUI_SHOTS (default below); the Seraphina OS Harness areas
+// save theirs under $GUI_AREA_SHOTS/<area>/ (default: $GUI_SHOTS/areas/<area>/).
+//
+// Each area of the GUI has its own file of checks, imported below and run with the same harness `t` (see AREA_SUITES):
+// home.mjs (Home, branding, the view registry) and routing, tracker, personas, messages, operator and backups .mjs, one per
+// view module (swfactory/web/views/<area>.js). GUI_ONLY=home,tracker runs only those suites (after login).
+// For a visual review, tests/gui/screens.mjs (not a test) saves every screen at 1440 and 390 px, light and dark.
 import { createRequire } from 'node:module';
 import { spawn, execSync } from 'node:child_process';
 import { mkdirSync, existsSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { run as section25 } from './section25.mjs';
+import { run as homeSuite } from './home.mjs';
+import { run as routingSuite } from './routing.mjs';
+import { run as trackerSuite } from './tracker.mjs';
+import { run as personasSuite } from './personas.mjs';
+import { run as messagesSuite } from './messages.mjs';
+import { run as operatorSuite } from './operator.mjs';
+import { run as backupsSuite } from './backups.mjs';
+
+/** The Seraphina OS Harness suites, in order. Each exports run(t); t is built in main() (see `harness`). */
+const AREA_SUITES = [['home', homeSuite], ['routing', routingSuite], ['tracker', trackerSuite], ['personas', personasSuite],
+  ['messages', messagesSuite], ['operator', operatorSuite], ['backups', backupsSuite]];
+const ONLY = (process.env.GUI_ONLY || '').split(',').map((x) => x.trim()).filter(Boolean);
 
 const require = createRequire(import.meta.url);
 function loadPlaywright() {
@@ -22,6 +40,7 @@ const { chromium } = loadPlaywright();
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SHOTS = process.env.GUI_SHOTS || '/tmp/claude-0/-home-user/03a51815-8655-5582-9e2d-e5c582ed1208/scratchpad/gui-shots';
 const SPEED = process.env.GUI_SPEED || '3';
+const AREA_SHOTS = process.env.GUI_AREA_SHOTS || path.join(SHOTS, 'areas');
 mkdirSync(SHOTS, { recursive: true });
 
 const results = [];
@@ -85,7 +104,7 @@ function watch(page, label) {
   page.on('console', (m) => {
     if (m.type() !== 'error') return;
     const text = m.text();
-    if (allowHttpErrors && /Failed to load resource: (the server responded with a status of (400|401|404|409|5\d\d)|net::ERR_FAILED)/.test(text)) return;
+    if (allowHttpErrors && /Failed to load resource: (the server responded with a status of (400|401|404|409|413|429|5\d\d)|net::ERR_FAILED)/.test(text)) return;
     consoleErrors.push(`[${label}] ${text}`);
   });
   page.on('pageerror', (e) => consoleErrors.push(`[${label}] pageerror: ${e.message}`));
@@ -123,10 +142,34 @@ async function noOverflow(page, label) {
   assert(m.main <= 1, `${label}: main view scrolls horizontally by ${m.main}px`);
 }
 
+/** A signed-in page of its own: label names it in console errors; opts {width, height, colorScheme, phone, mockUrl}. */
+async function newPage(browser, url, label, opts) {
+  opts = opts || {};
+  const phone = !!opts.phone;
+  const ctx = await browser.newContext({ viewport: { width: opts.width || (phone ? 390 : 1440), height: opts.height || (phone ? 844 : 900) },
+    colorScheme: opts.colorScheme || (phone ? 'light' : 'dark'), deviceScaleFactor: phone ? 2 : 1, isMobile: phone, hasTouch: phone });
+  const at = opts.mockUrl || url;
+  await ctx.addCookies([{ name: 'sf_token', value: 'test-token', url: at }]);
+  const page = await ctx.newPage();
+  watch(page, label);
+  return { ctx, page, url: at };
+}
+/** A screenshot of an area's screen: $GUI_AREA_SHOTS/<area>/<name>.png, without leftover toasts. */
+async function areaShot(page, area, name) {
+  const dir = path.join(AREA_SHOTS, area);
+  mkdirSync(dir, { recursive: true });
+  await page.evaluate(() => document.querySelectorAll('#toasts .toast, #toasts .toast-more').forEach((t) => t.remove()));
+  await page.waitForTimeout(80);
+  await page.screenshot({ path: path.join(dir, name + '.png') });
+}
+
 async function main() {
   const { proc, url } = await startMock();
   log('mock server at ' + url);
   const browser = await launch();
+  /** What every suite file gets: the browser, the main mock's url and the helpers of this file. */
+  const harness = { browser, url, startMock, step, assert, canon, waitPost, shot, cleanShot, noOverflow, watch,
+    allowHttp: (v) => { allowHttpErrors = v; }, newPage: (label, opts) => newPage(browser, url, label, opts), areaShot };
   try {
     const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark', deviceScaleFactor: 1 });
     const page = await ctx.newPage();
@@ -145,7 +188,21 @@ async function main() {
       await page.fill('#token', 'test-token');
       await Promise.all([page.waitForURL(url + '/'), page.click('#submit')]);
       await page.waitForSelector('#app');
+      // Home is the default route of a harness in use (Welcome is for a fresh install); the board is a click away.
+      await page.waitForSelector('#view-home:not([hidden]) .home-card[data-section="factory"]');
+      assert(/Home · Seraphina OS Harness$/.test(await page.title()), 'title: ' + await page.title());
+      await page.goto(url + '/#/factory');
+      await page.waitForSelector('#view-factory:not([hidden])');
     });
+
+    if (ONLY.length) {
+      for (const [name, suite] of AREA_SUITES) if (ONLY.includes(name)) await suite(harness);
+      await step('zero console errors and no dialogs', async () => {
+        assert(consoleErrors.length === 0, 'console errors:\n' + consoleErrors.join('\n') + (httpErrors.length ? '\nHTTP errors:\n' + httpErrors.join('\n') : ''));
+        assert(dialogs.length === 0, 'dialogs: ' + dialogs.join(' | '));
+      });
+      return;
+    }
 
     await step('factory line strip renders every stage with models and counts', async () => {
       await page.waitForSelector('.node[data-node="spec"]');
@@ -279,11 +336,42 @@ async function main() {
       assert(await page.locator('#panel-live .run.is-failed[open]').count() === 1, 'failed run expanded');
     });
 
+    await step('a push after a merge says its outcome in words (DESIGN §40): unknown is amber, says what the remote has and links its tracker item; succeeded and refused on the cards', async () => {
+      await page.goto(url + '/#/job/my-app/001-add-dark-mode-toggle');
+      await page.waitForSelector('#drawer-head .push-box[data-push="unknown"]');
+      const box = await page.textContent('#drawer-head .push-box');
+      assert(/The push of main to origin: outcome unknown/.test(box) && /Outcome unknown: it may or may not have happened/.test(box), 'the outcome in words: ' + box);
+      assert(/Look at the remote before you push again: nothing is pushed again by itself\./.test(box), 'what to do');
+      assert(/the remote has main at 0f9e8d7c6b5a \(not this commit\)/.test(box) && /128/.test(box), 'what a look at the remote found, and git’s exit: ' + box);
+      assert(/<b>\(raw\)<\/b>/.test(box) && await page.locator('#drawer-head .push-box b').count() === 0, 'git’s words stay text');
+      assert(await page.getAttribute('#drawer-head .push-box .item-link', 'href') === '#/housekeeping/system%3AS-10', 'its tracker item');
+      assert(/tone-warn/.test(await page.getAttribute('#drawer-head .push-box', 'class')), 'amber');
+      await shot(page, 'job-push-unknown');
+      const st = await (await page.request.get(url + '/api/state')).json();
+      const pushed = st.jobs.filter((j) => j.push).map((j) => [j.repo + '/' + j.id, j.push.outcome]);
+      assert(pushed.length === 3 && new Set(pushed.map((x) => x[1])).size === 3, 'one push of each outcome: ' + JSON.stringify(pushed));
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('#drawer[hidden]', { state: 'attached' });
+      await page.goto(url + '/#/factory');
+      for (const [key, outcome] of pushed) {
+        await page.waitForSelector('.card[data-job="' + key + '"] .tag-push');
+        const chip = await page.$eval('.card[data-job="' + key + '"] .tag-push', (e) => [e.dataset.push, e.textContent, e.className]);
+        assert(chip[0] === outcome && chip[1] === { succeeded: 'pushed', failed: 'push failed', unknown: 'push: outcome unknown' }[outcome], 'the card says it: ' + JSON.stringify(chip));
+        assert(!/tag-ok/.test(chip[2]), 'never a bare green');
+      }
+      const refused = pushed.find((x) => x[1] === 'failed')[0];
+      await page.goto(url + '/#/job/' + refused);
+      await page.waitForSelector('#drawer-head .push-box[data-push="failed"]');
+      assert(/\[rejected\] \(fetch first\)/.test(await page.textContent('#drawer-head .push-box')) && /tone-err/.test(await page.getAttribute('#drawer-head .push-box', 'class')), 'a refusal in git’s words, red');
+      await page.keyboard.press('Escape');
+    });
+
     await step('approve flow posts to the API', async () => {
       await page.goto(url + '/#/job/my-app/002-rate-limit-signup-form');
       await page.waitForSelector('#drawer-head [data-action="approve"]');
       await page.click('#drawer-head [data-action="approve"]');
       await page.waitForSelector('dialog[open]');
+      await page.check('dialog[open] input[data-carry-ok]');   // its must-do items move to follow-ups (tracker.mjs checks the rest)
       const resp = await waitPost(page, /\/api\/jobs\/my-app\/002-rate-limit-signup-form\/approve$/, () => page.click('dialog[open] button[data-action="ok"]'));
       assert(resp.status() === 200, 'approve status ' + resp.status());
       await page.waitForSelector('dialog[open]', { state: 'detached' });
@@ -746,9 +834,14 @@ async function main() {
       const rb = JSON.parse(rr.request().postData());
       const want = { model: stopped.routing.builder.model, driver: 'qwen' };
       if (Object.keys(stopped.routing.builder.extra_body || {}).length) want.extra_body = stopped.routing.builder.extra_body;
-      assert(Object.keys(rb.routing).join() === 'builder' && canon(rb.routing.builder) === canon(want), 'driver-only change keeps the model and its extra_body: ' + JSON.stringify(rb));
+      // ... and what the snapshot placed there (views/routing.js keepPlacements): an explicit model drops agents.<name>'s
+      const b0 = stopped.routing.builder;
+      if (b0.reason && b0.reason.kind) want.reason = { kind: b0.reason.kind, text: b0.reason.text || '' };
+      if (Array.isArray(b0.escalate) && b0.escalate.length) want.escalate = b0.escalate.map((r) => r.model);
+      assert(Object.keys(rb.routing).join() === 'builder' && canon(rb.routing.builder) === canon(want), 'driver-only change keeps the model, its extra_body and its placement: ' + JSON.stringify(rb));
       const after = (await rr.json()).job.routing.builder;
       assert(after.model_id === stopped.routing.builder.model_id && after.driver === 'qwen' && canon(after.extra_body) === canon(stopped.routing.builder.extra_body), 'the snapshot keeps its model: ' + JSON.stringify(after));
+      assert(canon((after.escalate || []).map((r) => r.model)) === canon(want.escalate || []) && canon(after.reason || null) === canon(want.reason || null), 'and its ladder and reason: ' + JSON.stringify(after.escalate));
       await page.click('#tab-routing');
       await page.waitForFunction(() => { const r = document.querySelector('#drawer .route-table tr[data-agent="builder"]'); return r && /qwen/.test(r.textContent); });
       await page.keyboard.press('Escape');
@@ -940,6 +1033,8 @@ async function main() {
       await page.goto(url + '/#/agents/reviewer-ux');
       await page.waitForSelector('.agent-viewer [data-action="edit-agent"]:not([disabled])');
       assert(await page.locator('.agent-viewer .src-tag[data-source="builtin"]').count() >= 1, 'source badge: builtin');
+      // DESIGN §36: an Activity link on each agent page, to the Operator area's activity page
+      assert(await page.getAttribute('.agent-viewer [data-action="agent-activity"]', 'href') === '#/activity?agent=reviewer-ux&since=7d', 'the agent page links its activity');
       await page.click('[data-action="edit-agent"]');
       await page.waitForSelector('dialog[open] textarea.agent-editor');
       await page.waitForTimeout(100);
@@ -1130,7 +1225,7 @@ async function main() {
       await m.waitForSelector('#panel-live .run');
       await noOverflow(m, 'mobile drawer');
       const tabsFit = await m.evaluate(() => { const t = document.querySelector('#drawer .tabs'); return [t.scrollWidth, t.clientWidth]; });
-      assert(tabsFit[0] <= tabsFit[1], 'all five drawer tabs fit the phone: ' + tabsFit);
+      assert(tabsFit[0] <= tabsFit[1], 'all the drawer tabs (the view modules’ too) fit the phone: ' + tabsFit);
       await shot(m, 'mobile-drawer');
       await m.click('#tab-routing');
       await m.waitForSelector('#panel-routing .route-table tr[data-agent="builder"]');
@@ -1198,7 +1293,10 @@ async function main() {
     });
 
     // ---------------------------------------------------------------- DESIGN §25: Welcome, setup, maps, Grid Card, Start, procedures, delivery
-    await section25({ browser, url, startMock, step, assert, canon, waitPost, shot, cleanShot, noOverflow, watch, allowHttp: (v) => { allowHttpErrors = v; } });
+    await section25(harness);
+
+    // ---------------------------------------------------------------- Seraphina OS Harness: Home and the view modules
+    for (const [, suite] of AREA_SUITES) await suite(harness);
 
     await step('zero console errors and no dialogs', async () => {
       assert(consoleErrors.length === 0, 'console errors:\n' + consoleErrors.join('\n') + (httpErrors.length ? '\nHTTP errors:\n' + httpErrors.join('\n') : ''));
@@ -1209,11 +1307,11 @@ async function main() {
   } finally {
     await browser.close().catch(() => {});
     proc.kill('SIGTERM');
-  }
-  log(`\n${results.length - failures}/${results.length} checks passed. Screenshots: ${SHOTS}`);
-  if (failures) {
-    for (const r of results.filter((x) => !x.ok)) log('\n--- ' + r.name + '\n' + r.error);
-    process.exit(1);
+    log(`\n${results.length - failures}/${results.length} checks passed. Screenshots: ${SHOTS}`);
+    if (failures) {
+      for (const r of results.filter((x) => !x.ok)) log('\n--- ' + r.name + '\n' + r.error);
+      process.exit(1);
+    }
   }
 }
 

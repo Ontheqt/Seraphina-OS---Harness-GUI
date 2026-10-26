@@ -20,6 +20,7 @@ import re
 import tempfile
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -33,6 +34,8 @@ from .config import (AUTH_MODES, CONCURRENCY_SCOPES, DEFAULTS, DELIVERY_MODES, P
                      PROVIDER_TYPES, REPO_NAME_RE, SWEEP_MODES, USER_DIR, Config, ProviderConfig, agent_dirs,
                      dir_exists, expand_path)
 from .events import redact
+from .custody import CustodyDenied, leased, server_of
+from .custody import parse_settings as parse_custody
 from .harness.providers import (ANTHROPIC_VERSION, USER_AGENT, Completion, ProviderError, make_provider,
                                 provider_run_slot)
 from .harness.sandbox import SANDBOX_MODES
@@ -40,7 +43,48 @@ from .harness.sandbox import SANDBOX_MODES
 PRESETS_DIR = PROJECT_DIR / "examples"
 BUILTIN_AGENTS_DIR = PROJECT_DIR / "agents"
 UPDATABLE_SECTIONS = ("providers", "models", "agents", "pipeline", "limits", "harness", "mcp_servers",
-                      "escalate_paths", "repos", "merge", "profiles", "default_profile", "housekeeping")
+                      "escalate_paths", "repos", "merge", "profiles", "default_profile", "housekeeping",
+                      "wakes", "notify", "operator", "drift_sources", "snapraid", "maintenance")
+# Wake & Messages bounds (shape and bounds only: a missing persona file or an unknown model never blocks a save)
+WAKE_BOUNDS: dict[str, tuple[int, int]] = {
+    "wakes.power.quiet_before_off_minutes": (0, 240), "wakes.power.quiet_after_boot_minutes": (0, 240),
+    "wakes.time_sync.fallback_minutes": (1, 60), "wakes.retention.run_log_days": (1, 365),
+    "wakes.retention.text_days": (1, 3650), "wakes.hooks.per_minute": (1, 60), "wakes.hooks.per_day": (1, 10000),
+    "notify.per_persona.min_minutes": (0, 1440), "notify.per_persona.max_per_day": (0, 48),
+    "notify.personas_max_per_day": (0, 200), "notify.phone_max_per_day": (0, 200), "notify.dedupe_hours": (1, 168),
+    "notify.incident.repeat_hours": (1, 48), "notify.incident.max_reminders": (0, 10),
+    "notify.inbound.stale_minutes": (1, 1440), "notify.inbound.max_commands_per_minute": (1, 100),
+    "notify.inbound.hold_minutes": (1, 1440), "notify.inbound.text_per_minute": (1, 60),
+    "notify.inbound.text_per_day": (1, 1000), "notify.inbound.capability_hours": (1, 72),
+    "notify.inbound.pairing_minutes": (1, 60), "notify.inbound.phone_silent_days": (1, 90),
+    "notify.inbound.forged_alert_minutes": (1, 1440),
+    # step W2 and W3 (Wake & Messages §5.4)
+    "wakes.turn.max_prompt_chars": (2000, 100000), "wakes.turn.max_tokens": (64, 4096),
+    "wakes.turn.wall_seconds": (10, 600), "wakes.turn.repairs": (0, 2), "wakes.turn.max_wait_minutes": (5, 240),
+    "wakes.turn.memory_chars": (0, 20000), "wakes.turn.max_yields": (1, 10), "wakes.turn.max_tool_calls": (1, 20),
+    "wakes.global.max_model_wakes_per_hour": (1, 200), "wakes.global.max_owner_turns_per_hour": (1, 600),
+    "wakes.global.pause_after_failures": (1, 50), "wakes.event_min_seconds": (0, 3600),
+    "wakes.flood.starts": (2, 100), "wakes.flood.seconds": (10, 3600), "wakes.flood.hold_minutes": (1, 1440),
+    "wakes.self_wake.min_minutes": (5, 1440), "wakes.self_wake.max_days": (1, 60), "wakes.self_wake.max_pending": (1, 20),
+    "wakes.self_wake.max_chain": (1, 10), "wakes.chat_wakes.min_minutes": (5, 1440), "wakes.chat_wakes.max_days": (1, 14),
+    "wakes.chat_wakes.max_pending": (1, 10), "wakes.chat_wakes.max_per_day": (0, 24),
+    "wakes.chat_wakes.max_per_day_all": (0, 48), "wakes.chat_wakes.max_turns": (1, 200),
+    "wakes.chat_wakes.max_wall_seconds": (60, 7200), "wakes.chat_wakes.max_output_tokens": (1000, 200000),
+    "wakes.busy.samples": (1, 10), "wakes.busy.sample_seconds": (1, 600),
+    "wakes.spool.poll_seconds": (1, 60), "wakes.spool.max_pending": (1, 1000), "wakes.spool.max_bytes": (16, 2048),
+    "wakes.spool.per_minute": (1, 1000), "wakes.spool.per_day": (1, 100000),
+    "wakes.consolidation.every_days": (1, 60), "wakes.drift_check_hours": (1, 168),
+    "wakes.personas.ambient.every_minutes": (10, 1440), "wakes.personas.max_model_wakes_per_day": (0, 200),
+    "wakes.personas.max_slot_seconds_per_day": (0, 36000), "wakes.personas.silent_first_days": (0, 60),
+    "wakes.personas.sees.thread_messages": (0, 50),
+}
+PERSONA_KEYS = {"enabled", "model", "structured", "extra_body", "ambient", "on_events", "on_events_route",
+                "max_model_wakes_per_day", "max_slot_seconds_per_day", "sees", "may_wake_sleeping_model",
+                "silent_first_days", "instance_name", "memory", "wake", "reimport_decider"}
+SERVER_KEYS = {"kind", "root_url", "router"}
+CHANNEL_KEYS = {"type", "enabled", "publish_url", "public_url", "topic", "taps_topic", "chat_topic", "token_env",
+                "reply_token_env", "operational", "operational_names", "model_text", "ios_relay"}
+HOOK_KEYS = {"token_sha256", "may", "personas", "events", "subjects", "per_minute", "per_day", "created", "rotated"}
 ENTRY_SECTIONS = ("providers", "models", "agents")  # a preset replaces these entry by entry
 PRESET_ENTRY_SECTIONS = (*ENTRY_SECTIONS, "profiles")   # ... and its routing profiles (DESIGN §23)
 PRESET_META_KEYS = ("description",)                 # a preset file's own notes, never merged into a config
@@ -56,6 +100,7 @@ MCP_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,40}$")  # becomes part of
 ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SECRET_HEADER_RE = re.compile(r"key|token|secret|auth", re.IGNORECASE)
 BUILD_KEYS = frozenset({"provider", "model", "max_tokens", "context_tokens"})
+FAMILY_LABEL_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,40}$")   # models.<key>.family (DESIGN §23)
 MAX_LIST_BYTES = 4 << 20   # a model list or loaded-model answer larger than this is not read
 
 PROBE_TIMEOUT = 30.0
@@ -151,7 +196,17 @@ def config_view(config: Config) -> dict:
         view["agents_error"] = str(exc)
     view["agent_list"] = [_agent_summary(config, agents[name]) for name in sorted(agents)]
     view["tiers"] = tier_view(config)
+    view["model_families"] = model_families(config)
     return view
+
+
+def model_families(config: Config) -> dict[str, str]:
+    """{model key: its family} for every model entry (DESIGN §23, the independence guard): the entry's
+    family label, else the one its model id names (routing.default_family)."""
+    from .routing import entry_family   # routing imports this module
+
+    return {str(key): entry_family(entry) for key, entry in _dict_or_empty(config.raw.get("models")).items()
+            if isinstance(entry, dict)}
 
 
 def tier_view(config: Config) -> dict:
@@ -191,7 +246,8 @@ def route_model(config: Config, agent_name: str, tier: str | None) -> str:
 
 def _agent_summary(config: Config, agent: AgentDef) -> dict:
     """{name, description, model, driver, source, tier, color, extra_body}, plus the route's effort,
-    escalate (rung model keys) and reason ({kind, text}) when it has them (DESIGN §23)."""
+    escalate (rung model keys), independent_alternate (a model key, or false when the routing accepts the
+    judge on the builder's family) and reason ({kind, text}) when it has them (DESIGN §23)."""
     route = _dict_or_empty(config.raw.get("agents")).get(agent.name)
     summary = {"name": agent.name, "description": agent.description,
                "model": route_model(config, agent.name, agent.model), "driver": config.agent_driver(agent.name),
@@ -200,8 +256,8 @@ def _agent_summary(config: Config, agent: AgentDef) -> dict:
     if isinstance(route, dict):
         from .routing import reason
 
-        for key in ("effort", "escalate"):
-            if route.get(key):
+        for key in ("effort", "escalate", "independent_alternate"):
+            if route.get(key) or (key == "independent_alternate" and route.get(key) is False):   # false: accepted
                 summary[key] = copy.deepcopy(route[key])
         try:
             found = reason(route.get("reason"))
@@ -456,6 +512,7 @@ def validate_settings(config: Config) -> None:
     providers = _section(raw, "providers")
     for name, entry in providers.items():
         _check_provider(str(name), entry)
+    _check_custody_servers(providers)
     models = _section(raw, "models")
     live_providers = {name for name, entry in providers.items() if isinstance(entry, dict)}
     for key, entry in models.items():
@@ -474,16 +531,43 @@ def validate_settings(config: Config) -> None:
 
     check_profiles(raw, live_models, drivers, AGENT_NAME_RE)
     _check_efforts(config)
+    _check_alternates(config)
     _check_pipeline(_section(raw, "pipeline"), config)
     _check_limits(_section(raw, "limits"))
     _check_harness(_section(raw, "harness"))
     _check_merge(_section(raw, "merge"))
     _check_housekeeping(_section(raw, "housekeeping"))
+    _check_wakes(_section(raw, "wakes"))
+    _check_notify(_section(raw, "notify"), raw)
+    _check_operator(_section(raw, "operator"), config)
+    _check_snapraid(_section(raw, "snapraid"))
+    _check_maintenance(_section(raw, "maintenance"))
     for name, entry in _section(raw, "mcp_servers").items():
         _check_mcp_server(str(name), entry)
     if raw.get("escalate_paths") is not None:
         _require(raw["escalate_paths"], "escalate_paths", _is_str_list, "a list of glob strings")
     config.validate()
+
+
+def _check_custody_servers(providers: dict) -> None:
+    """Custody follows the server (DESIGN §37): two provider entries on one server that both name a custody
+    register must name the same register and the same name for the server there (one of them alone may name it:
+    the other follows it)."""
+    seen: dict[str, tuple[str, tuple]] = {}
+    for name in sorted(str(key) for key in providers):
+        entry = providers.get(name)
+        if not isinstance(entry, dict) or entry.get("custody") is None or not entry.get("base_url"):
+            continue
+        settings = parse_custody(entry["custody"], f"providers.{name}.custody")
+        server = server_of(entry["base_url"])
+        mine = (settings.key(), settings.provider or name)
+        if server in seen and seen[server][1] != mine:
+            other = seen[server][0]
+            raise ValueError(f"providers.{name} and providers.{other} are the same server ({entry['base_url']}) but "
+                             f"name a different custody register, or a different name for the server there: give "
+                             f"both the same custody (with the same custody.provider), or custody to one of them only "
+                             f"(the other follows it)")
+        seen.setdefault(server, (name, mine))
 
 
 def _check_provider(name: str, entry: Any) -> None:
@@ -505,8 +589,13 @@ def _check_provider(name: str, entry: Any) -> None:
     _optional(entry, label, "headers", _is_str_dict, "an object of header names to strings")
     _optional(entry, label, "kind", lambda v: v in PROVIDER_KINDS, "one of " + ", ".join(PROVIDER_KINDS) + " or null")
     _optional(entry, label, "loaded_model_url", _is_http_url, "an http(s) URL or null")
-    for flag in ("allow_model_swap", "swap_back"):
+    for flag in ("allow_model_swap", "swap_back", "lazy_load"):
         _optional(entry, label, flag, lambda v: isinstance(v, bool), "true or false")
+    parse_custody(entry.get("custody"), f"{label}.custody")   # the GPU custody register (DESIGN §37)
+    if entry.get("reviewed_build") is not None:   # the Open WebUI build whose persona contract passed (§33)
+        from .personas import check_reviewed_build
+
+        check_reviewed_build(entry["reviewed_build"], f"{label}.reviewed_build")
     _optional(entry, label, "overflow", lambda v: isinstance(v, str) and v.strip(), "a model key or null")
     for key in ("overflow_after_seconds", "tokens_per_second"):
         _optional(entry, label, key, _is_positive_number, "a positive number or null")
@@ -527,6 +616,8 @@ def _check_model(key: str, entry: Any, providers: set) -> None:
     for flag in ("stream", "keep_reasoning", "allow_history_edits", "eager_tools"):
         _optional(entry, label, flag, lambda v: isinstance(v, bool), "true or false")
     _optional(entry, label, "extra_body", lambda v: isinstance(v, dict), "an object")
+    _optional(entry, label, "family", lambda v: isinstance(v, str) and FAMILY_LABEL_RE.fullmatch(v.strip().lower()),
+              "a family label such as \"openai\" (a-z, 0-9, '.', '_' and '-') or null")
     for price in ("price_in", "price_out", "price_cached_in"):
         _optional(entry, label, price, _is_non_negative_number, "a non-negative number (USD per million tokens)")
     if (entry.get("price_in") is None) != (entry.get("price_out") is None):
@@ -571,13 +662,27 @@ def _check_route(name: str, entry: Any, models: set, drivers: set) -> None:
     if driver not in (None, "") and (not isinstance(driver, str) or driver not in drivers):
         raise ValueError(f"{label}.driver {driver!r} is not a configured driver")
     _optional(entry, label, "extra_body", lambda v: isinstance(v, dict), "an object")
-    placed = [key for key in ("effort", "escalate", "reason") if key in entry]
+    if entry.get("offline") is not None:   # an imported copy's offline mode (DESIGN §33, §35 decision e)
+        if name == "*":
+            raise ValueError("agents.*.offline: the offline mode is turned on per imported copy; set it on "
+                             "agents.<name>")
+        _optional(entry, label, "offline", lambda v: isinstance(v, bool), "true or false")
+    if entry.get("role") is not None:   # the owner marks the operator persona (DESIGN §36)
+        from .operator import ROLES
+        from .personas import PERSONA_NAME_RE
+
+        if name == "*":
+            raise ValueError("agents.*.role: the operator is one persona; set it on agents.<name>")
+        _optional(entry, label, "role", lambda v: v in ROLES, " or ".join(f'"{r}"' for r in ROLES) + " or null")
+        if not PERSONA_NAME_RE.fullmatch(name):
+            raise ValueError(f"{label}.role: only a persona can be the operator, and {name!r} is not a persona name")
+    placed = [key for key in ("effort", "escalate", "reason", "independent_alternate") if key in entry]
     if name == "*" and placed:
         raise ValueError(f"agents.*: {', '.join(placed)} apply to one agent's placement; set them on "
                          f"agents.<name> or in a profile (agents.* takes model, driver and extra_body)")
     from .routing import check_placement   # routing imports this module
 
-    check_placement({key: entry[key] for key in placed}, label, models)
+    check_placement({key: entry[key] for key in placed}, label, models, agent=name)
 
 
 def _check_efforts(config: Config) -> None:
@@ -613,6 +718,43 @@ def _check_efforts(config: Config) -> None:
         problem = effort_problem(provider_type, effort)
         if problem:
             raise ValueError(f"{label} on model {key}: {problem}")
+
+
+def _check_alternates(config: Config) -> None:
+    """Every independent_alternate on agents.<name> or in a profile placement is of another family than the
+    judge's own model (the placement's, else the agent's route as _check_efforts resolves it): an alternate
+    of the same family could never take over (DESIGN §23). One that does not resolve is left to the other
+    checks."""
+    from .routing import entry_family   # routing imports this module
+
+    raw = config.raw
+    models = _section(raw, "models")
+    checks: list[tuple[str, str, Any, Any]] = []
+    for name, entry in _section(raw, "agents").items():
+        if name != "*" and isinstance(entry, dict) and entry.get("independent_alternate"):
+            checks.append((f"agents.{name}", str(name), entry.get("model"), entry["independent_alternate"]))
+    for profile_key, profile in _section(raw, "profiles").items():
+        placements = profile.get("agents") if isinstance(profile, dict) else None
+        for name, entry in (placements if isinstance(placements, dict) else {}).items():
+            if isinstance(entry, dict) and entry.get("independent_alternate"):
+                checks.append((f"profiles.{profile_key}.agents.{name}", str(name), entry.get("model"),
+                               entry["independent_alternate"]))
+    tiers: dict[str, str] | None = None
+    for label, agent, key, alternate in checks:
+        if not key:
+            if tiers is None:
+                try:
+                    tiers = {name: found.model for name, found in resolved_agents(config).items()}
+                except ValueError:
+                    tiers = {}
+            key = route_model(config, agent, tiers.get(agent))
+        own, other = models.get(str(key)), models.get(str(alternate))
+        if not isinstance(other, dict):
+            continue
+        family = entry_family(own) if isinstance(own, dict) else entry_family({}, key)
+        if entry_family(other) == family:
+            raise ValueError(f"{label}.independent_alternate {alternate!r} is of the {family} family, like the "
+                             f"judge's own model {key!r}: name a model of another family")
 
 
 def _check_pipeline(section: dict, config: Config) -> None:
@@ -672,6 +814,485 @@ def _check_housekeeping(section: dict) -> None:
     _optional(section, "housekeeping", "sweep", lambda v: v in SWEEP_MODES, "one of " + ", ".join(SWEEP_MODES))
     _optional(section, "housekeeping", "sweeper_model", lambda v: isinstance(v, str) and v.strip(),
               "a model key or null")
+
+
+def _bounded(section: dict, label: str, key: str) -> None:
+    low, high = WAKE_BOUNDS[f"{label}.{key}"]
+    _optional(section, label, key, lambda v: _is_int(v) and low <= v <= high, f"an integer from {low} to {high}")
+
+
+def _check_wakes(section: dict) -> None:
+    """wakes (Wake & Messages §5.4): shape and bounds only."""
+    from .clock import PowerSchedule, load_zone
+    from .notify import HOOK_KINDS, HOOK_MAY, HOOK_NAME_RE, PANEL_HOOK_KINDS, SUBJECT_RE
+
+    zone = section.get("timezone")
+    if zone is not None:
+        try:
+            load_zone(zone)
+        except ValueError as exc:
+            raise ValueError(f"wakes.timezone: {exc}") from None
+    power = section.get("power")
+    if power is not None:
+        _require(power, "wakes.power", lambda v: isinstance(v, dict), 'an object like {"off": "23:00", "wake": "07:00"}')
+        for key in ("quiet_before_off_minutes", "quiet_after_boot_minutes"):
+            _bounded(power, "wakes.power", key)
+        try:
+            PowerSchedule.from_config(power)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from None
+    sync = _dict_or_empty(section.get("time_sync"))
+    _optional(sync, "wakes.time_sync", "require", lambda v: isinstance(v, bool), "true or false")
+    _bounded(sync, "wakes.time_sync", "fallback_minutes")
+    retention = _dict_or_empty(section.get("retention"))
+    for key in ("run_log_days", "text_days"):
+        _bounded(retention, "wakes.retention", key)
+    _check_wake_personas(section)
+    hooks = section.get("hooks")
+    if hooks is None:
+        return
+    _require(hooks, "wakes.hooks", lambda v: isinstance(v, dict), "an object of event sources")
+    digests: dict[str, str] = {}
+    for name, hook in hooks.items():
+        label = f"wakes.hooks.{name}"
+        if not HOOK_NAME_RE.fullmatch(str(name)):
+            raise ValueError(f"wakes.hooks: invalid name {name!r} (a-z, 0-9 and '-', starting with a letter)")
+        if hook is None:
+            continue
+        _require(hook, label, lambda v: isinstance(v, dict), "an object")
+        unknown = sorted(set(hook) - HOOK_KEYS)
+        if unknown:
+            raise ValueError(f"{label}.{unknown[0]} is not a setting of an event source")
+        digest = hook.get("token_sha256")
+        _require(digest, f"{label}.token_sha256", lambda v: isinstance(v, str) and re.fullmatch(r"[0-9a-f]{64}", v),
+                 "the sha256 of the source's token (64 hex characters; POST /api/notify/hooks makes one)")
+        if digest in digests:
+            raise ValueError(f"{label}.token_sha256 is the same as wakes.hooks.{digests[digest]}'s: each source "
+                             "needs its own token")
+        digests[digest] = str(name)
+        _optional(hook, label, "may", lambda v: _is_str_list(v) and set(v) <= set(HOOK_MAY),
+                  "a list of " + ", ".join(HOOK_MAY))
+        _optional(hook, label, "events", lambda v: _is_str_list(v) and set(v) <= set(HOOK_KINDS + PANEL_HOOK_KINDS),
+                  "a list of " + ", ".join(HOOK_KINDS + PANEL_HOOK_KINDS))
+        for key in ("subjects", "personas"):
+            _optional(hook, label, key, lambda v: _is_str_list(v) and all(SUBJECT_RE.fullmatch(x) for x in v),
+                      "a list of names like nightly (a-z, 0-9, '.', '_', '-')")
+        for key in ("per_minute", "per_day"):
+            _bounded(hook, "wakes.hooks", key)
+
+
+def _check_wake_personas(section: dict) -> None:
+    """Step W2/W3 keys of wakes (Wake & Messages §5.4): shape and bounds only, never whether a persona file
+    exists or a model is local (gate check 4 and the doctor say that), so a deleted persona never blocks a save."""
+    from .clock import Window
+    from .notify import ROUTE_KEYS, RULE_IDS
+    from .personas import INSTANCE_NAME_RE, PERSONA_NAME_RE, RESERVED_NAMES, check_sqlite_query
+    from .wakes import SERVER_KINDS, STRUCTURED
+
+    _optional(section, "wakes", "enabled", lambda v: isinstance(v, bool), "true or false")
+    for group in ("turn", "global", "flood", "self_wake", "chat_wakes", "busy", "spool", "consolidation"):
+        block = _dict_or_empty(section.get(group))
+        for key in list(block):
+            if f"wakes.{group}.{key}" in WAKE_BOUNDS:
+                _bounded(block, f"wakes.{group}", key)
+    for key in ("event_min_seconds", "drift_check_hours"):
+        _bounded(section, "wakes", key)
+    chat = _dict_or_empty(section.get("chat_wakes"))
+    _optional(chat, "wakes.chat_wakes", "enabled", lambda v: isinstance(v, bool), "true or false")
+    _optional(chat, "wakes.chat_wakes", "commands", lambda v: isinstance(v, list) and all(
+        _is_str_list(c) and c and all(x.strip() and not set(x) & set(";|&$`<>\n") for x in c) for c in v),
+              'a list of argv prefixes like [["git", "status"]] (no shell syntax)')
+    busy = _dict_or_empty(section.get("busy"))
+    _optional(busy, "wakes.busy", "gpu_util_max", lambda v: _is_int(v) and 0 <= v <= 100, "a percentage or null")
+    _optional(busy, "wakes.busy", "gpus", _is_str_list, "a list of GPU UUIDs")
+    _optional(section, "wakes", "external_memory_roots", lambda v: _is_str_list(v) and all(
+        os.path.isabs(os.path.expanduser(x)) for x in v), "a list of absolute folders")
+    servers = section.get("servers")
+    if servers is not None:
+        _require(servers, "wakes.servers", lambda v: isinstance(v, dict), "an object of model servers")
+        for name, entry in servers.items():
+            label = f"wakes.servers.{name}"
+            if not ENTRY_KEY_RE.fullmatch(str(name)):
+                raise ValueError(f"wakes.servers: invalid provider name {name!r}")
+            if entry is None:
+                continue
+            _require(entry, label, lambda v: isinstance(v, dict), "an object")
+            if "local_attested" in entry:
+                raise ValueError(f"{label}.local_attested is set only by the persona setup's tick (POST "
+                                 f"/api/wakes/servers/{name}/attest), never in config.json")
+            unknown = sorted(set(entry) - SERVER_KEYS)
+            if unknown:
+                raise ValueError(f"{label}.{unknown[0]} is not a setting of a model server")
+            _optional(entry, label, "kind", lambda v: v in SERVER_KINDS, "one of " + ", ".join(SERVER_KINDS))
+            _optional(entry, label, "router", lambda v: isinstance(v, bool), "true or false")
+            _optional(entry, label, "root_url", lambda v: isinstance(v, str) and is_local_url(v)
+                      and v.startswith("http://"), "a loopback http URL")
+    personas = section.get("personas")
+    if personas is None:
+        return
+    _require(personas, "wakes.personas", lambda v: isinstance(v, dict), "an object of personas")
+    for name, entry in personas.items():
+        label = f"wakes.personas.{name}"
+        if not PERSONA_NAME_RE.fullmatch(str(name)) or name in RESERVED_NAMES:
+            raise ValueError(f"wakes.personas: invalid persona name {name!r}")
+        if entry is None:
+            continue
+        _require(entry, label, lambda v: isinstance(v, dict), "an object")
+        unknown = sorted(set(entry) - PERSONA_KEYS)
+        if unknown:
+            raise ValueError(f"{label}.{unknown[0]} is not a persona setting")
+        for flag in ("enabled", "may_wake_sleeping_model"):
+            _optional(entry, label, flag, lambda v: isinstance(v, bool), "true or false")
+        _optional(entry, label, "model", lambda v: isinstance(v, str) and ENTRY_KEY_RE.fullmatch(v),
+                  "a models key or null")
+        _optional(entry, label, "structured", lambda v: v in STRUCTURED, "one of " + ", ".join(STRUCTURED))
+        _optional(entry, label, "extra_body", lambda v: isinstance(v, dict), "an object")
+        _optional(entry, label, "on_events", lambda v: _is_str_list(v) and set(v) <= set(RULE_IDS),
+                  "a list of rule ids")
+        _optional(entry, label, "on_events_route", lambda v: v in ROUTE_KEYS, "one of " + ", ".join(ROUTE_KEYS))
+        _optional(entry, label, "instance_name", lambda v: isinstance(v, str) and INSTANCE_NAME_RE.fullmatch(v),
+                  "a name of letters, digits, spaces, '.', '_' or '-'")
+        _optional(entry, label, "reimport_decider", lambda v: v in ("owner", "persona"), "owner or persona")
+        for key in ("max_model_wakes_per_day", "max_slot_seconds_per_day", "silent_first_days"):
+            _bounded(entry, "wakes.personas", key) if key in entry else None
+        ambient = _dict_or_empty(entry.get("ambient"))
+        if "every_minutes" in ambient:
+            _bounded(ambient, "wakes.personas.ambient", "every_minutes")
+        active = ambient.get("active")
+        if active is not None and active != "auto":
+            try:
+                Window.parse(active)
+            except ValueError:
+                raise ValueError(f"{label}.ambient.active must be \"auto\" or HH:MM-HH:MM") from None
+        sees = _dict_or_empty(entry.get("sees"))
+        for flag in ("item_titles", "reasons", "thread_in_ambient"):
+            _optional(sees, f"{label}.sees", flag, lambda v: isinstance(v, bool), "true or false")
+        if "thread_messages" in sees:
+            _bounded(sees, "wakes.personas.sees", "thread_messages")
+        memory = _dict_or_empty(entry.get("memory"))
+        if set(memory) - {"curation", "external"}:
+            raise ValueError(f"{label}.memory has only curation and external")
+        _optional(memory, f"{label}.memory", "curation", lambda v: v in ("owner", "self"), "owner or self")
+        external = memory.get("external")
+        if external is not None:
+            _require(external, f"{label}.memory.external", lambda v: isinstance(v, dict) and set(v) <= {
+                "folder", "sqlite", "outbox", "taint", "ledger"},
+                     "an object of folder, sqlite {path, query}, outbox, taint, ledger")
+            _optional(external, f"{label}.memory.external", "ledger", lambda v: isinstance(v, bool), "true or false")
+            for key in ("folder", "outbox"):
+                _optional(external, f"{label}.memory.external", key, lambda v: isinstance(v, str)
+                          and os.path.isabs(os.path.expanduser(v)), "an absolute path")
+            sqlite = external.get("sqlite")
+            if sqlite is not None:
+                _require(sqlite, f"{label}.memory.external.sqlite", lambda v: isinstance(v, dict) and set(v) == {
+                    "path", "query"} and isinstance(v["path"], str) and os.path.isabs(os.path.expanduser(v["path"])),
+                         "{path: an absolute path, query: one SELECT}")
+                problem = check_sqlite_query(sqlite["query"])
+                if problem:
+                    raise ValueError(f"{label}.{problem}")
+            _optional(external, f"{label}.memory.external", "taint", lambda v: _is_str_list(v)
+                      and "private" in v and set(v) <= {"private", "untrusted"},
+                      'a list holding "private" (and "untrusted"): external memory is never clean')
+        wake = _dict_or_empty(entry.get("wake"))
+        if set(wake) - {"tools", "read_paths", "commands"}:
+            raise ValueError(f"{label}.wake has only tools, read_paths and commands")
+        _optional(wake, f"{label}.wake", "tools", lambda v: v in ("none", "read_only"), "none or read_only")
+        _optional(wake, f"{label}.wake", "read_paths", lambda v: _is_str_list(v) and all(
+            os.path.isabs(os.path.expanduser(x)) for x in v), "a list of absolute folders")
+        _optional(wake, f"{label}.wake", "commands", lambda v: isinstance(v, list) and all(
+            _is_str_list(c) and c and all(x.strip() and not set(x) & set(";|&$`<>\n") for x in c) for c in v),
+                  'a list of argv prefixes like [["git", "status"]]')
+        if any(isinstance(c, list) and c and c[0] == "gh" for c in wake.get("commands") or []):
+            raise ValueError(f"{label}.wake.commands: a persona's read-only wake runs with no network (its context "
+                             "is private), so gh cannot work there; use local commands such as git status")
+
+
+def _check_notify(section: dict, raw: dict) -> None:
+    """notify (Wake & Messages §5.4): shape and bounds; a channel's privacy is computed, never configured (S30)."""
+    from .channels import (CHANNEL_NAME_RE, CHANNEL_TYPES, PRIORITIES, TOPIC_RE, could_be_tailnet, local_publish_url,
+                           public_url_ok)
+    from .clock import Window, parse_hhmm
+    from .envfile import SECRET_NAME_RE
+    from .events import is_credential_name
+    from .notify import ROUTE_KEYS, ROUTE_TARGETS, RULE_IDS
+
+    _optional(section, "notify", "enabled", lambda v: isinstance(v, bool), "true or false")
+    _optional(section, "notify", "default_persona", lambda v: isinstance(v, str) and USER_AGENT_NAME_RE.fullmatch(v),
+              "a persona name")
+    url = section.get("cockpit_url")
+    if url is not None and not _cockpit_url_ok(url):
+        raise ValueError("notify.cockpit_url must be null, a loopback URL, or the harness's https URL on your "
+                         "tailnet (a *.ts.net name): no other link is ever put in a notice")
+    channels = section.get("channels")
+    names: set[str] = set()
+    topics: dict[str, str] = {}
+    if channels is not None:
+        _require(channels, "notify.channels", lambda v: isinstance(v, dict), "an object of channels")
+        for name, entry in channels.items():
+            label = f"notify.channels.{name}"
+            if not CHANNEL_NAME_RE.fullmatch(str(name)):
+                raise ValueError(f"notify.channels: invalid name {name!r} (a-z, 0-9 and '-', starting with a letter)")
+            if entry is None:
+                continue
+            _require(entry, label, lambda v: isinstance(v, dict), "an object")
+            if "privacy" in entry:
+                raise ValueError(f"{label}.privacy: a channel's privacy is computed by the harness (S30), never "
+                                 "set: remove the key")
+            unknown = sorted(set(entry) - CHANNEL_KEYS)
+            if unknown:
+                raise ValueError(f"{label}.{unknown[0]} is not a channel setting")
+            _require(entry.get("type"), f"{label}.type", lambda v: v in CHANNEL_TYPES, "one of " + ", ".join(CHANNEL_TYPES))
+            names.add(str(name))
+            for flag in ("enabled", "operational", "operational_names", "ios_relay"):
+                _optional(entry, label, flag, lambda v: isinstance(v, bool), "true or false")
+            _optional(entry, label, "model_text", lambda v: v in ("never", "clean_only"), "never or clean_only")
+            for key in ("token_env", "reply_token_env"):
+                _optional(entry, label, key, lambda v: isinstance(v, str) and SECRET_NAME_RE.fullmatch(v)
+                          and is_credential_name(v), "an env-file name ending in _TOKEN or _KEY")
+            if entry["type"] == "ntfy":
+                _optional(entry, label, "publish_url", local_publish_url,
+                          "unix:/path/to/ntfy.sock or http://127.0.0.1:<port> (the ntfy server on this machine)")
+                _optional(entry, label, "public_url", public_url_ok,
+                          "the https URL the phone reaches ntfy at, like https://host.tailnet.ts.net:8445 (a host "
+                          "and a port, nothing else)")
+                own = [entry.get(key) or default for key, default in
+                       (("topic", "seraphina"), ("taps_topic", "seraphina-taps"), ("chat_topic", "seraphina-chat"))]
+                for key, topic in zip(("topic", "taps_topic", "chat_topic"), own):
+                    _require(topic, f"{label}.{key}", lambda v: isinstance(v, str) and TOPIC_RE.fullmatch(v),
+                             "a topic name (letters, digits, '_' and '-')")
+                if len(set(own)) != 3:
+                    raise ValueError(f"{label}: topic, taps_topic and chat_topic must be three different names")
+                for topic in own:
+                    if topic in topics:
+                        raise ValueError(f"{label}: topic {topic!r} is also notify.channels.{topics[topic]}'s")
+                    topics[topic] = str(name)
+                private = could_be_tailnet(entry)
+            else:
+                for key in ("publish_url", "public_url", "topic", "taps_topic", "chat_topic", "reply_token_env"):
+                    if key in entry:
+                        raise ValueError(f"{label}.{key} is an ntfy setting, not a Telegram one")
+                private = False
+            if entry.get("model_text") == "clean_only" and not private:
+                raise ValueError(f"{label}.model_text: a third-party channel (Telegram, or ntfy not on your tailnet) "
+                                 "never carries an assistant's own words; use never")
+    routes = section.get("routes")
+    if routes is not None:
+        _require(routes, "notify.routes", lambda v: isinstance(v, dict), "an object of route lists")
+        for key, targets in routes.items():
+            if key not in ROUTE_KEYS:
+                raise ValueError(f"notify.routes.{key} is not a route (use {', '.join(ROUTE_KEYS)})")
+            _require(targets, f"notify.routes.{key}", lambda v: _is_str_list(v) and all(t in ROUTE_TARGETS or t in names
+                                                                                          for t in v),
+                     "a list of channel names, *, private_first, origin, tailnet or third_party")
+    quiet = section.get("quiet_hours")
+    if quiet is not None and quiet != "auto":
+        try:
+            Window.parse(quiet)
+        except ValueError:
+            raise ValueError("notify.quiet_hours must be auto or a window like 21:30-08:00") from None
+    for key in ("quiet_breakthrough", "max_priority_rules", "rules_off"):
+        _optional(section, "notify", key, lambda v: _is_str_list(v) and set(v) <= set(RULE_IDS),
+                  "a list of rule ids (" + ", ".join(RULE_IDS) + ")")
+    digests = _dict_or_empty(section.get("digests"))
+    for key in ("evening", "morning"):
+        _optional(digests, "notify.digests", key, lambda v: isinstance(v, bool), "true or false")
+    midday = digests.get("midday")
+    if midday is not None:
+        try:
+            parse_hhmm(midday, "notify.digests.midday")
+        except ValueError as exc:
+            raise ValueError(str(exc)) from None
+    _optional(section, "notify", "model_max_priority", lambda v: v in ("low", "default"), "low or default")
+    priorities = section.get("rule_priority")
+    if priorities is not None:
+        _require(priorities, "notify.rule_priority", lambda v: isinstance(v, dict), "an object of rule ids")
+        for rule, value in priorities.items():
+            if rule not in RULE_IDS:
+                raise ValueError(f"notify.rule_priority.{rule} is not a rule id")
+            _require(value, f"notify.rule_priority.{rule}", lambda v: v in PRIORITIES, "one of " + ", ".join(PRIORITIES))
+    for key in ("personas_max_per_day", "phone_max_per_day", "dedupe_hours"):
+        _bounded(section, "notify", key)
+    for group, keys in (("per_persona", ("min_minutes", "max_per_day")), ("incident", ("repeat_hours", "max_reminders")),
+                        ("inbound", ("stale_minutes", "max_commands_per_minute", "hold_minutes", "text_per_minute",
+                                     "text_per_day", "capability_hours", "pairing_minutes", "phone_silent_days",
+                                     "forged_alert_minutes"))):
+        part = _dict_or_empty(section.get(group))
+        for key in keys:
+            _bounded(part, f"notify.{group}", key)
+    safe = section.get("safe_repos")
+    if safe is not None:
+        repos = {entry.get("name") for entry in raw.get("repos") or [] if isinstance(entry, dict)}
+        _require(safe, "notify.safe_repos", lambda v: _is_str_list(v) and set(v) <= repos,
+                 "a list of configured repo names")
+    _optional(section, "notify", "sensitive_terms_file", lambda v: isinstance(v, str) and v.strip(), "a file path")
+    wakes = _dict_or_empty(raw.get("wakes"))
+    if any(isinstance(entry, dict) and entry.get("enabled", True) is not False for entry in (channels or {}).values()) \
+            and not wakes.get("timezone"):
+        raise ValueError("wakes.timezone is needed once a phone channel is on (an IANA name such as Europe/London), "
+                         "so do-not-disturb time follows your clock")
+
+
+OPERATOR_KEYS = {"several", "receipts_dir", "max_receipt_bytes", "max_receipts", "scan_seconds"}
+
+
+def _check_operator(section: dict, config: Config) -> None:
+    """operator (DESIGN §36): its keys and bounds, the one-operator rule over agents.<name>.role (several marked
+    only when operator.several lists every one), no mark on a factory agent, and a receipts directory apart from
+    the harness's own files (receipts_problem). Whether the persona exists is the doctor's to say."""
+    from .operator import factory_agents, marked, rule_problem
+    from .personas import PERSONA_NAME_RE, discover_personas
+    from .receipts import receipts_problem
+
+    raw = config.raw
+
+    unknown = sorted(set(section) - OPERATOR_KEYS)
+    if unknown:
+        raise ValueError(f"operator.{unknown[0]} is not a setting (use {', '.join(sorted(OPERATOR_KEYS))})")
+    _optional(section, "operator", "several", lambda v: _is_str_list(v) and all(PERSONA_NAME_RE.fullmatch(x) for x in v),
+              "a list of persona names (the operators, when the owner wants more than one)")
+    _optional(section, "operator", "receipts_dir", lambda v: isinstance(v, str) and v.strip() and "\x00" not in v,
+              "a directory path or null")
+    for key, low, high in (("max_receipt_bytes", 1024, 4 << 20), ("max_receipts", 1, 100000), ("scan_seconds", 0, 3600)):
+        _optional(section, "operator", key, lambda v, lo=low, hi=high: _is_int(v) and lo <= v <= hi,
+                  f"an integer from {low} to {high}")
+    problem = rule_problem(raw)
+    if problem:
+        raise ValueError(problem)
+    names = marked(raw)
+    if names:
+        try:
+            found, agents = discover_personas(config), factory_agents(config)
+        except Exception:  # noqa: BLE001 - a file that does not parse: the doctor names it; nobody is the operator
+            found, agents = {}, set()
+        for name in names:
+            if name not in found and name in agents:
+                raise ValueError(f"agents.{name}.role: {name} is a factory agent, not a persona: only a persona can be "
+                                 "the operator")
+    directory = section.get("receipts_dir")
+    if isinstance(directory, str) and directory.strip():
+        overlap = receipts_problem(config)
+        if overlap:
+            raise ValueError(f"operator.receipts_dir: {overlap}")
+
+
+SNAPRAID_KEYS = {"enabled", "helper", "refresh", "stale_minutes", "light", "daemon", "quiet_units",
+                 "quiet_margin_minutes", "not_schedulers",
+                 "schedule", "restore", "live_folders"}       # the last three: P1's, accepted and ignored
+SNAPRAID_BOUNDS = {"refresh.status_minutes": (5, 1440), "refresh.health_hours": (1, 168), "stale_minutes": (30, 10080),
+                   "light.amber_after_hours": (1, 720), "light.red_after_days": (1, 365),
+                   "light.fp_amber_percent": (1, 100), "light.scrub_target_days": (7, 365),
+                   "schedule.scrub.every_days": (1, 30),
+                   "schedule.scrub.target_days": (7, 365), "schedule.scrub.older_than_days": (0, 365),
+                   "schedule.stop_margin_minutes": (0, 240), "quiet_margin_minutes": (0, 240),
+                   "daemon.metrics_seconds": (5, 3600), "daemon.active_seconds": (5, 600),
+                   "daemon.reads_min_seconds": (5, 3600), "daemon.full_read_minutes": (1, 1440),
+                   "daemon.down_minutes": (1, 1440), "daemon.approval_minutes": (1, 60)}
+DAEMON_KEYS = {"metrics_url", "link", "metrics_seconds", "active_seconds", "reads_min_seconds", "full_read_minutes",
+               "down_minutes", "approval_minutes"}
+JOB_MODES = ("inherit", "manual", "scheduled", "automatic")
+WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+def _check_snapraid(section: dict) -> None:
+    """snapraid (DESIGN §41; BACKUPS_SNAPRAID.md §12.2): its keys, their shapes and bounds. The guard's thresholds
+    and the disks it expects are in the reader's root-owned config, not here."""
+    from .clock import parse_hhmm
+
+    unknown = sorted(set(section) - SNAPRAID_KEYS)
+    if unknown:
+        raise ValueError(f"snapraid.{unknown[0]} is not a setting (use {', '.join(sorted(SNAPRAID_KEYS))})")
+    _optional(section, "snapraid", "enabled", lambda v: isinstance(v, bool), "true or false")
+    _optional(section, "snapraid", "helper", lambda v: isinstance(v, str) and v.startswith("/") and "\0" not in v,
+              "an absolute path (the reader accepts only /usr/local/libexec/seraphina/sf-snapraid)")
+    for dotted, (low, high) in SNAPRAID_BOUNDS.items():
+        *parents, key = dotted.split(".")
+        part: Any = section
+        for name in parents:
+            part = part.get(name) if isinstance(part, dict) else None
+        if isinstance(part, dict):
+            _optional(part, "snapraid." + ".".join(parents) if parents else "snapraid", key,
+                      lambda v, lo=low, hi=high: _is_int(v) and lo <= v <= hi, f"an integer from {low} to {high}")
+    for group in ("refresh", "light", "schedule", "restore", "daemon"):
+        if section.get(group) is not None:
+            _require(section[group], f"snapraid.{group}", lambda v: isinstance(v, dict), "an object")
+    daemon = _dict_or_empty(section.get("daemon"))
+    unknown = sorted(set(daemon) - DAEMON_KEYS)
+    if unknown:
+        raise ValueError(f"snapraid.daemon.{unknown[0]} is not a setting (use {', '.join(sorted(DAEMON_KEYS))})")
+    _optional(daemon, "snapraid.daemon", "metrics_url",
+              lambda v: isinstance(v, str) and re.fullmatch(r"http://(127\.0\.0\.1|\[::1\]):[0-9]{1,5}/metrics", v),
+              "http://127.0.0.1:<port>/metrics or http://[::1]:<port>/metrics (the daemon on this machine)")
+    _optional(daemon, "snapraid.daemon", "link", lambda v: isinstance(v, str) and v.startswith("/") and "\0" not in v,
+              "an absolute path (the link's socket)")
+    _optional(section, "snapraid", "quiet_units",
+              lambda v: _is_str_list(v) and all(re.fullmatch(r"[A-Za-z0-9@_.:-]{1,200}\.service", x) for x in v),
+              "a list of systemd service names (name.service)")
+    _optional(section, "snapraid", "not_schedulers",
+              lambda v: isinstance(v, list) and all(isinstance(x, dict) and set(x) == {"place", "sha256"} and
+                                                    isinstance(x["place"], str) and x["place"].startswith("/") and
+                                                    isinstance(x["sha256"], str) and
+                                                    re.fullmatch(r"[0-9a-f]{64}", x["sha256"]) for x in v),
+              "a list of {place, sha256}")
+    light = _dict_or_empty(section.get("light"))
+    _optional(light, "snapraid.light", "smart_unreadable_ok",
+              lambda v: _is_str_list(v) and all(re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", x) for x in v),
+              "a list of disk names (their SnapRAID names)")
+    schedule = _dict_or_empty(section.get("schedule"))
+    for job in ("sync", "scrub"):
+        entry = schedule.get(job)
+        if entry is None:
+            continue
+        label = f"snapraid.schedule.{job}"
+        _require(entry, label, lambda v: isinstance(v, dict), "an object")
+        _optional(entry, label, "mode", lambda v: v in JOB_MODES, "one of " + ", ".join(JOB_MODES))
+        if entry.get("at") is not None:
+            try:
+                parse_hhmm(entry["at"], f"{label}.at")
+            except ValueError as exc:
+                raise ValueError(str(exc)) from None
+        _optional(entry, label, "days", lambda v: _is_str_list(v) and v and set(v) <= set(WEEKDAYS),
+                  "a non-empty list of mon, tue, wed, thu, fri, sat, sun")
+        _optional(entry, label, "new_after_sync", lambda v: isinstance(v, bool), "true or false")
+    restore = _dict_or_empty(section.get("restore"))
+    _optional(restore, "snapraid.restore", "default_target", lambda v: v in ("in_place", "separate"),
+              "in_place or separate")
+    _optional(restore, "snapraid.restore", "folder_mode", lambda v: v in ("auto", "missing", "exact"),
+              "auto, missing or exact")
+    _optional(section, "snapraid", "live_folders",
+              lambda v: _is_str_list(v) and all(x.strip("/") and ".." not in x.split("/") and "\0" not in x
+                                                for x in v),
+              "a list of folders on the protected disks (relative, no ..)")
+
+
+def _check_maintenance(section: dict) -> None:
+    unknown = sorted(set(section) - {"mode", "paused"})
+    if unknown:
+        raise ValueError(f"maintenance.{unknown[0]} is not a setting (use mode and paused)")
+    _optional(section, "maintenance", "mode", lambda v: v in ("manual", "scheduled", "automatic"),
+              "manual, scheduled or automatic")
+    _optional(section, "maintenance", "paused", lambda v: isinstance(v, bool), "true or false")
+
+
+def _cockpit_url_ok(url: Any) -> bool:
+    """A plain URL (scheme, host, port and an optional path; no user, query or fragment) on loopback or a *.ts.net
+    name. Whether the name is this tailnet's is checked each time a notice is rendered (Notifier._link_base)."""
+    if not isinstance(url, str) or not COCKPIT_URL_RE.fullmatch(url):
+        return False
+    parts = urllib.parse.urlsplit(url)
+    host = (parts.hostname or "").lower()
+    if parts.scheme in ("http", "https") and (host == "localhost" or _is_loopback_ip(host)):
+        return True
+    return parts.scheme == "https" and host.endswith(".ts.net") and not parts.username
+
+
+COCKPIT_URL_RE = re.compile(r"^https?://(?:[A-Za-z0-9.-]+|\[::1\])(?::\d{1,5})?(?:/[A-Za-z0-9._~-]+)*/?$")
+
+
+def _is_loopback_ip(host: str) -> bool:
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def _check_mcp_server(name: str, entry: Any) -> None:
@@ -882,7 +1503,16 @@ def _probe(config: Config, key: str, cancel: threading.Event | None, timeout: fl
     if status is None:
         result["error"] = problem
         return
-    provider = make_provider(provider_cfg)
+    try:   # a server under GPU custody is probed only with a request lease (DESIGN §37)
+        with leased(model, f"model test {key}") as model:
+            _probe_calls(model, cancel, timeout, result)
+    except CustodyDenied as exc:
+        result["error"] = f"GPU custody: {exc}"
+
+
+def _probe_calls(model: Any, cancel: threading.Event | None, timeout: float, result: dict) -> None:
+    """The plain probe, then the tool probe (test_model)."""
+    provider = make_provider(model.provider)
     room = min(model.max_tokens, REASONING_ROOM)
     thinks = _thinks(model)
     calls: list[_Call] = []
@@ -996,10 +1626,18 @@ def _rate(calls: list[_Call]) -> float | None:
 
 
 def missing_key_message(provider: ProviderConfig) -> str:
-    """Why provider has no key: its env var is unset (and its key file does not define it)."""
+    """Why provider has no key: its env var is unset (and its key file does not define it, or is not there: a
+    preset's key file, such as /etc/ai-stack/strata.env, need not exist on this machine)."""
     message = f"{provider.api_key_env} is not set"
     if provider.api_key_file:
-        message += f" and {provider.api_key_file} does not define it"
+        key_file = Path(os.path.expanduser(provider.api_key_file))
+        if key_file.exists():
+            message += f" and {provider.api_key_file} does not define it"
+        elif not key_file.parent.is_dir():
+            message += (f" and there is no {key_file.parent} on this machine for {provider.api_key_file}: put "
+                        f"{provider.api_key_env}=<key> in the env file instead")
+        else:
+            message += f" and {provider.api_key_file} does not exist"
     return message
 
 
@@ -1079,7 +1717,26 @@ def _get(provider: ProviderConfig, url: str, timeout: float, authenticated: bool
     except (OSError, http.client.HTTPException, ValueError) as err:
         reason = err.reason if isinstance(err, urllib.error.URLError) else err
         hint = " (start your local server)" if local else ""
-        return None, None, f"cannot reach {url}: {reason or type(reason).__name__}{hint}"
+        problem = f"cannot reach {url}: {reason or type(reason).__name__}{hint}"
+        release_frames(err)
+        return None, None, problem
+
+
+def release_frames(err: BaseException) -> None:
+    """Clear the finished frames of err's tracebacks (its context, cause and URLError reason too). On Python 3.10,
+    an HTTPS proxy that refuses the CONNECT leaves http.client's tunnel response open in such a frame, inside a
+    reference cycle, and the garbage collector may then free the socket before that response: a ResourceWarning
+    for a socket nobody here holds (fixed in later Pythons). Clearing the frames frees them in order, now."""
+    seen: set[int] = set()
+    todo: list[Any] = [err]
+    while todo and len(seen) < 8:
+        current = todo.pop()
+        if not isinstance(current, BaseException) or id(current) in seen:
+            continue
+        seen.add(id(current))
+        if current.__traceback__ is not None:
+            traceback.clear_frames(current.__traceback__)
+        todo += [current.__context__, current.__cause__, getattr(current, "reason", None)]
 
 
 def _json_body(response: Any) -> Any:

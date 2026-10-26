@@ -7,8 +7,22 @@
 # FACTORY_CONFIG when they were set.
 #
 # API keys go in ~/.config/software-factory/env (NAME=value lines, chmod 600).
+# Each `--credential NAME:PATH` becomes a LoadCredential=NAME:PATH line: systemd
+# copies the file at PATH for this unit, and a setting with
+# "token_credential": "NAME" reads it from $CREDENTIALS_DIRECTORY/NAME. The
+# installed unit's credential lines are kept when install.sh runs again (a NAME
+# given again gets its new PATH); `--drop-credential NAME` removes one.
 # Logs: journalctl --user -u factory -f
 # Keep it running after you log out: sudo loginctl enable-linger <user>
+#
+# Add no sandboxing options (PrivateTmp=, ProtectSystem=, ProtectHome=,
+# PrivateUsers=, NoNewPrivileges=...) here: in a user unit they put the factory
+# in a user namespace of its own, so every bwrap sandbox becomes a sandbox
+# inside a sandbox, which hosts that restrict user namespaces (Ubuntu 24.04 and
+# later) refuse; NoNewPrivileges= would also stop the sudo helpers. Agents
+# still get no-new-privileges (bwrap, or setpriv outside it). On a shared
+# server, run the system unit (systemd/factory@.service) as the harness's own
+# user instead of your login account.
 
 [Unit]
 Description=Software Factory (coding agents with a web GUI)
@@ -20,11 +34,12 @@ WorkingDirectory=%h
 Environment=PYTHONUNBUFFERED=1
 @ENVIRONMENT@
 EnvironmentFile=-%h/.config/software-factory/env
+@CREDENTIALS@
 Restart=on-failure
 RestartSec=5
 # SIGTERM goes to the factory first, so it can stop its agents and save job state.
 KillMode=mixed
-TimeoutStopSec=30
+TimeoutStopSec=60
 
 [Install]
 WantedBy=default.target

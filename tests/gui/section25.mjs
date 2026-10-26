@@ -21,6 +21,10 @@ async function postsDuring(page, fn) {
   return seen;
 }
 const atStep = (page, id) => page.waitForSelector('.wz-main[data-step="' + id + '"]');
+/** The fresh mock's POSTs to the look for model servers so far. */
+const looks = async (page) => JSON.parse(await page.evaluate(async () => (await fetch('/__mock/requests')).text())).requests.filter((r) => r.path === '/api/setup/look-around').length;
+const mockLook = (page, body) => page.evaluate(async (b) => (await fetch('/__mock/look-around', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) })).json(), body);
+const DEMO_FINDS = [{ url: 'http://127.0.0.1:5000/v1', port: 5000, status: 200, ids: ['qwen3.8-flash-next'] }, { url: 'http://127.0.0.1:5005/v1', port: 5005, status: 401, ids: [] }];
 async function next(page, id) {
   await page.click('.wz-foot [data-action="wz-next"]');
   if (id) await atStep(page, id);
@@ -32,6 +36,75 @@ const labels = (page, scope) => page.$$eval(scope + ' .map-label', (els) => els.
 
 export async function run(t) {
   const { browser, url, step, assert, canon, waitPost, shot, cleanShot, noOverflow, watch, allowHttp } = t;
+
+  /** The server-details step's "Look for model servers": nothing looked before the press (page loads, the Grid, the
+   *  Doctor badge), one look per press with a busy state, the results and what was sent, the hints that use them, a
+   *  second press too soon refused by the server, and an empty answer that says what to do. */
+  async function lookAround(f) {
+    const box = '.wz-group[data-group="look-around"]';
+    const vllm = () => f.textContent('.wz-group[data-group="vllm"]');
+    assert(await looks(f) === 0, 'nothing looked for model servers before the button was pressed');
+    assert(/Nothing listens on 127\.0\.0\.1:8000 now\. Ports in use here: 5000, 5005, 18090\. Press “Look for model servers” above to see which of them is a model server\./.test(await vllm()), 'before a look the hint names the ports and the button: ' + await vllm());
+    const intro = await f.textContent(box);
+    assert(/Asks each program listening on this machine whether it is a model server; it sends no key and changes nothing\./.test(intro) && !(await f.isVisible(box + ' .wz-look-list')), 'one plain sentence says what pressing it does, and nothing is shown yet: ' + intro);
+    assert(await f.$eval('.wz-body .wz-group', (el) => el.dataset.group) === 'look-around', 'the button comes before the servers');
+    await f.click('[data-action="wz-look-around"]');
+    await f.waitForSelector('[data-action="wz-look-around"][aria-busy="true"]', { timeout: 3000 });
+    assert(/Asking each program listening here/.test(await f.textContent(box)), 'busy: it says what it is doing');
+    await f.waitForSelector(box + ' .wz-look-list li[data-url="http://127.0.0.1:5005/v1"]');
+    const found = await f.textContent(box);
+    assert(/http:\/\/127\.0\.0\.1:5000\/v1 lists qwen3\.8-flash-next/.test(found) && /http:\/\/127\.0\.0\.1:5005\/v1 wants a key/.test(found), 'the model servers it found: ' + found);
+    assert(/Sent one GET \/v1\/models, without a key, to each program listening on this machine/.test(found) && /Last look:\s*just now/.test(found), 'what it sent, and when: ' + found);
+    assert(await looks(f) === 1, 'one press, one look');
+    assert(await f.evaluate(() => document.activeElement && document.activeElement.dataset.action) === 'wz-look-around', 'the button keeps the focus');
+    assert(/Nothing listens on 127\.0\.0\.1:8000 now\. Model servers answer here: http:\/\/127\.0\.0\.1:5000\/v1 \(lists qwen3\.8-flash-next\); http:\/\/127\.0\.0\.1:5005\/v1 \(wants a key\)\. If one of them is vLLM, use its address\./.test(await vllm()), 'the address hint offers what the look found (B.5.4)');
+    await cleanShot(f, 'setup-look-around');
+    allowHttp(true);   // a second press at once: the server refuses it (429), the answer stays
+    try {
+      await f.click('[data-action="wz-look-around"]');
+      await f.waitForSelector(box + ' .test-result.warn');
+    } finally { allowHttp(false); }
+    const refused = await f.textContent(box);
+    assert(/You looked just now\. You can look again in \d+ seconds\./.test(refused) && await f.locator(box + ' .wz-look-list li').count() === 2, 'refused too soon, and the last answer stays: ' + refused);
+    // the refusal goes once its Retry-After has passed (a 3 s gap here), without a press and without a look
+    await mockLook(f, { finds: DEMO_FINDS, gap: 3 });
+    await f.click('[data-action="wz-look-around"]');
+    await f.waitForSelector('[data-action="wz-look-around"][aria-busy="true"]', { timeout: 3000 });
+    await f.waitForSelector('[data-action="wz-look-around"]:not([aria-busy="true"])');
+    allowHttp(true);
+    try {
+      await f.click('[data-action="wz-look-around"]');
+      await f.waitForSelector(box + ' .test-result.warn');
+    } finally { allowHttp(false); }
+    const before = await looks(f);
+    await f.waitForSelector(box + ' .test-result.warn', { state: 'detached', timeout: 6000 });
+    assert(await looks(f) === before && await f.locator(box + ' .wz-look-list li').count() === 2, 'the refusal went by itself, and nothing looked again');
+    // a look that broke: only its error and a next step, not "nothing answered", not what was sent; a reload keeps it
+    await mockLook(f, { error: "PermissionError: [Errno 13] Permission denied: '/proc/net/tcp'" });
+    await f.click('[data-action="wz-look-around"]');
+    await f.waitForSelector(box + ' .wz-look-broke');
+    const broke = async () => [await f.textContent(box), await vllm()];
+    let [said, hint] = await broke();
+    assert(/The look did not work: PermissionError: \[Errno 13\] Permission denied: '\/proc\/net\/tcp'\. Look again in a moment, or type each server’s address below\./.test(said)
+      && !/No program listening|Sent one GET/.test(said) && !(await f.isVisible(box + ' .wz-look-list')), 'a broken look says so, and only that: ' + said);
+    assert(/The last look for model servers did not work: press “Look for model servers” above to try again\./.test(hint) && !/None of them answered/.test(hint), 'and the hint does not say nothing answered: ' + hint);
+    await f.reload();
+    await atStep(f, 'local-details');
+    await f.waitForSelector(box + ' .wz-look-broke');
+    [said, hint] = await broke();
+    assert(/The look did not work: PermissionError/.test(said) && !/No program listening/.test(said) && /did not work/.test(hint), 'after a reload too: ' + said);
+    await mockLook(f, { finds: [] });   // a fresh budget, and nothing answers this time
+    await f.click('[data-action="wz-look-around"]');
+    await f.waitForSelector(box + ' .wz-look-empty');
+    const none = await f.textContent(box);
+    assert(/No program listening on this machine answered like a model server\. Start your model server and wait until it has loaded its model, then look again\. If it runs on another machine, type its address below\./.test(none) && !(await f.isVisible(box + ' .test-result.warn')), 'an empty answer says what to do: ' + none);
+    assert(/None of them answered like a model server when you looked\./.test(await vllm()), 'and the hint says so: ' + await vllm());
+    await f.reload();
+    await atStep(f, 'local-details');
+    assert(/Last look:/.test(await f.textContent(box)) && await f.isVisible(box + ' .wz-look-empty'), 'GET /api/setup brings the last look back after a reload, with when it was taken');
+    assert(await looks(f) === 6, 'a reload does not look again: ' + await looks(f));
+    await mockLook(f, { finds: DEMO_FINDS, forget: true });
+  }
 
   // ================================================================ a fresh install (its own mock)
   const fresh = await t.startMock(['--fresh']);
@@ -186,10 +259,19 @@ export async function run(t) {
     });
 
     await step('setup apply: keys, preset, models, MCP, an agent’s mcp: line, safety, repository and output, in order; the key is never logged', async () => {
+      let doctorRuns = 0;
+      const onDoctor = (r) => { if (r.method() === 'GET' && new URL(r.url()).pathname === '/api/doctor') doctorRuns++; };
+      f.on('request', onDoctor);
       const posts = await postsDuring(f, async () => {
         await f.click('.wz-foot [data-action="wz-next"]');
         await f.waitForSelector('.apply-done [data-action="go-start"]', { timeout: 20000 });
       });
+      // Saved settings change what Doctor finds: it runs again once the saves settle, so the header's badge never
+      // keeps the fresh install's to-do list (shown as that many red issues once the install is no longer fresh).
+      const t0 = Date.now();
+      while (!doctorRuns && Date.now() - t0 < 5000) await f.waitForTimeout(100);
+      f.off('request', onDoctor);
+      assert(doctorRuns >= 1, 'Doctor runs again after Apply');
       const seq = posts.map((p) => p.path);
       // The shipped analyst already names rea (mcp: rea); the coder gets it added.
       const want = ['/api/secrets', '/api/config/preset', '/api/config', '/api/config/preset', '/api/agents/coder', '/api/config', '/api/repos', '/api/config', '/api/config'];
@@ -296,7 +378,10 @@ export async function run(t) {
       await next(f, 'local-servers');
       await pick(f, 'tabby');
       await pick(f, 'vllm');
+      // GET /api/setup's host: which usual ports listen on this machine (doctor.setup_host)
+      assert(/nothing listens there now/.test(await f.textContent('.opt-card[data-opt="vllm"]')) && /something listens there/.test(await f.textContent('.opt-card[data-opt="tabby"]')), 'the cards say which usual ports listen here');
       await next(f, 'local-details');
+      await lookAround(f);
       await f.fill('#wz-local-details-vllm_model', 'my-awq-model');
       await f.fill('#wz-local-details-tabby_url', 'http://127.0.0.1:5001/v1');
       // Two Tests at once run one after the other, each on its own temporary entry, each result under its own server.
@@ -349,6 +434,12 @@ export async function run(t) {
         await next(p, 'local-servers');
         await pick(p, 'llamacpp');
         await next(p, 'local-details');
+        await mockLook(p, { finds: DEMO_FINDS.concat([{ url: 'http://127.0.0.1:18090/v1', port: 18090, status: 200, ids: ['a'.repeat(120)] }]) });
+        await p.click('[data-action="wz-look-around"]');
+        await p.waitForSelector('.wz-look-list li');
+        await noOverflow(p, 'server details with the model servers found, a 120-character model id among them, 390');
+        assert(/lists a{59}…/.test(await p.textContent('.wz-look-list')), 'a long model id is cut');
+        await mockLook(p, { finds: DEMO_FINDS, forget: true });
         assert(await p.isVisible('.wz-path') && !(await p.getAttribute('.wz-path', 'open')), 'on a phone the answers so far are one closed line');
         assert(/2 answers/.test(await p.textContent('.wz-path summary')), 'it counts them');
         const top = await p.$eval('#wz-title', (el) => el.getBoundingClientRect().top);
@@ -529,6 +620,8 @@ export async function run(t) {
       await g.click('[data-action="start-over"]');
       await g.click('dialog[open] button[data-action="ok"]');
       await atStep(g, 'what');
+      // The step re-renders a frame after the hash changes: wait for it rather than read the old cards.
+      await g.waitForSelector('.wz-main .opt-card[data-opt="feature"][aria-checked="true"]', { timeout: 5000 }).catch(() => {});
       assert(await checked(g, 'feature') === 'true', 'Start over clears the draft');
       const kept = JSON.parse(JSON.parse(await storage(g))['sf.flow.start'] || '{}');
       assert(!kept.choices || (kept.choices.what !== 'chat' && !kept.choices.repo), 'and its stored copy: ' + JSON.stringify(kept));

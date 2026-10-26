@@ -562,6 +562,31 @@ class RetryTests(MockTestCase):
         self.assertIn("connection error", ctx.exception.body)
         self.assertEqual(sleep.total, 62)
 
+    def test_open_webui_never_replays_a_call_that_may_have_acted(self) -> None:
+        """DESIGN §40: Open WebUI runs the profile's filters and tools on every try, and they may write, so a call
+        that went out and got no answer, or an answer of 500 or more, is unknown and not sent again. A refusal
+        (429) and a connection that was never made are retried: nothing happened there."""
+        for error in ({"disconnect": True}, 502, 503):
+            with self.subTest(error=error):
+                server = self.start_mock([{"text": "answer"}], error_sequence=[error])
+                provider, sleep = self.openai(server, kind="openwebui")
+                with self.assertRaises(ProviderError) as ctx:
+                    provider.complete(model_cfg(provider.cfg), "s", [], [])
+                self.assertEqual(len(server.requests), 1, "not replayed")
+                self.assertFalse(ctx.exception.retryable)
+                self.assertIn("Open WebUI: the outcome is unknown", str(ctx.exception))
+                self.assertEqual(sleep.calls, [])
+        server = self.start_mock([{"text": "answer"}], error_sequence=[429])
+        provider, _ = self.openai(server, kind="openwebui")
+        self.assertEqual(provider.complete(model_cfg(provider.cfg), "s", [], []).text, "answer")
+        self.assertEqual(len(server.requests), 2, "a refusal did nothing: tried again")
+        sleep = FakeSleep()
+        refused = OpenAIProvider(provider_cfg(f"http://127.0.0.1:{closed_port()}", kind="openwebui"), sleep=sleep)
+        with self.assertRaises(ProviderError) as ctx:
+            refused.complete(model_cfg(refused.cfg), "s", [], [])
+        self.assertFalse(ctx.exception.sent)
+        self.assertEqual(sleep.total, 62, "never connected: nothing was sent, so it is tried again")
+
     def test_cancel_during_backoff(self) -> None:
         server = self.start_mock([{"text": "unused"}], error_sequence=[503, 503])
         cancel = threading.Event()
@@ -897,6 +922,162 @@ class ConcurrencyTests(MockTestCase):
         self.assertEqual(try_other_thread(), [True])
 
 
+class BackgroundSlotTests(MockTestCase):
+    """Wake & Messages §2.5 and §5.11: background callers yield to people, runs are counted, an abort ends a read."""
+
+    def hold_slot(self, slots: ProviderSlots) -> threading.Event:
+        """Another thread takes the slot until the returned event is set."""
+        holding, done = threading.Event(), threading.Event()
+
+        def holder() -> None:
+            with slots:
+                holding.set()
+                done.wait(10)
+
+        thread = threading.Thread(target=holder)
+        thread.start()
+        self.addCleanup(thread.join, 10)
+        self.addCleanup(done.set)
+        self.assertTrue(holding.wait(5))
+        return done
+
+    def test_try_acquire_background_yields_to_a_waiting_foreground_caller(self) -> None:
+        cfg = provider_cfg("http://127.0.0.1:1", max_concurrency=1)
+        slots = provider_semaphore(cfg.name, 1)
+        self.assertTrue(slots.try_acquire_background(), "a free slot is taken at once")
+        self.assertTrue(slots.try_acquire_background(), "the holder's own thread re-enters")
+        slots.release()
+        slots.release()
+        self.assertFalse(slots.held())
+        done = self.hold_slot(slots)
+        cancel = threading.Event()
+        waiter = threading.Thread(target=lambda: self._wait_for_slot(cfg, cancel))
+        waiter.start()
+        self.addCleanup(waiter.join, 10)
+        deadline = time.monotonic() + 5
+        while not slots.waiting_count() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(slots.waiting_count(), 1, "a foreground caller blocked in _concurrency_slot is counted")
+        done.set()
+        cancel.set()
+        waiter.join(10)
+        self.assertEqual(slots.waiting_count(), 0)
+        self.assertFalse(slots.held())
+        slots._add_waiter(1)   # the slot is free, but a person is about to take it
+        try:
+            self.assertFalse(slots.try_acquire_background(), "people first: a waiter means no background slot")
+        finally:
+            slots._add_waiter(-1)
+        self.assertTrue(slots.try_acquire_background())
+        slots.release()
+
+    def _wait_for_slot(self, cfg: SimpleNamespace, cancel: threading.Event) -> None:
+        try:
+            with providers._concurrency_slot(cfg, cancel):
+                cancel.wait(10)
+        except ProviderError:
+            pass
+
+    def test_the_waiter_count_drops_when_a_waiter_is_cancelled(self) -> None:
+        cfg = provider_cfg("http://127.0.0.1:1", max_concurrency=1)
+        slots = provider_semaphore(cfg.name, 1)
+        self.hold_slot(slots)
+        cancel = threading.Event()
+        errors: list[str] = []
+
+        def waiter() -> None:
+            try:
+                with providers._concurrency_slot(cfg, cancel):
+                    errors.append("acquired a busy slot")
+            except ProviderError as err:
+                errors.append(err.body)
+
+        thread = threading.Thread(target=waiter)
+        thread.start()
+        deadline = time.monotonic() + 5
+        while not slots.waiting_count() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(slots.waiting_count(), 1)
+        cancel.set()
+        thread.join(10)
+        self.assertEqual((errors, slots.waiting_count()), (["cancelled"], 0))
+        self.assertFalse(slots.try_acquire_background(), "the slot is still held by the other thread")
+
+    def test_background_slots_are_the_providers_own_or_one_wake_slot(self) -> None:
+        name = f"bg-{uuid.uuid4().hex[:8]}"
+        self.assertIs(providers.background_slots(name, 2), provider_semaphore(name, 2))
+        own = providers.background_slots(f"{name}-x", None)
+        self.assertEqual(own.size, 1)
+        self.assertIs(providers.background_slots(f"{name}-x", None), own)
+        self.assertIsNone(provider_semaphore(f"{name}-x", None), "the factory's own calls stay unlimited")
+
+    def test_the_active_runs_counter(self) -> None:
+        name = f"runs-{uuid.uuid4().hex[:8]}"
+        self.assertEqual(providers.active_runs(name), 0)
+        with providers.active_run(name):
+            self.assertEqual(providers.active_runs(name), 1)
+            providers.run_started(name)
+            self.assertEqual(providers.active_runs(name), 2)
+            providers.run_ended(name)
+        self.assertEqual(providers.active_runs(name), 0)
+        providers.run_ended(name)   # an extra end never goes below zero
+        self.assertEqual(providers.active_runs(name), 0)
+
+    def test_abort_ends_a_read_blocked_before_the_first_byte(self) -> None:
+        server = self.start_mock(handler=lambda body, path: {"text": "late", "delay": 8})
+        provider, _ = self.openai(server)
+        cancel, abort = threading.Event(), providers.AbortHandle()
+        outcome: list[object] = []
+
+        def call() -> None:
+            try:
+                outcome.append(provider.complete(model_cfg(provider.cfg), "s", [], [], cancel=cancel, abort=abort))
+            except ProviderError as err:
+                outcome.append(err.body)
+
+        thread = threading.Thread(target=call)
+        thread.start()
+        deadline = time.monotonic() + 5
+        while not server.requests and time.monotonic() < deadline:
+            time.sleep(0.01)
+        time.sleep(0.1)    # the server is prefilling: no header and no byte has come back
+        started = time.monotonic()
+        cancel.set()
+        self.assertTrue(abort.fire(), "the connection's socket was registered as soon as it connected")
+        thread.join(10)
+        self.assertLess(time.monotonic() - started, 5, "the blocked read did not end")
+        self.assertEqual(outcome, ["cancelled"])
+        self.assertEqual(len(server.requests), 1, "a fired abort is never retried")
+
+    def test_an_abort_fired_first_closes_the_next_connection_at_once(self) -> None:
+        server = self.start_mock(handler=lambda body, path: {"text": "late", "delay": 8})
+        provider, _ = self.openai(server)
+        abort = providers.AbortHandle()
+        self.assertFalse(abort.fire(), "nothing open yet")
+        started = time.monotonic()
+        with self.assertRaises(ProviderError) as ctx:
+            provider.complete(model_cfg(provider.cfg), "s", [], [], abort=abort)
+        self.assertEqual(ctx.exception.body, "cancelled")
+        self.assertLess(time.monotonic() - started, 5)
+
+    def test_response_socket_finds_the_socket_under_an_http_client_response(self) -> None:
+        """Pins the CPython detail AbortHandle uses (response.fp.raw._sock)."""
+        server = self.start_mock([{"text": "ok"}])
+        request = urllib.request.Request(server.base_url + "/models")
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(request, timeout=5) as response:
+            self.assertIsInstance(providers.response_socket(response), socket.socket)
+        self.assertIsNone(providers.response_socket(object()))
+
+    def test_url_query_reaches_the_completion_url(self) -> None:
+        plain = OpenAIProvider(provider_cfg("http://127.0.0.1:1/v1"))
+        self.assertEqual(plain._request({}, {}).full_url, "http://127.0.0.1:1/v1/chat/completions")
+        routed = OpenAIProvider(provider_cfg("http://127.0.0.1:1/v1", url_query={"autoload": "false"}))
+        self.assertEqual(routed._request({}, {}).full_url, "http://127.0.0.1:1/v1/chat/completions?autoload=false")
+        anthropic = AnthropicProvider(provider_cfg("http://127.0.0.1:1", type="anthropic", url_query={"a": "b"}))
+        self.assertTrue(anthropic._request({}, {}).full_url.endswith("/v1/messages?a=b"))
+
+
 class AnthropicTests(MockTestCase):
     def test_streaming_thinking_text_and_signature_verbatim(self) -> None:
         server = self.start_mock([{"reasoning": "Let me think step by step.", "signature": "SIG/abc+==",
@@ -1204,7 +1385,8 @@ class MockLLMTests(unittest.TestCase):
             with urllib.request.urlopen(url, timeout=5) as response:
                 return response.status, json.loads(response.read())
         except urllib.error.HTTPError as err:
-            return err.code, json.loads(err.read())
+            with err:
+                return err.code, json.loads(err.read())
 
     def test_models_route_unknown_route_and_lifecycle(self) -> None:
         with MockLLM() as server:

@@ -1,0 +1,16 @@
+{
+ "body": {},
+ "headers": {
+  "Connection": "close",
+  "Content-Type": "application/json"
+ },
+ "json": {
+  "message": "Signal sent",
+  "number": 10,
+  "pid": 511,
+  "success": true
+ },
+ "method": "POST",
+ "path": "/snapraid/v1/stop",
+ "status": 202
+}

@@ -20,15 +20,17 @@ from unittest import mock
 from swfactory import __version__
 from swfactory.harness import mcp
 from swfactory.harness.mcp import McpClient, McpError
+from swfactory.harness import sandbox as sandbox_mod
 from swfactory.harness.sandbox import Sandbox, bwrap_available
+from tests.helpers import outside_tmp
 
 MOCK_SERVER = Path(__file__).resolve().with_name("mock_mcp_server.py")
 ALL_TOOLS = ["echo", "image", "fail", "sleep", "ask_roots", "env", "big", "progress", "write"]
 
 
-def server_config(*server_args: str, **overrides) -> SimpleNamespace:
-    """An McpServerConfig look-alike that runs the mock server with server_args."""
-    fields = dict(name="mock", command=sys.executable, args=[str(MOCK_SERVER), *server_args],
+def server_config(*server_args: str, program: Path = MOCK_SERVER, **overrides) -> SimpleNamespace:
+    """An McpServerConfig look-alike that runs the mock server (program) with server_args."""
+    fields = dict(name="mock", command=sys.executable, args=[str(program), *server_args],
                   env={}, cwd=None, timeout=10.0, tools=None, startup_timeout=10.0)
     fields.update(overrides)
     return SimpleNamespace(**fields)
@@ -305,6 +307,15 @@ class StartupTests(McpTestCase):
         self.assertTrue(client.call("echo", {"text": "x"})[1])
 
 
+def unknown_after(seconds: float) -> str:
+    return (f"MCP call timed out after {seconds:g}s. The request was sent, so the tool may have run: its outcome is "
+            "unknown. Check before you call it again.")
+
+
+def not_sent_after(seconds: float) -> str:
+    return f"MCP call timed out after {seconds:g}s before the request was sent: the tool did not run."
+
+
 class CallTests(McpTestCase):
     def setUp(self) -> None:
         super().setUp()
@@ -327,24 +338,34 @@ class CallTests(McpTestCase):
     def test_timeout_sends_cancellation(self) -> None:
         started = time.monotonic()
         result = self.client.call("sleep", {"seconds": 30}, timeout=0.3)
-        self.assertEqual(result, ("MCP call timed out after 0.3s", True))
+        self.assertEqual(result, (unknown_after(0.3), True))
         self.assertLess(time.monotonic() - started, 5)
         self.wait_for_log(r"cancelled request \d+ reason=timed out after 0\.3s$")
         self.assertEqual(self.client.call("echo", {"text": "after"}), ("after", False))
 
     def test_tiny_timeouts_do_not_fail_a_healthy_session(self) -> None:
         for timeout in (0, 0.001) * 15:
-            self.assertEqual(self.client.call("sleep", {"seconds": 5}, timeout=timeout),
-                             (f"MCP call timed out after {timeout:g}s", True))
+            text, is_error = self.client.call("sleep", {"seconds": 5}, timeout=timeout)
+            self.assertTrue(is_error)
+            self.assertIn(text, (unknown_after(timeout), not_sent_after(timeout)))
         self.assertEqual(self.client.call("echo", {"text": "alive"}), ("alive", False))
 
     def test_default_call_timeout_comes_from_cfg(self) -> None:
         client = self.make_client(server_config(timeout=0.3))
-        self.assertEqual(client.call("sleep", {"seconds": 30}), ("MCP call timed out after 0.3s", True))
+        self.assertEqual(client.call("sleep", {"seconds": 30}), (unknown_after(0.3), True))
+
+    def test_a_call_that_never_left_says_the_tool_did_not_run(self) -> None:
+        """DESIGN §40: failed only when provably not sent; a sent call with no answer is unknown, never "failed"."""
+        with mock.patch.object(self.client, "_request", side_effect=mcp._Timeout("tools/call", 9, 0.3, sent=False)):
+            self.assertEqual(self.client.call("echo", {"text": "x"}, timeout=0.3), (not_sent_after(0.3), True))
+        with mock.patch.object(self.client, "_request", side_effect=mcp._Timeout("tools/call", 9, 0.3, sent=True)):
+            self.assertEqual(self.client.call("echo", {"text": "x"}, timeout=0.3), (unknown_after(0.3), True))
+        with mock.patch.object(self.client, "_request", side_effect=McpError("Unknown tool: x", -32602)):
+            self.assertEqual(self.client.call("x", {}), ("Unknown tool: x", True), "a refusal is the server's answer")
 
     def test_late_response_is_ignored(self) -> None:
         first = self.client.call("sleep", {"seconds": 0.4, "ignore_cancel": True}, timeout=0.1)
-        self.assertEqual(first, ("MCP call timed out after 0.1s", True))
+        self.assertEqual(first, (unknown_after(0.1), True))
         self.assertEqual(self.client.call("sleep", {"seconds": 0.6}), ("slept 0.6s", False))
 
     def test_concurrent_calls_get_their_own_responses(self) -> None:
@@ -390,8 +411,11 @@ class LifecycleTests(McpTestCase):
         self.assertTrue(is_error)
         self.assertIn("exited with code 3", text)
         self.assertIn("crashing on purpose", text)
+        self.assertIn("The request was sent before that, so the tool may have run: its outcome is unknown", text)
         started = time.monotonic()
-        self.assertEqual(client.call("echo", {"text": "again"}), (text, True))
+        again, is_error = client.call("echo", {"text": "again"})
+        self.assertTrue(is_error)
+        self.assertEqual(again, text.split(". The request was sent")[0], "not sent: nothing may have run")
         self.assertLess(time.monotonic() - started, 1)
         self.wait_for_log(r"mcp mock: MCP server mock exited with code 3")
 
@@ -458,7 +482,8 @@ class LifecycleTests(McpTestCase):
         client.close()
         caller.join(5)
         self.assertFalse(caller.is_alive())
-        self.assertEqual(results, [("MCP server mock is closed", True)])
+        self.assertEqual(results, [("MCP server mock is closed. The request was sent before that, " + mcp.UNKNOWN_WORDS,
+                                    True)], "a call that was out when the session closed may have run")
 
     def test_concurrent_close_calls(self) -> None:
         client = self.make_client()
@@ -531,7 +556,9 @@ class SandboxedServerTests(McpTestCase):
     def sandboxed(self, mode: str, *server_args: str) -> tuple[McpClient, Path]:
         work = self.tmp / "work"
         work.mkdir(exist_ok=True)
-        client = McpClient(server_config(*server_args), work, log=self.logs.append,
+        # under bwrap a server kept below /tmp (a checkout there) is hidden by the sandbox's own /tmp
+        program = outside_tmp(MOCK_SERVER, self) if mode == "bwrap" else MOCK_SERVER
+        client = McpClient(server_config(*server_args, program=program), work, log=self.logs.append,
                            sandbox=Sandbox(mode, work, [work], True, {}))
         self.addCleanup(client.close)
         client.start()
@@ -544,6 +571,16 @@ class SandboxedServerTests(McpTestCase):
         self.assertEqual(outside.read_text(), "x", "without bwrap a server writes wherever the user can")
         match = self.wait_for_log(r"started pid=\d+ cwd=(.*) tag=")
         self.assertEqual(Path(match.group(1)).resolve(), work.resolve())
+
+    @unittest.skipUnless(sandbox_mod.setpriv_path(), "setpriv (util-linux) is not installed here")
+    def test_without_bwrap_the_server_starts_without_new_privileges(self) -> None:
+        """DESIGN §17: what an agent starts outside bwrap never gains rights through a setuid program (sudo)."""
+        if sandbox_mod.no_new_privs_set():
+            self.skipTest("this test process has no-new-privileges already")
+        self.sandboxed("none")
+        pid = int(self.wait_for_log(r"started pid=(\d+) ").group(1))
+        status = Path(f"/proc/{pid}/status").read_text()
+        self.assertRegex(status, r"NoNewPrivs:\s+1")
 
     @unittest.skipUnless(bwrap_available(), "bubblewrap is not usable here")
     def test_under_bwrap_the_server_writes_only_what_the_agents_bash_can(self) -> None:
@@ -607,9 +644,12 @@ class StalledStdinTests(McpTestCase):
         client = self.deaf_client()
         text, is_error = self.call_within(2, client, "echo", {"text": "a" * 300_000}, timeout=0.5)
         self.assertTrue(is_error)
-        self.assertEqual(text, "MCP server mock stopped reading its stdin "
-                               "(a tools/call request could not be written within 0.5s)")
-        self.assertEqual(self.call_within(0.5, client, "echo", {"text": "x"}), (text, True))
+        failure = "MCP server mock stopped reading its stdin (a tools/call request could not be written within 0.5s)"
+        self.assertEqual(text, f"{failure}. Part of the request was written and the rest may still reach the "
+                               f"server, so the tool may have run: its outcome is unknown. Check before you call "
+                               f"it again.", "half in the pipe: unknown, never 'failed' (DESIGN §40)")
+        self.assertEqual(self.call_within(0.5, client, "echo", {"text": "x"}), (failure, True),
+                         "a call after the session failed never left")
         server = self.server_pid()
         with mock.patch.object(mcp, "_CLOSE_GRACE", 0.3):
             started = time.monotonic()
@@ -624,7 +664,7 @@ class StalledStdinTests(McpTestCase):
             self.assertTrue(is_error)
             if "stopped reading its stdin" in text:
                 break
-            self.assertEqual(text, "MCP call timed out after 0.05s")
+            self.assertIn(text, (unknown_after(0.05), not_sent_after(0.05)))
         else:
             self.fail("the stalled stdin was never detected")
 
@@ -666,8 +706,10 @@ class OutputLimitTests(McpTestCase):
             self.assertEqual(client.call("big", {"size": 1000}), ("x" * 1000, False))
             text, is_error = client.call("big", {"size": 100_000})
             self.assertTrue(is_error)
-            self.assertEqual(text, "MCP server mock sent a message larger than 4096 bytes")
-            self.assertEqual(client.call("echo", {"text": "x"}), (text, True))
+            self.assertEqual(text, "MCP server mock sent a message larger than 4096 bytes. The request was sent before "
+                               "that, " + mcp.UNKNOWN_WORDS)
+            self.assertEqual(client.call("echo", {"text": "x"}),
+                             ("MCP server mock sent a message larger than 4096 bytes", True), "never sent: did not run")
             client.close()
 
     def test_progress_bar_on_stderr_logs_its_final_state(self) -> None:

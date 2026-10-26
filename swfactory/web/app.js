@@ -1,5 +1,7 @@
-/* Software Factory web GUI.
- * Vanilla ES2020 in one file: no build step, no framework, no external requests.
+/* Seraphina OS Harness web GUI: Home, the Software Factory (board, plans, chat) and the shared shell.
+ * Vanilla ES2020: no build step, no framework, no external requests. Each further section of the harness lives in
+ * its own file, swfactory/web/views/<area>.js, loaded after this one; it registers itself through window.SF (the
+ * "view modules" section below) and reaches the shared helpers only through that one namespace.
  * Security model: untrusted strings (job text, agent output, files, diffs, config values)
  * reach the DOM only through textContent / createTextNode / setAttribute on safe attributes.
  * This file never uses innerHTML, outerHTML, insertAdjacentHTML or document.write.
@@ -765,7 +767,8 @@
 
   // ================================================================ API
   class ApiError extends Error {
-    constructor(status, message) { super(message); this.status = status; }
+    /** data: the server's reply body ({error, ...}: e.g. a 409's open_blocking), or null. */
+    constructor(status, message, data) { super(message); this.status = status; this.data = data === undefined ? null : data; }
   }
   let unauthorized = false;
   function onUnauthorized() {
@@ -793,13 +796,29 @@
       data = await res.text();
       if (!res.ok && ct.indexOf('json') >= 0) { try { data = JSON.parse(data); } catch (e) { /* keep text */ } }
     }
+    // A 409 can mean "mid-ingest, try again in about a second" (DESIGN §15): retry409 asks once more.
+    if (res.status === 409 && opts.retry409 && !opts._again) { await sleep(1000); return api(path, Object.assign({}, opts, { _again: true })); }
     if (!res.ok) {
       let msg = data && typeof data === 'object' && data.error ? String(data.error) : '';
       if (!msg && typeof data === 'string' && data.trim()) msg = data.trim().slice(0, 300);
       if (!msg) msg = res.status + ' ' + (res.statusText || 'error');
-      throw new ApiError(res.status, msg);
+      const err = new ApiError(res.status, msg, data);
+      const wait = parseFloat(res.headers.get('Retry-After') || '');
+      if (wait > 0) err.retryAfter = wait;   // seconds, from a 429's Retry-After
+      throw err;
     }
+    if (method !== 'GET' && SETTINGS_PATH_RE.test(path)) doctorStale();
     return data;
+  }
+  /** A saved setting (the config, a preset, a repository, a key) changes what Doctor finds; nothing on the event
+   *  stream says so. Without a fresh run the badge kept a fresh install's to-do list after setup and, the install no
+   *  longer fresh, showed it as that many red issues. Every save, from any section, runs Doctor again once the saves
+   *  settle (the setup wizard's Test adds and removes a temporary entry back to back). */
+  const SETTINGS_PATH_RE = /^\/api\/(config|config\/preset|repos|secrets)$/;
+  let doctorTimer = 0;
+  function doctorStale() {
+    clearTimeout(doctorTimer);
+    doctorTimer = setTimeout(() => loadDoctor(false), 800);
   }
   const jobPath = (repo, id) => '/api/jobs/' + enc(repo) + '/' + enc(id);
 
@@ -959,7 +978,12 @@
         } catch (err) {
           ctl.showError(err && err.message ? err.message : String(err));
         } finally {
-          if (!done) { buttons.forEach((b, i) => { b.disabled = wasDisabled[i]; }); setBusy(submitter, false); }
+          if (!done) {
+            buttons.forEach((b, i) => { b.disabled = wasDisabled[i]; }); setBusy(submitter, false);
+            // The busy button lost focus when it was disabled: give it back unless onSubmit focused a field.
+            const at = document.activeElement;
+            if ((!at || at === document.body || !dlg.contains(at)) && submitter && !submitter.disabled) submitter.focus();
+          }
         }
       });
       // Esc: a dialog that holds typed text (non-dismissable ones) asks for a second Esc before discarding it.
@@ -1188,7 +1212,7 @@
     const key = owner + '#' + runName(ev);
     if (ev.type === 'agent.waiting') {
       const d = ev.data || {};
-      S.waiting.set(key, { owner, provider: String(d.provider || 'the provider'), agent: String(ev.agent || ''), repo: ev.repo || '', since: ev.ts || null });
+      S.waiting.set(key, { owner, provider: String(d.provider || 'the provider'), custody: d.custody ? String(d.custody) : null, agent: String(ev.agent || ''), repo: ev.repo || '', since: ev.ts || null });
       onWaitingChanged(owner);
     } else if (S.waiting.delete(key)) {
       onWaitingChanged(owner);
@@ -1202,6 +1226,14 @@
   function waitingOf(owner) {
     for (const w of S.waiting.values()) if (w.owner === owner) return w;
     return null;
+  }
+  /** What a run waits for, in words (agent.waiting): a free slot of its provider, or, when the GPU custody register
+   *  answered HELD (custody: "HELD", DESIGN §37), the register: someone else holds the card. Never "a slot" then. */
+  const HELD_WAIT = 'waiting for the GPU custody register: the card is held by someone else';
+  function waitWords(w) {
+    if (w && w.custody === 'HELD') return { short: HELD_WAIT, long: 'Waiting for the GPU custody register: the card is held by someone else. The run waits once, up to the provider’s overflow_after_seconds, then goes to the next build or its overflow.' };
+    const p = (w && w.provider) || 'the provider';
+    return { short: 'waiting for a free ' + p + ' slot', long: 'Queued: the ' + p + ' provider has no free slot (max_concurrency); the run starts when one frees up' };
   }
   function onWaitingChanged(owner) {
     invalidate('strip', 'board');
@@ -1246,8 +1278,8 @@
       run = {
         key, owner, name, no: no ? parseInt(no[1], 10) : null,
         agent: (ev && ev.agent) || name.replace(/^\d+-/, ''), model: '', modelId: '', provider: '', driver: '', round: null, waiting: null,
-        startTs: null, endTs: null, status: 'pending', ok: null, error: null, usage: null, usageLive: null, turns: null,
-        events: [], seqs: new Set(), lastSeq: -Infinity, firstSeq: Infinity, items: [], tools: new Map(), gen: 0, v: 0,
+        startTs: null, endTs: null, status: 'pending', ok: null, error: null, usage: null, usageLive: null, turns: null, began: false,
+        startData: null, endData: null, placeV: 0, events: [], seqs: new Set(), lastSeq: -Infinity, firstSeq: Infinity, items: [], tools: new Map(), gen: 0, v: 0,
       };
       S.runs.set(key, run);
       let set = S.runsByOwner.get(owner);
@@ -1270,7 +1302,8 @@
   }
   function resetRun(run) {
     run.items = []; run.tools = new Map(); run.status = 'pending'; run.ok = null; run.error = null;
-    run.usage = null; run.usageLive = null; run.turns = null; run.startTs = null; run.endTs = null; run.waiting = null;
+    run.usage = null; run.usageLive = null; run.turns = null; run.startTs = null; run.endTs = null; run.waiting = null; run.waitCustody = null; run.began = false;
+    run.startData = null; run.endData = null; run.placeV++;
   }
   function applyRunEvent(run, ev) {
     const d = ev.data || {};
@@ -1278,8 +1311,9 @@
     const last = items[items.length - 1];
     if (!run.startTs && ev.ts) run.startTs = ev.ts;
     if (ev.type !== 'agent.end' && run.status === 'pending') run.status = 'running';
-    // Queued on a busy provider slot until the run's next event.
+    // Queued on a busy provider slot (or held by the GPU custody register) until the run's next event.
     run.waiting = ev.type === 'agent.waiting' ? String(d.provider || 'the provider') : null;
+    run.waitCustody = ev.type === 'agent.waiting' && d.custody ? String(d.custody) : null;
     switch (ev.type) {
       case 'agent.start':
         run.agent = d.agent || ev.agent || run.agent;
@@ -1290,6 +1324,9 @@
         run.round = d.round !== undefined ? d.round : run.round;
         run.startTs = ev.ts || run.startTs;
         run.status = 'running';
+        run.startData = d;
+        run.placeV++;
+        run.began = true;   // the agent started: a run without agent.start was refused before any model call
         break;
       case 'agent.end':
         run.endTs = ev.ts || null;
@@ -1298,6 +1335,8 @@
         run.usage = isObj(d.usage) ? d.usage : run.usage;
         run.turns = d.turns !== undefined ? d.turns : run.turns;
         run.status = run.ok ? 'ok' : 'error';
+        run.endData = d;
+        run.placeV++;
         if (run.error) items.push({ t: 'error', text: run.error, v: 1 });
         break;
       case 'agent.text':
@@ -1469,7 +1508,10 @@
       scheduleReconnect();
     });
     const onMsg = (m) => { if (es === source) onSseMessage(m); };
-    for (const t of EVENT_TYPES) source.addEventListener(t, onMsg);
+    // The core's own event types, then every type a view module subscribed to (SF.on): a named SSE event reaches
+    // only the listeners registered for its name.
+    source._onMsg = onMsg;
+    for (const t of eventTypes()) source.addEventListener(t, onMsg);
     source.onmessage = onMsg;
   }
   function scheduleReconnect() {
@@ -1488,6 +1530,7 @@
     if (D.key) loadJobDetail(false);
     if (BL.open) loadBacklog();
     loadDoctor(false);
+    notifyReconnect('reconnected');
   }
   function resetLiveData() {
     S.runs.clear();
@@ -1501,6 +1544,7 @@
     for (const st of CH.store.values()) { st.loaded = false; }
     if (D.key) loadJobDetail(true);
     if (CH.id) loadChatDetail(CH.id);
+    notifyReconnect('restarted');
   }
   function onSseMessage(m) {
     let ev;
@@ -1521,6 +1565,10 @@
   }
   function handleEvent(ev) {
     if (ev.seq > S.lastSeq) S.lastSeq = ev.seq;
+    try { coreEvent(ev); } catch (e) { console.error('event ' + ev.type + ' failed', e); }
+    dispatchToViews(ev);
+  }
+  function coreEvent(ev) {
     const d = ev.data || {};
     const t = ev.type;
     if (t === 'job.created' || t === 'job.updated') upsertJob(d.job, ev.seq);
@@ -1573,6 +1621,10 @@
     return !j || ACTIVE.has(j.stage);
   }
   function runUsage(run) { return run.usage || run.usageLive; }
+  /** A run as SF.extend('runHead', fn) sees it (read-only): its agent.start and agent.end data, or null. */
+  function runView(run, mode) {
+    return Object.freeze({ mode, owner: run.owner, name: run.name, agent: run.agent, round: run.round, status: run.status, start: run.startData, end: run.endData });
+  }
   /** The model a run used, as "key → model id" when the backend reports both. */
   function runModel(run) {
     if (run.modelId && run.model && run.modelId !== run.model) return run.model + ' → ' + run.modelId;
@@ -1644,10 +1696,12 @@
       }
       // chat message from history or sent from this tab
       if (b.role === 'user') return { el: h('div', { class: 'msg msg-user' }, h('div', { class: 'bubble' }, b.text)) };
+      const chat = b.chat ? S.chats.get(b.chat) : null;
       return {
         el: h('div', { class: 'msg msg-assistant' },
-          h('div', { class: 'msg-who' }, h('span', { class: 'avatar' }, icon('logo')), 'coder'),
-          h('div', { class: 'turn-body' }, MD.render(b.text))),
+          h('div', { class: 'msg-who' }, h('span', { class: 'avatar' }, icon('logo')), (chat && chat.agent) || 'coder'),
+          h('div', { class: 'turn-body' }, MD.render(b.text)),
+          chat ? extNodes('chatReply', { chat, turn: b.msg && Number.isInteger(b.msg.turn) ? b.msg.turn : null, message: b.msg || null, run: null }) : null),
       };
     }
     update(rec, b, isLast) {
@@ -1670,7 +1724,7 @@
       if (rec.placeholder) {
         const show = !run.items.length;
         rec.placeholder.hidden = !show;
-        if (show) rec.placeholder.textContent = runIsLive(run) ? (run.waiting ? 'Queued: waiting for a free ' + run.waiting + ' slot…' : 'Waiting for the agent…') : 'No output recorded.';
+        if (show) rec.placeholder.textContent = runIsLive(run) ? (run.waiting ? (run.waitCustody === 'HELD' ? 'Queued: ' + HELD_WAIT + '…' : 'Queued: waiting for a free ' + run.waiting + ' slot…') : 'Waiting for the agent…') : 'No output recorded.';
         if (show && rec.placeholder.parentNode !== rec.body) rec.body.appendChild(rec.placeholder);
       }
       return run.v;
@@ -1685,11 +1739,12 @@
         agent: h('span', { class: 'run-agent' }),
         model: h('span', { class: 'run-model' }),
         round: h('span', { class: 'tag tag-outline' }),
+        ext: h('span', { class: 'run-ext' }),
         usage: h('span', { class: 'run-usage' }),
         dur: h('span', { class: 'run-dur' }),
         status: h('span', { class: 'run-status' }),
       };
-      add(head, [icon('chevron', 'icon-sm chev'), rec.parts.dot, rec.parts.agent, rec.parts.model, rec.parts.round,
+      add(head, [icon('chevron', 'icon-sm chev'), rec.parts.dot, rec.parts.agent, rec.parts.model, rec.parts.round, rec.parts.ext,
         h('span', { class: 'run-meta' }, rec.parts.usage, rec.parts.dur, rec.parts.status)]);
       el.appendChild(rec.body);
       el.addEventListener('toggle', () => { if (rec.programmatic) rec.programmatic = false; else rec.auto = false; });
@@ -1705,6 +1760,8 @@
       p.round.hidden = !hasRound;
       if (hasRound) p.round.textContent = 'r' + run.round;
       p.usage.textContent = fmtUsage(runUsage(run));
+      const extSig = run.placeV + '|' + run.status;
+      if (rec.extSig !== extSig) { rec.extSig = extSig; clear(p.ext); add(p.ext, extNodes('runHead', runView(run, 'job'))); }
       const live = runIsLive(run);
       const start = parseTs(run.startTs);
       if (live && isFinite(start)) { p.dur.dataset.since = String(start); p.dur.textContent = fmtDur(Date.now() - start); }
@@ -1716,9 +1773,10 @@
       clear(p.status);
       p.status.title = '';
       if (live && run.waiting) {
+        const ww = waitWords({ provider: run.waiting, custody: run.waitCustody });
         p.status.className = 'run-status wait';
-        p.status.title = 'Queued: the ' + run.waiting + ' provider has no free slot (max_concurrency); the run starts when one frees up';
-        add(p.status, [icon('hourglass', 'icon-sm'), 'waiting for ' + run.waiting + '…']);
+        p.status.title = ww.long;
+        add(p.status, [icon('hourglass', 'icon-sm'), run.waitCustody === 'HELD' ? HELD_WAIT + '…' : 'waiting for ' + run.waiting + '…']);
       } else if (live) { p.status.className = 'run-status live'; add(p.status, [h('span', { class: 'spinner', 'aria-hidden': 'true' }), 'running']); }
       else if (run.status === 'ok') { p.status.className = 'run-status ok'; add(p.status, [icon('check', 'icon-sm'), 'done']); }
       else if (run.status === 'error') { p.status.className = 'run-status err'; add(p.status, [icon('error', 'icon-sm'), 'failed']); }
@@ -1757,9 +1815,14 @@
       if (isFinite(start) && isFinite(end)) bits.push(fmtDur(end - start));
       const u = fmtUsage(runUsage(run));
       if (u) bits.push(u);
+      const chat = run.owner.indexOf('chat:') === 0 ? S.chats.get(run.owner.slice(5)) : null;
       if (run.status === 'error') rec.foot.appendChild(h('span', { class: 'tag tag-err' }, 'failed'));
+      else if (run.status === 'running' && !run.began && chat && chat.status === 'error') rec.foot.appendChild(h('span', { class: 'tag tag-outline', title: 'The turn was refused before the agent started: nothing was sent to a model.' }, 'did not run'));
       else if (run.status === 'running') rec.foot.appendChild(h('span', { class: 'tag tag-outline' }, 'stopped'));
       for (const b of bits) rec.foot.appendChild(h('span', null, b));
+      add(rec.foot, extNodes('runHead', runView(run, 'chat')));
+      const text = run.items.some((it) => it.t === 'text' && it.text);
+      if (chat) add(rec.foot, extNodes('chatReply', { chat, turn: run.no, message: null, run: Object.freeze({ name: run.name, no: run.no, status: run.status, started: run.began, text }) }));
     }
     // ---- items
     createItem(it, run, done) {
@@ -1886,12 +1949,14 @@
     pb.hidden = !stuck;
     pb.title = plural(stuck, 'plan') + ' waiting for you';
     updateTitle();
+    if (S.route.view === 'home') invalidate('home');
   };
   function updateTitle() {
     const human = visibleJobs().filter((j) => j.stage === 'needs-human').length;
-    const names = { factory: 'Factory', plans: 'Plans', chat: 'Chat', agents: 'Agents', settings: 'Settings', doctor: 'Doctor', grid: 'Grid Card', procedures: 'Procedures' };
-    const view = S.route.view === 'flow' ? ({ welcome: 'Welcome', setup: 'Setup', start: 'Start' })[S.route.flow] || 'Welcome' : names[S.route.view] || 'Factory';
-    document.title = (human ? '(' + human + ') ' : '') + view + ' · Software Factory';
+    const names = { home: 'Home', factory: 'Factory', plans: 'Plans', chat: 'Chat', agents: 'Agents', settings: 'Settings', doctor: 'Doctor', grid: 'Grid Card', procedures: 'Procedures' };
+    const ext = REG.views.get(S.route.view);
+    const view = S.route.view === 'flow' ? ({ welcome: 'Welcome', setup: 'Setup', start: 'Start' })[S.route.flow] || 'Welcome' : ext ? ext.title : names[S.route.view] || 'Home';
+    document.title = (human ? '(' + human + ') ' : '') + view + ' · ' + PRODUCT;
   }
   function doctorLevel() {
     if (!S.doctor) return 'unknown';
@@ -1918,20 +1983,27 @@
       : level === 'ok' ? 'Doctor: all checks pass'
         : 'Doctor: ' + bad.map((c) => c.name).join(', ');
     el.setAttribute('aria-label', el.title);
+    if (S.route.view === 'home') invalidate('home');
   };
+  let doctorSeq = 0;
   async function loadDoctor(manual) {
+    const seq = ++doctorSeq;   // only the newest run's answer counts (a save can start one while another runs)
     S.doctorLoading = true;
     invalidate('doctor', 'doctorBadge');
     try {
       const r = await api('/api/doctor');
+      if (seq !== doctorSeq) return;
       S.doctor = { checks: Array.isArray(r && r.checks) ? r.checks.filter((c) => c && c.name) : [], at: Date.now() };
       S.doctorError = null;
     } catch (e) {
+      if (seq !== doctorSeq) return;
       S.doctorError = e.message;
       if (manual) toastError('Doctor failed', e);
     } finally {
-      S.doctorLoading = false;
-      invalidate('doctor', 'doctorBadge');
+      if (seq === doctorSeq) {
+        S.doctorLoading = false;
+        invalidate('doctor', 'doctorBadge');
+      }
     }
   }
 
@@ -2269,7 +2341,7 @@
         h('span', { class: 'card-id', title: job.repo + '/' + job.id }, job.id),
         timeEl(job.updated_at || job.created_at, 'card-time')),
       h('span', { class: 'card-feature' }, featureTitle(job) || '(no feature text)'),
-      wait ? h('span', { class: 'card-detail card-wait', title: (wait.agent ? wait.agent + ' is queued: ' : 'Queued: ') + 'no free ' + wait.provider + ' slot yet' }, icon('hourglass', 'icon-xs'), 'waiting for ' + wait.provider + '…')
+      wait ? h('span', { class: 'card-detail card-wait', title: (wait.agent ? wait.agent + ' is queued: ' : 'Queued: ') + (wait.custody === 'HELD' ? HELD_WAIT : 'no free ' + wait.provider + ' slot yet') }, icon('hourglass', 'icon-xs'), wait.custody === 'HELD' ? 'waiting: the card is held by someone else' : 'waiting for ' + wait.provider + '…')
         : job.detail ? h('span', { class: 'card-detail', title: job.detail }, job.detail) : null,
     ]);
     const meta = [];
@@ -2286,6 +2358,9 @@
       const mode = jobDelivery(job) || 'branch';
       meta.push(h('span', { class: 'tag tag-deliver', title: 'Delivered: ' + DELIVERY_UI[mode].text + '. Open it to merge it now.' }, icon(DELIVERY_UI[mode].icon, 'icon-xs'), mode === 'folder' ? 'in folder' : 'on branch'));
     } else if (stage === 'merged') meta.push(h('span', { class: 'tag tag-ok tag-merged' }, icon('merge', 'icon-xs'), 'merged'));
+    const pushed = pushChip(job);
+    if (pushed) meta.push(pushed);
+    for (const n of extNodes('jobCard', job)) meta.push(n);
     if (meta.length) el.appendChild(h('span', { class: 'card-meta' }, meta));
     const reason = job.reason || (stage === 'failed' ? job.error : null);
     if (reason && (stage === 'needs-human' || stage === 'failed' || stage === 'rejected')) {
@@ -2307,7 +2382,7 @@
     }
     const el = item._card;
     const w = waitingOf(k);
-    const sig = (job.updated_at || '') + '|' + showRepo + '|' + job.stage + '|' + (w ? w.provider : '');
+    const sig = (job.updated_at || '') + '|' + showRepo + '|' + job.stage + '|' + (w ? w.provider + ':' + (w.custody || '') : '') + '|' + JSON.stringify(job.push || null);
     if (el._job !== job || el._sig !== sig) { fillCard(el, job, showRepo); el._job = job; el._sig = sig; }
     el.setAttribute('aria-current', D.key === k ? 'true' : 'false');
     return item;
@@ -2425,12 +2500,15 @@
     hybrid: 'Local for volume (spec-writer, builder, security, chat, scout), Claude Sonnet for the other reviewers, Opus at the gate, Fable as the lead.',
     mixed: 'Two local llama.cpp servers (Qwen 27B and Gemma 4) plus Claude Opus for security, the approver and the lead.',
     'gpt-oss': 'gpt-oss-120b on llama.cpp for the judgment roles, DeepSeek for the builder and the other reviewers.',
+    'local-first': 'Local Flash-Next builds, codes, scouts and reviews security; Claude Opus specs, approves and leads; GPT-6.1 Sol, Claude Sonnet and Gemini review; five routing profiles.',
+    'nanogpt-value': 'All API through NanoGPT: Muse Spark builds, four model families review, Claude Opus specs, approves and leads.',
   };
   // A few words per preset for the menus (the hint and the confirm show PRESET_INFO in full).
   const PRESET_SHORT = {
     deepseek: 'DeepSeek API everywhere', anthropic: 'Claude API everywhere', nanogpt: 'one NanoGPT key, many vendors',
     ollama: 'all local on Ollama', strata: 'all local on Strata', hybrid: 'local volume, Claude reviews and gate',
     mixed: 'two llama.cpp servers + Claude Opus', 'gpt-oss': 'gpt-oss-120b judges + DeepSeek',
+    'local-first': 'local Flash-Next builds, API judges', 'nanogpt-value': 'all API through one NanoGPT key',
   };
   const presetLabel = (p) => p + (PRESET_SHORT[p] ? ' — ' + PRESET_SHORT[p] : '');
   /** The routing presets of a config view: names (older servers) or {name, description} objects (§25);
@@ -2474,7 +2552,8 @@
     const id = m.model && m.model !== key ? String(m.model) : '';
     const prov = m.provider ? String(m.provider) : '';
     const named = (key + ' ' + id).toLowerCase().indexOf(prov.toLowerCase()) >= 0;
-    return key + (id ? ' · ' + id : '') + (withProvider !== false && prov && !named ? ' (' + prov + ')' : '');
+    const fam = cfg && isObj(cfg.model_families) && cfg.model_families[key] ? String(cfg.model_families[key]) : '';
+    return key + (id ? ' · ' + id : '') + (withProvider !== false && prov && !named ? ' (' + prov + ')' : '') + (fam ? ' · ' + fam + ' family' : '');
   }
   /** LOCAL when the provider's base_url is loopback, else API (null when the provider is unknown). */
   function locBadge(cfg, key) {
@@ -2610,7 +2689,8 @@
     };
   }
   /** "Routing: Default ▾" — Default (saved settings), Saved (explicit), each preset, or Custom… with per-step selects.
-   *  value(): undefined (default), a preset name, or {agent: {model?, driver?}}; throws when Custom changes nothing. */
+   *  value(): undefined (default), null (Saved settings), a preset name, or {agent: {model?, driver?}}; throws when
+   *  Custom changes nothing. */
   function routingChooser(o) {
     const id = 'rt-choice-' + (++modalSeq);
     const sel = h('select', { class: 'select', id, name: 'routing' });
@@ -2687,22 +2767,21 @@
       value() {
         if (choice === '' || choice === ':loading') return undefined;
         if (choice.indexOf('preset:') === 0) return choice.slice(7);
-        if (choice === ':saved') {
-          const saved = savedRoutes(cfg);
-          const out = {};
-          for (const name of o.steps()) {
-            const r = saved[name];
-            if (!r) continue;
-            out[name] = { model: r.model, driver: r.driver };
-            if (r.extra_body && Object.keys(r.extra_body).length) out[name].extra_body = clone(r.extra_body);
-          }
-          return out;
-        }
+        // Saved settings: null, which the server resolves from the saved config (Factory.set_routing), so each
+        // step keeps the effort, escalation, reason and alternate Settings › Routing gives it. Each step's saved
+        // model sent explicitly would drop them (Factory._resolve_route).
+        if (choice === ':saved') return null;
         const changes = editor ? editor.changes() : {};
         if (!Object.keys(changes).length) { sel.focus(); throw new Error(o.emptyCustom || 'Custom routing changes no step: pick another model or driver for at least one step, or choose Default.'); }
         return changes;
       },
     };
+  }
+  /** What a routing chooser routes, for a form's extensions, without validating (no focus moves): undefined (the saved
+   *  routing), null (Saved settings, explicitly), a preset name, or {} (per-step routes: Custom). */
+  function chooserRouting(ch) {
+    const c = ch.choice();
+    return c.indexOf('preset:') === 0 ? c.slice(7) : c === ':custom' ? {} : c === ':saved' ? null : undefined;
   }
   function describeRouting(routing) {
     if (routing === undefined || routing === null) return '';
@@ -2747,6 +2826,7 @@
       onChange: (choice) => { routeChoice = choice; paintBacklog(); },
     });
     delivery = deliveryChooser({ id: 'nf-delivery', onChange: () => paintBacklog() });
+    const fx = formExt('feature', { repo: () => repoSel.value, routing: () => chooserRouting(routing), watch: [repoSel, routing.el] });
     openModal({
       title: 'New feature',
       description: 'The request goes to the spec-writer verbatim. Run it now, or park it in the repo’s backlog.',
@@ -2754,6 +2834,7 @@
         h('div', { class: 'field' }, h('div', { style: { display: 'flex', 'align-items': 'baseline', 'justify-content': 'space-between' } }, h('label', { class: 'field-label', for: 'nf-repo' }, 'Repository'), addRepo), repoSel),
         field('Feature request', ta),
         routing.el,
+        fx.nodes,
         delivery.el,
         outNote,
       ],
@@ -2778,6 +2859,7 @@
           if (route !== undefined) throw new Error('Backlog items run with the saved routing. Choose Default, or use Run now.');
           if (delivery.differs()) throw new Error('Backlog items use the default output. Choose it again, or use Run now.');
           if (/\n/.test(feature)) throw new Error('Backlog items are a single line. Shorten it, or use Run now for a longer request.');
+          fx.apply({}, 'backlog');
           await api('/api/repos/' + enc(repo) + '/backlog', { method: 'POST', body: { text: feature } });
           toast(['Added to the ', h('strong', null, repo), ' backlog.'], { kind: 'ok', action: { label: 'Show', onClick: () => { BL.repo = repo; setBacklogOpen(true); } } });
           if (BL.open && backlogRepo() === repo) loadBacklog();
@@ -2787,6 +2869,7 @@
         const body = { repo, feature };
         if (route !== undefined) body.routing = route;
         if (out !== undefined) body.delivery = out;
+        fx.apply(body, 'run');
         const r = await api('/api/jobs', { method: 'POST', body });
         const job = r && r.job;
         if (job) {
@@ -2926,6 +3009,7 @@
   function openDrawer(repo, id, tab) {
     const key = repo + '/' + id;
     const drawer = document.getElementById('drawer');
+    if (GD.open) closePanel(false);
     if (D.key !== key) {
       if (D.transcript) D.transcript.destroy();
       clearTimeout(D.updTimer);
@@ -2962,10 +3046,17 @@
     invalidate('board');
     const item = BOARD.cards.get(key);
     const card = item ? item._card : null;
-    const target = opener && opener.isConnected ? opener : card;
+    const target = refocusTarget(opener) || card;
     if (target && target.isConnected) target.focus({ preventScroll: true });
   }
   function closeDrawer() { location.hash = D.back || '#/factory'; }
+  /** Where focus goes back to: the opener, or, when its page was re-rendered meanwhile, its twin (same data-focus). */
+  function refocusTarget(opener) {
+    if (!opener) return null;
+    if (opener.isConnected) return opener;
+    const key = opener.dataset ? opener.dataset.focus : null;
+    return key ? document.querySelector('[data-focus="' + CSS.escape(key) + '"]') : null;
+  }
   /** The drawer is modal (the scrim covers the app): the app behind it is inert, so Tab stays inside. */
   function setDrawerModal(on) {
     for (const el of [document.getElementById('app'), document.querySelector('.skip-link')]) {
@@ -3031,8 +3122,10 @@
     else if (tab === 'diff') { if (!D.diff && !D.diffLoading) loadDiff(); else renderDiffTab(); }
     else if (tab === 'routing') renderRoutingTab();
     else if (tab === 'raw') renderRaw();
+    else renderJobTab(tab);
   }
   function onDrawerJobUpdate(prev, job) {
+    if (JOB_TABS.has(D.tab)) renderJobTab(D.tab);
     clearTimeout(D.updTimer);
     D.updTimer = setTimeout(() => {
       if (!D.key || D.key !== jobKey(job)) return;
@@ -3197,13 +3290,24 @@
     const wrap = (fn) => async (v, ctl) => { try { return await fn(v, ctl); } catch (e) { actionError(e); throw e; } };
     if (action === 'approve') {
       const human = job.stage === 'needs-human' || job.stage === 'delivered';
+      // A view module's fields (form 'approve': the Housekeeping Tracker's must-do items, sent as carry_items). Their
+      // checks run first: what they refuse is shown in the dialog, and nothing is posted.
+      const fx = formExt('approve', { job });
+      const fxBody = fx.nodes.length ? fx.nodes : null;
+      // A refusal a field explains in plain words (a 409 naming must-do items: its list is read again) is shown in
+      // the dialog in those words; any other is the server's, as a toast too.
+      const approve = (fn) => async (v, ctl) => {
+        const body = fx.apply({}, v);
+        try { return await fn(body, ctl); }
+        catch (e) { const plain = fx.error(e, v); if (plain) throw new Error(plain); actionError(e); throw e; }
+      };
       if (job.stage === 'delivered') {
         await confirmModal({
           title: 'Merge ' + job.id + ' now?',
           description: [h('span', { class: 'mono' }, job.branch || 'the job branch'), ' merges into ', h('span', { class: 'mono' }, base), '. It was approved and ' + DELIVERY_UI[jobDelivery(job) || 'branch'].text +
             '; merging it now is your decision, so the gate’s path and size rules are skipped. The merge still requires no conflicts.'],
-          confirm: 'Merge it now', cls: 'btn-ok-solid', icon: 'merge',
-          onSubmit: wrap(async () => { await postAction(job, 'approve'); done('Merging ' + job.id + '…'); }),
+          confirm: 'Merge it now', cls: 'btn-ok-solid', icon: 'merge', body: fxBody,
+          onSubmit: approve(async (body) => { await postAction(job, 'approve', body); done('Merging ' + job.id + '…'); }),
         });
         return;
       }
@@ -3215,8 +3319,8 @@
           description: ['Its output is ', h('strong', null, mode === 'folder' ? 'a folder' : 'its branch'), ': approving delivers it as the job asked, so it is ' + DELIVERY_UI[mode].text +
             (mode === 'folder' ? ' (changes.patch, the changed files and REPORT.md)' : '') + '. Nothing merges and ', h('span', { class: 'mono' }, base),
             ' does not move. This is your decision, so the review rule is skipped; Merge it now on the delivered job merges it later.'],
-          confirm: 'Approve & deliver', cls: 'btn-ok-solid', icon: DELIVERY_UI[mode].icon,
-          onSubmit: wrap(async () => { await postAction(job, 'approve'); done('Approved ' + job.id + ': delivering as a ' + mode + '…'); }),
+          confirm: 'Approve & deliver', cls: 'btn-ok-solid', icon: DELIVERY_UI[mode].icon, body: fxBody,
+          onSubmit: approve(async (body) => { await postAction(job, 'approve', body); done('Approved ' + job.id + ': delivering as a ' + mode + '…'); }),
         });
         return;
       }
@@ -3224,8 +3328,8 @@
         title: 'Approve and merge ' + job.id + '?',
         description: [h('span', { class: 'mono' }, job.branch || 'the job branch'), ' merges into ', h('span', { class: 'mono' }, base), '. ' +
           (human ? 'This is a human override: the gate’s review, path and size rules are skipped, but the merge still requires no conflicts.' : 'The merge still requires no conflicts.')],
-        confirm: 'Approve & merge', cls: 'btn-ok-solid', icon: 'merge',
-        onSubmit: wrap(async () => { await postAction(job, 'approve'); done('Approved ' + job.id + '. Merging…'); }),
+        confirm: 'Approve & merge', cls: 'btn-ok-solid', icon: 'merge', body: fxBody,
+        onSubmit: approve(async (body) => { await postAction(job, 'approve', body); done('Approved ' + job.id + '. Merging…'); }),
       });
     } else if (action === 'rework') {
       const ta = h('textarea', { class: 'textarea', rows: 6, placeholder: 'What should the builder change? Be specific: file, behaviour, acceptance check.' });
@@ -3266,29 +3370,38 @@
       const steps = () => { const own = Object.keys(job.routing || {}); const order = factoryStepsOf(job); return order.filter((n) => own.indexOf(n) >= 0).concat(own.filter((n) => order.indexOf(n) < 0)); };
       const chooser = routingChooser({
         includeDefault: false, includeSaved: true, initial: ':custom', steps, base: () => snapshotRoutes(job), snapshot: true, label: 'New routing',
-        customHint: 'Each step starts on what it runs on now (the job’s snapshot). A step you re-route is resolved again from your saved models; the others keep their snapshot.',
+        customHint: 'Each step starts on what it runs on now (the job’s snapshot). A step you re-route is resolved again from your saved models; the others keep their snapshot, unless you pick a routing profile below.',
         presetHint: 'Every step is re-routed from the preset.',
+        emptyCustom: 'Custom routing changes no step: pick another model or driver for at least one step, pick a routing profile, or choose Saved settings.',
       });
       const failed = job.stage === 'failed';
       const next = failed ? 'retry' : 'rework';
+      const fx = formExt('routing', { job, repo: () => job.repo, routing: () => chooserRouting(chooser), watch: [chooser.el] });
       const choice = await openModal({
         title: 'Change routing of ' + job.id,
         description: [h('strong', null, 'Two steps: '), 'this rewrites the job’s routing snapshot only; the job stays ' + (failed ? 'failed' : 'in Needs human') +
           ' until you ' + (failed ? 'Retry' : 'Rework') + ' it, and that run uses the new routing. Your saved settings stay as they are.'],
-        body: chooser.el, wide: true,
+        body: [chooser.el, fx.nodes], wide: true,
         actions: [{ label: 'Cancel', value: 'cancel' }, { label: 'Change only', value: 'ok', icon: 'route' },
           { label: failed ? 'Change & retry' : 'Change & rework…', value: next, primary: true, icon: failed ? 'refresh' : 'rework' }],
         onSubmit: (v, ctl) => {
-          const routing = chooser.value();  // a local validation error shows in the dialog only
+          let routing;
+          try { routing = chooser.value(); }  // a local validation error shows in the dialog only
+          catch (e) { if (chooser.choice() !== ':custom') throw e; routing = {}; }   // Custom may change only what a form extension adds
+          const rbody = fx.apply({ routing }, v);
+          if (isObj(rbody.routing) && !Object.keys(rbody.routing).length) chooser.value();   // nothing changes: the chooser's own error
+          routing = rbody.routing;
+          const what = (routing === null ? 'your saved settings' : describeRouting(routing)) +
+            (rbody.profile === undefined ? '' : rbody.profile ? ', profile ' + rbody.profile : ', no profile');
           return wrap(async () => {
-            await postAction(job, 'routing', { routing });
+            await postAction(job, 'routing', rbody);
             if (v === 'retry') {
               try { await postAction(job, 'retry'); } catch (e) { toast('Routing changed, but Retry failed: ' + e.message, { kind: 'error' }); return 'ok'; }
-              done('Routing changed (' + describeRouting(routing) + '); retrying ' + job.id + (job.failed_step ? ' from ' + job.failed_step : '') + '.');
+              done('Routing changed (' + what + '); retrying ' + job.id + (job.failed_step ? ' from ' + job.failed_step : '') + '.');
               return v;
             }
             if (v === 'ok') {
-              toast('Routing of ' + job.id + ' changed: ' + describeRouting(routing) + '. ' + (failed ? 'Retry' : 'Rework') + ' runs on it.',
+              toast('Routing of ' + job.id + ' changed: ' + what + '. ' + (failed ? 'Retry' : 'Rework') + ' runs on it.',
                 { kind: 'ok', action: { label: failed ? 'Retry now' : 'Rework…', onClick: () => { const j = S.jobs.get(jobKey(job)); if (j && j.stage === job.stage) doAction(j, next, null); } } });
             }
             return v;
@@ -3392,8 +3505,11 @@
     if (planId) meta.appendChild(h('a', { class: 'meta-item meta-link', href: '#/plans/' + enc(job.repo) + '/' + enc(planId), title: 'Open the plan this job belongs to' }, icon('plan', 'icon-xs'), h('span', { class: 'mono' }, planId)));
     const mode = jobDelivery(job);
     if (mode && job.stage !== 'delivered') meta.appendChild(h('span', { class: 'meta-item', dataset: { delivery: mode }, title: 'Output: after APPROVE the work is ' + DELIVERY_UI[mode].text }, icon(DELIVERY_UI[mode].icon, 'icon-xs'), 'output: ' + mode));
+    for (const n of extNodes('jobMeta', job)) meta.appendChild(n);
     head.appendChild(meta);
+    for (const n of extNodes('jobHead', job)) head.appendChild(n);
     if (job.stage === 'delivered') head.appendChild(deliveredBox(job));
+    if (isObj(job.push)) head.appendChild(pushBox(job));
     if (isObj(job.routing) && Object.keys(job.routing).length) {
       const rb = h('button', { type: 'button', class: 'meta-item meta-link meta-btn', dataset: { action: 'show-routing' }, title: 'Which model, provider and driver each step runs on' },
         icon('route', 'icon-xs'), h('span', null, 'Routing: ' + routingSummary(job).text));
@@ -3401,7 +3517,7 @@
       meta.appendChild(rb);
     }
     const wait = ACTIVE.has(job.stage) ? waitingOf(D.key) : null;
-    if (wait) head.appendChild(h('div', { class: 'meta-row wait-row', role: 'status' }, icon('hourglass', 'icon-sm'), (wait.agent || 'An agent') + ' is waiting for a free ' + wait.provider + ' slot…'));
+    if (wait) head.appendChild(h('div', { class: 'meta-row wait-row', role: 'status', title: waitWords(wait).long }, icon('hourglass', 'icon-sm'), (wait.agent || 'An agent') + ' is ' + waitWords(wait).short + '…'));
     if (job.detail && ACTIVE.has(job.stage)) head.appendChild(h('div', { class: 'meta-row' }, h('span', { class: 'spinner', 'aria-hidden': 'true' }), job.detail));
     const reason = job.reason || job.error;
     if (reason && (job.stage === 'needs-human' || job.stage === 'failed')) {
@@ -3463,6 +3579,7 @@
   }
   async function loadFileText(path) {
     const key = D.key;
+    if (!key) return;   // the drawer closed while earlier files loaded
     try {
       const text = await api(jobPath(D.repo, D.id) + '/file?path=' + enc(path), { text: true });
       if (D.key !== key) return;
@@ -3482,7 +3599,9 @@
     const want = mds.filter((f) => first || !D.fileText.has(f) || f === 'build.md' || f === 'decision.md' || f === 'spec.md' || f === D.fileSel);
     if (!first && D.fileSel && !/\.md$/.test(D.fileSel) && D.files.indexOf(D.fileSel) >= 0) want.push(D.fileSel);
     let i = 0;
-    const next = () => { if (i < want.length) { const f = want[i++]; return loadFileText(f).then(next); } return null; };
+    const key = D.key;
+    // Three at a time, and only for the job still open: a closed or switched drawer stops the chain.
+    const next = () => { if (i < want.length && D.key === key) { const f = want[i++]; return loadFileText(f).then(next); } return null; };
     next(); next(); next();
     if (D.tab === 'files') ensureFileSelected();
   }
@@ -3681,13 +3800,16 @@
       const chat = (r && r.chat) || S.chats.get(id);
       // Turns already in the history. Live runs are named NN-turn, so runs up to this number are
       // the same turns again (the event replay on page load would show them twice).
+      // chat.turns counts every finished turn, a refused one too (it wrote no message), so it is the live runs'
+      // filter; the person's messages say how far the transcript got.
       const users = history.filter((m) => m.role === 'user').length;
       const turns = chat && Number.isInteger(chat.turns) ? chat.turns : null;
-      st.completed = turns !== null ? Math.min(turns, users) : (chat && chat.status === 'running' ? Math.max(0, users - 1) : users);
-      if (chat && chat.status === 'running' && users > st.completed) {
+      const answered = turns !== null ? Math.min(turns, users) : (chat && chat.status === 'running' ? Math.max(0, users - 1) : users);
+      st.completed = turns !== null ? turns : answered;
+      if (chat && chat.status === 'running' && users > answered) {
         // The running turn's user message is already saved: drop what follows it (the live run shows that).
         let n = 0;
-        const cut = history.findIndex((m) => m.role === 'user' && ++n > st.completed);
+        const cut = history.findIndex((m) => m.role === 'user' && ++n > answered);
         if (cut >= 0) history = history.slice(0, cut + 1);
       }
       const firstUser = history.find((m) => m.role === 'user');
@@ -3704,7 +3826,7 @@
   }
   function chatBlocks(id) {
     const st = chatStore(id);
-    const blocks = st.history.map((m, i) => ({ key: 'h' + i, kind: 'msg', role: m.role, text: String(m.text || '') }));
+    const blocks = st.history.map((m, i) => ({ key: 'h' + i, kind: 'msg', role: m.role, text: String(m.text || ''), msg: m, chat: id }));
     const live = [];
     const runs = S.runsByOwner.get('chat:' + id);
     if (runs) {
@@ -3738,17 +3860,17 @@
     }
     const q = CH.search.trim().toLowerCase();
     const chats = Array.from(S.chats.values())
-      .filter((c) => (!S.filterRepo || c.repo === S.filterRepo) && (!q || [c.title, c.repo, c.id, c.model].some((x) => x && String(x).toLowerCase().indexOf(q) >= 0)))
+      .filter((c) => (!S.filterRepo || c.repo === S.filterRepo) && (!q || [c.title, c.repo, c.id, c.model, c.agent].some((x) => x && String(x).toLowerCase().indexOf(q) >= 0)))
       .sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
     if (!chats.length) {
-      ul.appendChild(h('li', null, emptyState('chat', q ? 'No chats match' : 'No chats yet', q ? 'Try another filter.' : 'Start a chat to work interactively with the coder agent on one of your repos.', null, true)));
+      ul.appendChild(h('li', null, emptyState('chat', q ? 'No chats match' : 'No chats yet', q ? 'Try another filter.' : 'Start a chat: with an agent on one of your repositories, with an agent in a scratch folder, or with one of your personas.', null, true)));
       return;
     }
     for (const c of chats) {
       const status = String(c.status || 'idle');
       const b = h('button', { type: 'button', class: 'chat-item', 'aria-current': CH.id === c.id ? 'true' : 'false', dataset: { chat: c.id } },
         h('span', { class: 'chat-item-top' }, h('span', { class: 'status-dot ' + pick(status, CHAT_STATES, 'other'), title: status, role: 'img', 'aria-label': 'Status: ' + status }), h('span', { class: 'chat-item-title' }, c.title || 'New chat'), timeEl(c.updated_at, 'muted')),
-        h('span', { class: 'chat-item-meta' }, h('span', { class: 'tag' }, c.repo || '?'), h('span', { class: 'tag ' + (c.mode === 'repo' ? 'tag-warn' : 'tag-outline') }, c.mode || 'worktree'), c.model ? h('span', { class: 'ellipsis mono' }, c.model) : null));
+        h('span', { class: 'chat-item-meta' }, h('span', { class: 'tag' }, c.repo || (c.persona ? 'persona' : 'no repository')), c.repo ? h('span', { class: 'tag ' + (c.mode === 'repo' ? 'tag-warn' : 'tag-outline') }, c.mode || 'worktree') : null, c.model ? h('span', { class: 'ellipsis mono' }, c.model) : null));
       b.addEventListener('click', () => { location.hash = '#/chat/' + enc(c.id); });
       ul.appendChild(h('li', null, b));
     }
@@ -3775,8 +3897,10 @@
     const scroll = h('div', { class: 'chat-scroll' });
     const thread = h('div', { class: 'chat-thread', 'aria-live': 'off' });
     const intro = h('div');
+    const outro = h('div');   // after the last message: the last turn's error, where the person is reading
     const jump = h('button', { type: 'button', class: 'jump-pill', hidden: true }, icon('arrow-down', 'icon-sm'), 'Jump to latest');
-    add(scroll, [h('div', { class: 'chat-thread', style: { 'padding-bottom': '0' } }, intro), thread, jump]);
+    add(scroll, [h('div', { class: 'chat-thread', style: { 'padding-bottom': '0' } }, intro), thread,
+      h('div', { class: 'chat-thread chat-outro', style: { 'padding-top': '0' } }, outro), jump]);
     const running = h('div', { class: 'chat-running', hidden: true, role: 'status' });
     const input = h('textarea', { rows: 1, placeholder: 'Message the coder agent…', 'aria-label': 'Message', spellcheck: 'true' });
     const send = h('button', { type: 'submit', class: 'btn btn-primary btn-icon', 'aria-label': 'Send message', title: 'Send (Enter)' }, icon('send'));
@@ -3788,7 +3912,7 @@
       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); sendChat(); }
     });
     form.addEventListener('submit', (e) => { e.preventDefault(); sendChat(); });
-    CH.els = { head, scroll, thread, intro, jump, running, input, send, form };
+    CH.els = { head, scroll, thread, intro, outro, jump, running, input, send, form };
     CH.transcript = new Transcript(thread, scroll, jump, 'chat');
     CH.builtFor = id;
   }
@@ -3799,10 +3923,12 @@
       CH.builtFor = null;
       if (CH.transcript) { CH.transcript.destroy(); CH.transcript = null; }
       clear(main);
+      // No repository is needed to talk: a persona chat and a chat without a repository start without one (§15).
       main.appendChild(h('div', { class: 'chat-scroll', style: { display: 'grid', 'place-items': 'center' } },
         S.loaded && !S.repos.length
-          ? emptyState('folder', 'Add a repository to start chatting', 'Chats run an agent on a checkout of one of your repositories.', [h('a', { class: 'btn btn-primary', href: '#/setup/repo' }, 'Add a repository')])
-          : emptyState('chat', 'Pair with a coding agent', 'Pick a chat on the left, or start one. Each chat gets its own branch and worktree, so your main checkout stays untouched. When it’s ready, hand the branch to the factory for review.',
+          ? emptyState('chat', 'Talk to an agent or a persona', 'Pick a chat on the left, or start one. Talk to a persona such as Kate, or to an agent in a scratch folder of its own: neither needs a repository. For code work, add a repository: its chats get their own branch and can be handed to the factory.',
+            [btn('New chat', { cls: 'btn-primary', icon: 'plus', onClick: () => openNewChat() }), h('a', { class: 'btn', href: '#/setup/repo' }, icon('folder', 'icon-sm'), 'Add a repository')])
+          : emptyState('chat', 'Talk to an agent or a persona', 'Pick a chat on the left, or start one. On a repository, each chat gets its own branch and worktree, so your main checkout stays untouched, and you can hand the branch to the factory for review. You can also talk to an agent without a repository, or to one of your personas.',
             [btn('New chat', { cls: 'btn-primary', icon: 'plus', onClick: () => openNewChat() }), btn('Analyse a binary', { icon: 'scout', onClick: () => startFlowWith({ what: 'analyse' }) })])));
       return;
     }
@@ -3816,9 +3942,14 @@
     if (st.error && !st.loaded) els.intro.appendChild(callout('err', 'alert', 'Could not load this chat.', st.error));
     else if (!st.loaded) els.intro.appendChild(skeletonLines(5));
     const blocks = st.loaded ? chatBlocks(id) : [];
-    if (st.loaded && !blocks.length) {
+    // A turn the server refused for good (the agent became a persona: chats.py _refuse_new_persona) ends the chat:
+    // no "Start the conversation", no "try again", and the composer says why it is closed.
+    const ended = !!chat && chat.status === 'error' && /this chat cannot go on|its chats run only as persona chats/.test(String(chat.error || ''));
+    if (st.loaded && !blocks.length && !(chat && chat.status === 'error')) {
       els.intro.appendChild(emptyState('chat', 'Start the conversation',
-        chat ? 'The coder agent works in ' + (chat.mode === 'repo' ? 'your repo checkout directly' : 'branch ' + (chat.branch || 'chat/' + id)) + ' on ' + chat.repo + '. Ask it to explain, change or test something.' : '', null, true));
+        chat && !chat.repo ? (chat.persona ? 'Say what you need: ' + (chat.persona.label || chat.agent) + ' answers here. This chat has no repository and nothing in it goes to the factory.'
+          : 'The ' + (chat.agent || 'coder') + ' agent works in a scratch folder of its own: no repository, no branch and no hand-off. An agent without tools only talks.')
+          : chat ? 'The coder agent works in ' + (chat.mode === 'repo' ? 'your repo checkout directly' : 'branch ' + (chat.branch || 'chat/' + id)) + ' on ' + chat.repo + '. Ask it to explain, change or test something.' : '', null, true));
     }
     CH.transcript.sync(blocks);
     // running indicator + composer state
@@ -3840,14 +3971,23 @@
       const wait = waitingOf('chat:' + id);
       els.running.classList.toggle('is-waiting', !!wait);
       add(els.running, [wait ? icon('hourglass', 'icon-sm') : h('span', { class: 'spinner', 'aria-hidden': 'true' }),
-        h('span', null, wait ? 'Waiting for ' + wait.provider + '…' : 'Working'), elapsed, h('span', { class: 'spacer' }), cancel]);
+        h('span', { title: wait ? waitWords(wait).long : null }, wait ? (wait.custody === 'HELD' ? 'Waiting for the GPU custody register: the card is held by someone else…' : 'Waiting for ' + wait.provider + '…') : 'Working'), elapsed, h('span', { class: 'spacer' }), cancel]);
     }
-    const disabled = running || CH.sending || !chat;
+    const disabled = running || CH.sending || !chat || ended;
     els.input.disabled = disabled;
     els.send.disabled = disabled;
-    els.input.placeholder = running ? 'The agent is working… wait for it to finish or cancel.' : 'Message the ' + ((chat && chat.agent) || 'coder') + ' agent…';
-    if (chat && chat.status === 'error' && !running) {
-      els.intro.appendChild(callout('err', 'alert', 'The last turn ended with an error.', 'Send another message to continue.'));
+    els.input.placeholder = ended ? 'This chat cannot go on: see the note above.' : running ? 'The agent is working… wait for it to finish or cancel.'
+      : chat && chat.persona ? 'Message ' + chat.agent + '…' : 'Message the ' + ((chat && chat.agent) || 'coder') + ' agent…';
+    const shownErr = chat && chat.status === 'error' && !running ? String(chat.error || '').trim() || '-' : '';
+    if (els.outro.dataset.err !== shownErr) {
+      clear(els.outro);
+      els.outro.dataset.err = shownErr;
+      if (shownErr) {
+        const why = shownErr === '-' ? '' : shownErr;
+        els.outro.appendChild(ended ? callout('err', 'alert', 'This chat cannot go on.', 'The server said: ' + why + (/[.!?]$/.test(why) ? '' : '.'))
+          : callout('err', 'alert', 'The last turn ended with an error.', (why ? why + (/[.!?]$/.test(why) ? ' ' : '. ') : '') + 'Send another message to try again.'));
+        if (CH.transcript && CH.transcript.stick) CH.transcript.toBottom();
+      }
     }
   };
   /** The server keeps the first 60 characters of the first message as the title: mark the cut. */
@@ -3865,6 +4005,10 @@
   }
   function renderChatHead(chat, st) {
     const head = CH.els.head;
+    // The head is rebuilt on each render: a focused control in it (data-focus, or the title) keeps the focus.
+    const active = document.activeElement;
+    const keep = active && active !== head && head.contains(active)
+      ? (active.dataset && active.dataset.focus) || (active.classList.contains('chat-title') ? '@title' : null) : null;
     clear(head);
     const back = h('a', { class: 'btn btn-ghost btn-icon btn-sm chat-back', href: '#/chat', 'aria-label': 'Back to chats' }, icon('chevron-left'));
     if (!chat) {
@@ -3873,14 +4017,14 @@
       return;
     }
     const meta = h('div', { class: 'meta-row' },
-      h('span', { class: 'tag' }, chat.repo || '?'),
-      h('span', { class: 'tag ' + (chat.mode === 'repo' ? 'tag-warn' : 'tag-outline'), title: chat.mode === 'repo' ? 'Works directly in the repo checkout' : 'Isolated worktree' }, chat.mode || 'worktree'),
+      h('span', { class: 'tag', title: chat.repo ? null : 'A chat without a repository: it works in a scratch folder and has no hand-off' }, chat.repo || 'no repository'),
+      chat.repo ? h('span', { class: 'tag ' + (chat.mode === 'repo' ? 'tag-warn' : 'tag-outline'), title: chat.mode === 'repo' ? 'Works directly in the repo checkout' : 'Isolated worktree' }, chat.mode || 'worktree') : null,
       chat.branch ? h('span', { class: 'meta-item', title: 'Branch' }, icon('branch', 'icon-xs'), h('span', { class: 'mono' }, chat.branch)) : null,
       chat.model ? h('span', { class: 'meta-item', title: 'Model' }, icon('agents', 'icon-xs'), h('span', { class: 'mono' }, chatModelLabel(chat))) : null,
       fmtUsage(chat.usage) ? h('span', { class: 'meta-item', title: fmtUsage(chat.usage, true) }, icon('zap', 'icon-xs'), fmtUsage(chat.usage)) : null,
-      chatJobLink(chat));
+      chatJobLink(chat), extNodes('chatHead', chat));
     const actions = h('div', { class: 'chat-head-actions' });
-    if (chat.mode !== 'repo') {
+    if (chat.repo && chat.mode !== 'repo' && chat.mode !== 'none') {
       const ho = btn('Hand off to factory', { cls: 'btn-sm', icon: 'handoff', disabled: chatRunning(chat), title: 'Send this chat’s branch through the review line' });
       ho.addEventListener('click', () => handoffChat(chat));
       actions.appendChild(ho);
@@ -3889,8 +4033,13 @@
     del.addEventListener('click', () => deleteChat(chat));
     actions.appendChild(del);
     const title = chatTitle(chat, st);
-    add(head, [back, h('div', { class: 'chat-head-main' }, h('h2', { class: 'chat-title', title: st && st.firstUser ? st.firstUser.slice(0, 300) : title }, title), meta), actions]);
+    add(head, [back, h('div', { class: 'chat-head-main' }, h('h2', { class: 'chat-title', tabindex: '-1', title: st && st.firstUser ? st.firstUser.slice(0, 300) : title }, title), meta), actions]);
     if (chat.mode === 'repo') head.appendChild(h('div', { style: { 'flex-basis': '100%' } }, callout('warn', 'alert', 'Repo mode:', 'the agent edits your real checkout at ' + (chat.cwd || 'the repo path') + '. Commit or stash your own work first.')));
+    for (const n of extNodes('chatBanner', chat)) head.appendChild(h('div', { class: 'chat-banner', style: { 'flex-basis': '100%' } }, n));
+    if (keep) {
+      const t = keep === '@title' ? head.querySelector('.chat-title') : head.querySelector('[data-focus="' + CSS.escape(keep) + '"]');
+      if (t) t.focus({ preventScroll: true });
+    }
   }
   async function sendChat() {
     const id = CH.id;
@@ -3924,14 +4073,14 @@
   }
   function openNewChat() {
     if (document.querySelector('dialog[open]')) return;
-    if (!S.repos.length) { noRepoModal('A chat'); return; }
-    const def = S.filterRepo || lsGet('sf.lastRepo') || S.repos[0].name;
-    const repoSel = selectEl(S.repos.map((r) => [r.name, r.name]), S.repos.some((r) => r.name === def) ? def : S.repos[0].name, { id: 'nc-repo' });
+    const hasRepos = S.repos.length > 0;
+    const def = hasRepos ? (S.filterRepo || lsGet('sf.lastRepo') || S.repos[0].name) : '';
+    const repoSel = selectEl(S.repos.map((r) => [r.name, r.name]), hasRepos ? (S.repos.some((r) => r.name === def) ? def : S.repos[0].name) : '', { id: 'nc-repo' });
     const agents = chatAgents();
     const agentSel = selectEl(agents.map((n) => [n, n + (CHAT_AGENT_TEXT[n] ? ' — ' + CHAT_AGENT_TEXT[n] : '')]), agents[0], { id: 'nc-agent' });
-    const modelOpts = () => { const m = modelOf(agentSel.value); return [['', 'Agent default (' + (m.key || 'opus') + ' → ' + m.model + ')']].concat(Object.keys(S.models).map((k) => [k, k + ' — ' + (S.models[k].model || '?') + (S.models[k].provider ? ' (' + S.models[k].provider + ')' : '')])); };
-    const modelSel = selectEl(modelOpts(), '', { id: 'nc-model' });
-    agentSel.addEventListener('change', () => { const keep = modelSel.value; clear(modelSel); for (const [v, l] of modelOpts()) modelSel.appendChild(h('option', { value: v }, l)); modelSel.value = keep; });
+    const modelOpts = (sel) => { const m = modelOf(sel.value); return [['', 'Agent default (' + (m.key || 'opus') + ' → ' + m.model + ')']].concat(Object.keys(S.models).map((k) => [k, k + ' — ' + (S.models[k].model || '?') + (S.models[k].provider ? ' (' + S.models[k].provider + ')' : '')])); };
+    const modelSel = selectEl(modelOpts(agentSel), '', { id: 'nc-model' });
+    agentSel.addEventListener('change', () => { const keep = modelSel.value; clear(modelSel); for (const [v, l] of modelOpts(agentSel)) modelSel.appendChild(h('option', { value: v }, l)); modelSel.value = keep; });
     const warn = h('div', { hidden: true }, callout('warn', 'alert', 'Repo mode edits your real checkout.', 'No branch or worktree is created; the agent works directly in the repo on whatever branch is checked out. Hand-off to the factory needs worktree mode.'));
     const radio = (value, title, desc, checked) => {
       const inp = h('input', { type: 'radio', name: 'nc-mode', value, checked });
@@ -3941,17 +4090,70 @@
     const modes = h('div', { class: 'radio-cards', role: 'radiogroup', 'aria-label': 'Mode' },
       radio('worktree', 'Worktree', 'New branch chat/<id> in its own worktree. Safe; can hand off to the factory.', true),
       radio('repo', 'Repo checkout', 'Works directly in the repo. For quick fixes on the current branch.', false));
+    // Three starts (DESIGN §15): on a repository, without one (a scratch folder, any agent), and the view modules'
+    // (a persona, from views/personas.js). A name a view's start claims (a persona file) is offered only there: the
+    // server would turn {mode: 'none', agent} for it into that start's chat, or refuse it.
+    const extStarts = extSpecs('chatStart', { form: 'chat' });
+    const allAgents = Array.from(new Set(agents.concat(S.agents.map((a) => a.name)))).filter(Boolean);
+    const claimed = new Set();
+    const claimedBy = [];
+    for (const x of extStarts) {
+      const mine = new Set([].concat((x.claims && safely('chat start ' + x.id + ' claims', () => x.claims())) || []).map(String));
+      const names = allAgents.filter((n) => mine.has(n) && !claimed.has(n));
+      names.forEach((n) => claimed.add(n));
+      if (names.length) claimedBy.push(names.join(', ') + ' (see “' + x.title + '”)');
+    }
+    const anyAgents = allAgents.filter((n) => !claimed.has(n));
+    const claimedNote = claimedBy.length ? h('div', { class: 'field-hint nc-claimed' }, 'Not listed here: ' + claimedBy.join('; ') + '.') : null;
+    const freeSel = selectEl(anyAgents.map((n) => [n, n + (CHAT_AGENT_TEXT[n] ? ' — ' + CHAT_AGENT_TEXT[n] : '')]), anyAgents[0] || 'coder', { id: 'nc-free-agent' });
+    const freeModel = selectEl(modelOpts(freeSel), '', { id: 'nc-free-model' });
+    freeSel.addEventListener('change', () => { const keep = freeModel.value; clear(freeModel); for (const [v, l] of modelOpts(freeSel)) freeModel.appendChild(h('option', { value: v }, l)); freeModel.value = keep; });
+    const starts = [
+      { id: 'on-repo', title: 'On a repository', desc: hasRepos ? 'An agent on one of your repositories; worktree chats can hand off to the factory.' : 'Add a repository first (Setup › Repository).',
+        disabled: !hasRepos, fields: () => [field('Repository', repoSel), field('Agent', agentSel), field('Model', modelSel, 'Any model key from Settings › Models.'), h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Mode'), modes), warn],
+        body: () => { const body = { repo: repoSel.value, mode: (modes.querySelector('input:checked') || {}).value || 'worktree', agent: agentSel.value }; if (modelSel.value) body.model = modelSel.value; lsSet('sf.lastRepo', repoSel.value); return body; } },
+      { id: 'no-repo', title: 'No repository', desc: 'Any agent in a scratch folder of its own: no branch, no hand-off. An agent without tools only talks.',
+        fields: () => [field('Agent', freeSel), claimedNote, field('Model', freeModel, 'Any model key from Settings › Models.')],
+        body: () => { const body = { mode: 'none', agent: freeSel.value }; if (freeModel.value) body.model = freeModel.value; return body; } },
+    ].concat(extStarts);
+    const panes = new Map();
+    const startName = 'nc-start-' + (++modalSeq);
+    const showPane = (id) => { for (const [k, pane] of panes) pane.hidden = k !== id; };
+    const first = starts.find((x) => !x.disabled) || starts[0];
+    const cards = h('div', { class: 'radio-cards nc-starts', role: 'radiogroup', 'aria-label': 'Start' }, starts.map((x) => {
+      const inp = h('input', { type: 'radio', name: startName, value: x.id, checked: x === first, disabled: !!x.disabled, dataset: { start: x.id } });
+      inp.addEventListener('change', () => { if (inp.checked) showPane(x.id); });
+      return h('label', { class: 'radio-card' + (x.disabled ? ' is-disabled' : '') }, inp, h('span', null, h('span', { class: 'radio-card-title' }, String(x.title)), x.desc ? h('span', { class: 'radio-card-desc', style: { display: 'block' } }, String(x.desc)) : null));
+    }));
+    const body = [h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Start'), cards)];
+    for (const x of starts) {
+      const pane = h('div', { class: 'nc-start-pane', dataset: { pane: x.id }, hidden: x !== first });
+      add(pane, safely('chat start ' + x.id, () => x.fields ? x.fields() : null) || null);
+      panes.set(x.id, pane);
+      body.push(pane);
+    }
+    // The view modules' fields of the New chat form (a routing profile) serve every start: POST /api/chats takes a
+    // profile for a chat on a repository, without one and a persona's.
+    const fx = formExt('chat', { repo: () => repoSel.value, watch: [repoSel, modelSel, freeModel] });
+    body.push(fx.nodes);
     openModal({
       title: 'New chat',
-      description: 'An interactive session with one agent on one repo: the coder (all tools) or the analyst (reverse engineering with REA).',
-      body: [field('Repository', repoSel), field('Agent', agentSel), field('Model', modelSel, 'Any model key from Settings › Models.'), h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Mode'), modes), warn],
+      description: 'An interactive session with one agent: on a repo (the coder with all tools, or the analyst with REA), without a repository, or with one of your personas.',
+      body,
       actions: [{ label: 'Cancel', value: 'cancel' }, { label: 'Start chat', value: 'ok', primary: true, icon: 'chat' }],
-      onSubmit: async () => {
-        const mode = (modes.querySelector('input:checked') || {}).value || 'worktree';
-        const body = { repo: repoSel.value, mode, agent: agentSel.value };
-        if (modelSel.value) body.model = modelSel.value;
-        lsSet('sf.lastRepo', repoSel.value);
-        const r = await api('/api/chats', { method: 'POST', body });
+      onSubmit: async (v, ctl) => {
+        const chosen = (cards.querySelector('input:checked') || {}).value || first.id;
+        const start = starts.find((x) => x.id === chosen) || first;
+        const req = start.body();
+        fx.apply(req, 'ok');
+        let r;
+        try { r = await api('/api/chats', { method: 'POST', body: req }); }
+        catch (e) {
+          const help = start.onError ? safely('chat start ' + start.id + ' error', () => start.onError(e)) : null;
+          if (!help) throw e;
+          ctl.showError([e.message, ' ', help]);
+          return false;
+        }
         if (!r || !r.chat) throw new Error('The server returned no chat.');
         upsertChat(r.chat);
         const st = chatStore(r.chat.id);
@@ -3965,10 +4167,11 @@
   function handoffChat(chat) {
     const inp = h('input', { class: 'input', type: 'text', maxlength: 300, value: chat.title || '', placeholder: 'One line: what the work on this branch does' });
     const delivery = deliveryChooser({ id: 'ho-delivery' });
+    const fx = formExt('handoff', { chat, repo: () => chat.repo || null });
     openModal({
       title: 'Hand off to the factory',
       description: ['The factory takes branch ', h('span', { class: 'mono' }, chat.branch || 'chat/' + chat.id), ' as round 1: the spec-writer describes it, the reviewers check it, the approver decides. The branch needs commits ahead of base and a clean tree.'],
-      body: [field('Feature (one line)', inp), delivery.el],
+      body: [field('Feature (one line)', inp), fx.nodes, delivery.el],
       dismissable: false,
       actions: [{ label: 'Cancel', value: 'cancel' }, { label: 'Hand off', value: 'ok', primary: true, icon: 'handoff' }],
       onSubmit: async () => {
@@ -3979,6 +4182,7 @@
         const body = { feature };
         const out = delivery.value();
         if (out !== undefined) body.delivery = out;
+        fx.apply(body, 'ok');
         try { r = await api('/api/chats/' + enc(chat.id) + '/handoff', { method: 'POST', body }); }
         catch (e) { toastError('Hand-off failed', e); throw e; }
         const job = r && r.job;
@@ -4499,13 +4703,14 @@
     const meta = h('div', { class: 'meta-row' },
       h('span', { class: 'meta-item', title: 'Base branch and the commit the plan started from' }, icon('branch', 'icon-xs'), h('span', { class: 'mono' }, (p.base || 'base') + (p.base_commit ? ' @ ' + String(p.base_commit).slice(0, 8) : ''))),
       h('span', { class: 'meta-item', title: 'Routing for the lead and every job of the plan' }, icon('route', 'icon-xs'), planRoutingLabel(p)),
-      fmtUsage(p.usage) ? h('span', { class: 'meta-item', title: 'Lead usage: ' + fmtUsage(p.usage, true) }, icon('zap', 'icon-xs'), fmtUsage(p.usage)) : null);
+      fmtUsage(p.usage) ? h('span', { class: 'meta-item', title: 'Lead usage: ' + fmtUsage(p.usage, true) }, icon('zap', 'icon-xs'), fmtUsage(p.usage)) : null,
+      extNodes('planHead', p));
     head.appendChild(meta);
     if (p.stage === 'planning' || p.stage === 'final-review') {
       const wait = waitingOf('plan:' + k);
       head.appendChild(h('div', { class: 'meta-row lead-row' + (wait ? ' wait-row' : ''), role: 'status' },
         wait ? icon('hourglass', 'icon-sm') : h('span', { class: 'spinner', 'aria-hidden': 'true' }),
-        wait ? 'The lead is waiting for a free ' + wait.provider + ' slot…' : p.stage === 'planning' ? 'The lead is reading the repo and writing plan.md…' : 'The lead is reviewing the combined change…'));
+        wait ? 'The lead is ' + waitWords(wait).short + '…' : p.stage === 'planning' ? 'The lead is reading the repo and writing plan.md…' : 'The lead is reviewing the combined change…'));
     }
     const planText = d.texts.get('plan.md');
     const asking = planText !== undefined && planMdStatus(planText) === 'QUESTIONS';
@@ -4708,11 +4913,12 @@
       presetHint: 'For this plan and its jobs only: your saved settings stay as they are.',
     });
     const delivery = deliveryChooser({ id: 'np-delivery', hint: 'For every job of this plan.' });
+    const fx = formExt('plan', { repo: () => repoSel.value, routing: () => chooserRouting(routing), watch: [repoSel, routing.el] });
     const lead = agentDef('lead') ? modelOf('lead') : null;
     await openModal({
       title: 'New plan',
       description: 'For work bigger than one job. The lead' + (lead ? ' (' + lead.model + ')' : '') + ' reads the repo and writes plan.md: you read and edit it before anything runs.',
-      body: [field('Repository', repoSel), field('Request', ta, 'The lead may answer with questions first; you answer them in plan.md.'), routing.el, delivery.el],
+      body: [field('Repository', repoSel), field('Request', ta, 'The lead may answer with questions first; you answer them in plan.md.'), routing.el, fx.nodes, delivery.el],
       hint: [h('kbd', null, /Mac|iPhone|iPad/.test(navigator.platform || '') ? '⌘' : 'Ctrl'), '+', h('kbd', null, 'Enter'), ' starts planning'],
       actions: [{ label: 'Cancel', value: 'cancel' }, { label: 'Start planning', value: 'ok', primary: true, icon: 'plan' }],
       dismissable: false, initialFocus: ta,
@@ -4725,6 +4931,7 @@
         if (route !== undefined) body.routing = route;
         const out = delivery.value();
         if (out !== undefined) body.delivery = out;
+        fx.apply(body, 'ok');
         lsSet('sf.lastRepo', repoSel.value);
         const since = S.lastSeq;
         const r = await api('/api/plans', { method: 'POST', body });
@@ -4988,6 +5195,8 @@
       acts.appendChild(edit);
     }
     acts.appendChild(btn('Duplicate', { cls: 'btn-sm btn-ghost', icon: 'copy', dataset: { action: 'dup-agent' }, title: 'New agent copied from ' + a.name, onClick: () => openNewAgent(a.name) }));
+    // DESIGN §36: what this agent did, on the Operator area's activity page (the last 7 days)
+    acts.appendChild(h('a', { class: 'btn btn-sm btn-ghost', href: '#/activity?agent=' + enc(a.name) + '&since=7d', dataset: { action: 'agent-activity' }, title: 'What ' + a.name + ' did: its turns, tool calls and receipts' }, icon('clock', 'icon-sm'), 'Activity'));
     if (lens && lenses.indexOf(lens) < 0) {
       const addB = btn('Add to pipeline', { cls: 'btn-sm btn-primary', icon: 'plus', dataset: { action: 'add-pipeline' }, title: 'Append ' + lens + ' to pipeline.reviewers' });
       addB.addEventListener('click', () => addToPipeline(lens, addB));
@@ -5005,6 +5214,12 @@
             : skeletonLines(12)));
     root.appendChild(h('div', { class: 'agents-layout' }, list, viewer));
     document.getElementById('main').scrollTop = y;
+    // Stacked (list above the agent, below 1100 px): an agent picked by the route is shown, not left below the list.
+    const routed = S.route.agent && S.route.agent === sel ? sel : null;
+    if (routed && AG.shown !== routed && window.matchMedia && window.matchMedia('(max-width: 1100px)').matches) {
+      requestAnimationFrame(() => viewer.scrollIntoView({ block: 'start' }));
+    }
+    AG.shown = routed;
     if (focusedAction) { const el = root.querySelector('[data-action="' + CSS.escape(focusedAction) + '"]'); if (el) el.focus({ preventScroll: true }); }
   };
 
@@ -5027,7 +5242,7 @@
     const infos = checks.filter((c) => !c.ok && c.level === 'info');
     const passed = checks.filter((c) => c.ok);
     const stat = (cls, ic, n, label) => h('div', { class: 'stat-card' }, h('div', { class: 'stat-icon ' + cls }, icon(ic, 'icon-lg')), h('div', null, h('div', { class: 'stat-num' }, String(n)), h('div', { class: 'stat-label' }, label)));
-    root.appendChild(h('div', { class: 'doctor-summary' }, stat('err', 'error', errors.length, 'errors'), stat('warn', 'alert', warns.length, 'warnings'), stat('ok', 'check-circle', passed.length, 'passed')));
+    root.appendChild(h('div', { class: 'doctor-summary' }, stat('err', 'error', errors.length, errors.length === 1 ? 'error' : 'errors'), stat('warn', 'alert', warns.length, warns.length === 1 ? 'warning' : 'warnings'), stat('ok', 'check-circle', passed.length, 'passed')));
     if (!checks.length) { root.appendChild(emptyState('doctor', 'No checks reported', null, null, true)); return; }
     const group = (title, list, kind) => {
       if (!list.length) return null;
@@ -5038,7 +5253,10 @@
           const ic = k === 'ok' ? 'check' : k === 'err' ? 'x' : k === 'warn' ? 'alert' : 'info';
           return h('li', { class: 'check-row' },
             h('span', { class: 'check-icon ' + k, title: c.ok ? 'ok' : (c.level || 'error') }, icon(ic), h('span', { class: 'sr-only' }, c.ok ? 'ok' : (c.level || 'error'))),
-            h('div', { class: 'check-main' }, h('div', { class: 'check-name' }, String(c.name)), c.detail ? h('div', { class: 'check-detail' }, String(c.detail)) : null),
+            h('div', { class: 'check-main' }, h('div', { class: 'check-name' }, String(c.name)), c.detail ? h('div', { class: 'check-detail' }, String(c.detail)) : null,
+              // the "local servers" advice names a button two steps into the setup wizard: a link goes straight there
+              c.name === 'local servers' && /Look for model servers/.test(String(c.detail || '')) ? h('a', { class: 'check-link', href: '#/setup/local-details', dataset: { action: 'look-around-step' } }, 'Open Server details') : null,
+              extNodes('doctorCheck', c)),
             c.level && !c.ok ? h('span', { class: 'tag tag-outline' }, String(c.level)) : null);
         })));
     };
@@ -5048,14 +5266,16 @@
   // ================================================================ settings view
   // [config key, label, icon]; the "agents" routes are edited in the Routing view (anchor #/settings/routing).
   const SETTINGS_SECTIONS = [
-    ['agents', 'Routing', 'route'], ['providers', 'Providers', 'settings'], ['models', 'Models', 'agents'], ['pipeline', 'Pipeline', 'factory'],
+    ['agents', 'Routing', 'route'], ['profiles', 'Profiles', 'list'], ['providers', 'Providers', 'settings'], ['models', 'Models', 'agents'], ['pipeline', 'Pipeline', 'factory'],
     ['limits', 'Limits', 'clock'], ['harness', 'Harness', 'terminal'], ['mcp_servers', 'MCP servers', 'layers'],
     ['escalate_paths', 'Escalate paths', 'alert'], ['repos', 'Repos', 'folder'],
   ];
   const SEC_ANCHOR = { agents: 'routing' };
   const secAnchor = (key) => SEC_ANCHOR[key] || key;
   const anchorSec = (anchor) => (anchor === 'agents' ? 'routing' : anchor);
-  const CONFIG_KEYS = SETTINGS_SECTIONS.map((s) => s[0]);
+  const CONFIG_KEYS = SETTINGS_SECTIONS.map((s) => s[0]).concat(['default_profile']);   // default_profile: in the Profiles card
+  const SEC_OF = { default_profile: 'profiles' };   // a config key edited in another key's section
+  const secDirty = (id) => sectionDirty(id) || CONFIG_KEYS.some((k) => SEC_OF[k] === id && sectionDirty(k));
   const DICT_SECTIONS = new Set(['providers', 'models', 'agents', 'mcp_servers']);
   const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
   const MASK = '***';
@@ -5197,7 +5417,7 @@
     const err = CFG.saveError && CFG.saveSection === id ? h('div', { style: { padding: '12px 18px 0' } }, h('div', { class: 'form-error', role: 'alert' }, icon('alert', 'icon-sm'), h('span', null, CFG.saveError))) : null;
     return h('section', { class: 'set-card', id: 'set-' + anchor, 'aria-labelledby': 'set-' + anchor + '-t', dataset: { sec: id } },
       h('div', { class: 'set-head' },
-        h('div', { class: 'set-head-text' }, h('h2', { class: 'set-title', id: 'set-' + anchor + '-t' }, title, h('span', { class: 'tag tag-warn', dataset: { dirtyFor: id }, hidden: !sectionDirty(id) }, 'unsaved')), desc ? h('p', { class: 'set-desc' }, desc) : null),
+        h('div', { class: 'set-head-text' }, h('h2', { class: 'set-title', id: 'set-' + anchor + '-t' }, title, h('span', { class: 'tag tag-warn', dataset: { dirtyFor: id }, hidden: !secDirty(id) }, 'unsaved')), desc ? h('p', { class: 'set-desc' }, desc) : null),
         extra || null),
       err,
       h('div', { class: 'set-body' }, body));
@@ -5217,6 +5437,8 @@
     return h('div', { class: 'add-row' }, inp, extra || null, b, err);
   }
 
+  /** A provider's or model's extension fields: one full-width cell under the row (none when no module adds any). */
+  function extRow(nodes) { return nodes.length ? h('div', { class: 'pc pc-ext' }, nodes) : null; }
   function secProviders() {
     const provs = isObj(CFG.draft.providers) ? CFG.draft.providers : (CFG.draft.providers = {});
     const origProvs = isObj(CFG.orig.providers) ? CFG.orig.providers : {};
@@ -5242,7 +5464,8 @@
         cell('Key file', nullableText(p, 'api_key_file', { class: 'input mono-input', placeholder: 'none', 'aria-label': name + ' key file', title: p.api_key_file || '' }), 'pc-file'),
         cell('Auth', selIn([['', 'default'], ['bearer', 'bearer'], ['x-api-key', 'x-api-key'], ['both', 'both']], p, 'auth', { class: 'select', 'aria-label': name + ' auth header' }, true), 'pc-auth'),
         cell('Max conc.', numIn(p, 'max_concurrency', { nullable: true, min: 1, errKey: 'providers.' + name + '.max_concurrency' }, { class: 'input', placeholder: '∞', 'aria-label': name + ' max concurrency' }), 'pc-max'),
-        h('div', { class: 'pc pc-del' }, removeBtn('Remove provider ' + name, () => { delete provs[name]; rerenderSettings(); }))));
+        h('div', { class: 'pc pc-del' }, removeBtn('Remove provider ' + name, () => { delete provs[name]; rerenderSettings(); })),
+        extRow(settingsExt('provider', { name, entry: p }))));
     }
     const grid = h('div', { class: 'cfg-list' }, head, rows);
     const typeSel = selectEl([['openai', 'openai'], ['anthropic', 'anthropic']], 'openai', { class: 'select select-sm', style: { width: 'auto' }, 'aria-label': 'New provider type' });
@@ -5319,7 +5542,7 @@
         h('div', { class: 'pc pc-extra' }, h('span', { class: 'pc-label', 'aria-hidden': 'true' }, 'extra_body (JSON)'), extra, errSlot(errKey)),
         h('div', { class: 'pc pc-test' }, test),
         h('div', { class: 'pc pc-del' }, removeBtn('Remove model ' + key, () => { delete models[key]; rerenderSettings(); })),
-        resultRow));
+        resultRow, extRow(settingsExt('model', { name: key, entry: m }))));
     }
     const table = h('div', { class: 'cfg-list' }, head, rows);
     const addRow = addNameRow('new-model-key', 'Add model', (name, check) => {
@@ -5618,7 +5841,8 @@
       { group: isStar ? 'Default model for every agent' : 'Pin a model', options: keys.map((k) => [k, modelOptionLabel(cfg, k, false)]) }],
     entry().model || '', { class: 'select select-sm rt-model', 'aria-label': label + ' model',
       title: entry().model ? label + ': pinned to ' + modelOptionLabel(cfg, entry().model) : label + ': ' + inheritModel + (fmId ? ' → ' + fmId.slice(2, -1) : '') });
-    msel.addEventListener('change', () => commit('model', msel.value, isStar));
+    const modelSubs = [];   // a view module's fields of this box that follow its model (settingsExt 'route' onModel)
+    msel.addEventListener('change', () => { commit('model', msel.value, isStar); if (!isStar) for (const fn of modelSubs) safely('route ' + name + ' model', () => fn()); });
     const drivers = driverNames(cfg);
     const dsel = selectEl([{ group: isStar ? 'No default' : 'Inherit', options: [['', isStar ? 'builtin (default)' : 'Inherit: ' + fallbackDriver()]] },
       { group: isStar ? 'Default driver' : 'Pin a driver', options: drivers.map((d) => [d, d]) }],
@@ -5668,6 +5892,7 @@
       });
       box.appendChild(advBtn);
       box.appendChild(advBody);
+      add(box, settingsExt('route', { name, entry: () => entry(), set: (key, value) => commit(key, value, false), onModel: (fn) => { if (typeof fn === 'function') modelSubs.push(fn); } }));
     }
     function paint() {
       const e = entry();
@@ -5975,9 +6200,9 @@
   function updateSettingsNav() {
     for (const [id] of SETTINGS_SECTIONS) {
       const dot = document.querySelector('.settings-nav [data-sec="' + id + '"] .dirty-dot');
-      if (dot) dot.hidden = !sectionDirty(id);
+      if (dot) dot.hidden = !secDirty(id);
       const tag = document.querySelector('[data-dirty-for="' + id + '"]');
-      if (tag) tag.hidden = !sectionDirty(id);
+      if (tag) tag.hidden = !secDirty(id);
     }
   }
   function updateSaveBar() {
@@ -5987,10 +6212,26 @@
     const dirty = CONFIG_KEYS.filter(sectionDirty);
     bar.hidden = !dirty.length && !CFG.saveError && !CFG.invalid.size;
     if (bar.hidden) return;
-    const labels = dirty.map((k) => (SETTINGS_SECTIONS.find((s) => s[0] === k) || [k, k])[1]);
+    const labels = Array.from(new Set(dirty.map((k) => (SETTINGS_SECTIONS.find((s) => s[0] === (SEC_OF[k] || k)) || [k, k])[1])));
     bar.appendChild(icon(CFG.invalid.size ? 'alert' : 'info', 'icon-sm'));
     bar.appendChild(h('span', { class: 'save-msg' }, dirty.length ? ['Unsaved changes in ', h('strong', null, labels.join(', ')), CFG.invalid.size ? ' · fix ' + plural(CFG.invalid.size, 'invalid field') + ' first' : '']
       : CFG.invalid.size ? 'Fix ' + plural(CFG.invalid.size, 'invalid field') + ' before saving.' : 'Not saved.'));
+    // Name the first invalid field and why (its title holds setInvalid's message), with a way to it: a phone has no
+    // hover, and the field may sit in a closed section further down.
+    const bad = CFG.invalid.size ? Array.from(document.querySelectorAll('#settings-root [aria-invalid="true"]')).find((x) => x.closest('.save-bar') === null) : null;
+    if (bad) {
+      const name = bad.getAttribute('aria-label') || (bad.labels && bad.labels[0] ? bad.labels[0].textContent : '') || 'a field';
+      const go = btn('Show it', { cls: 'btn-xs btn-ghost', icon: 'arrow-right', dataset: { action: 'show-invalid' } });
+      go.addEventListener('click', () => {
+        for (let el = bad.parentElement; el && el.id !== 'settings-root'; el = el.parentElement) {
+          if (el.hidden) { el.hidden = false; const opener = el.id && document.querySelector('[aria-controls="' + CSS.escape(el.id) + '"]'); if (opener) opener.setAttribute('aria-expanded', 'true'); }
+          if (el.tagName === 'DETAILS') el.open = true;
+        }
+        bad.scrollIntoView({ block: 'center' });
+        bad.focus({ preventScroll: true });
+      });
+      bar.appendChild(h('span', { class: 'save-invalid' }, icon('alert', 'icon-xs'), h('span', null, '“' + name + '”' + (bad.title ? ': ' + bad.title : '')), go));
+    }
     const discard = btn('Discard', { cls: 'btn-sm btn-ghost', disabled: CFG.saving });
     discard.addEventListener('click', () => { CFG.draft = clone(CFG.orig); CFG.invalid.clear(); CFG.saveError = null; CFG.saveSection = null; rerenderSettings(); });
     const save = btn('Save changes', { cls: 'btn-sm btn-primary', icon: 'check', disabled: !dirty.length || CFG.invalid.size > 0 || CFG.saving });
@@ -6044,13 +6285,13 @@
     }
     const nav = h('nav', { class: 'settings-nav', 'aria-label': 'Settings sections' });
     for (const [id, label, ic] of SETTINGS_SECTIONS) {
-      nav.appendChild(h('a', { href: '#/settings/' + secAnchor(id), dataset: { sec: id, anchor: secAnchor(id) }, 'aria-current': anchorSec(S.route.section) === secAnchor(id) ? 'true' : 'false' }, icon(ic, 'icon-sm'), label, h('span', { class: 'dirty-dot', hidden: !sectionDirty(id), title: 'Unsaved changes' })));
+      nav.appendChild(h('a', { href: '#/settings/' + secAnchor(id), dataset: { sec: id, anchor: secAnchor(id) }, 'aria-current': anchorSec(S.route.section) === secAnchor(id) ? 'true' : 'false' }, icon(ic, 'icon-sm'), label, h('span', { class: 'dirty-dot', hidden: !secDirty(id), title: 'Unsaved changes' })));
     }
     const sections = h('div', { class: 'settings-sections' });
     TEST_VIEWS.clear();
-    const builders = [secRouting, secProviders, secModels, secPipeline, secLimits, secHarness, secMcp, secEscalate, secRepos];
+    const builders = [secRouting, () => settingsExt('page'), secProviders, secModels, secPipeline, secLimits, secHarness, secMcp, secEscalate, secRepos];
     for (const b of builders) {
-      try { sections.appendChild(b()); } catch (e) { console.error('settings section failed', e); sections.appendChild(callout('err', 'alert', 'This section could not be rendered.', String(e && e.message))); }
+      try { add(sections, b()); } catch (e) { console.error('settings section failed', e); sections.appendChild(callout('err', 'alert', 'This section could not be rendered.', String(e && e.message))); }
     }
     CFG.saveBar = h('div', { class: 'save-bar', role: 'region', 'aria-label': 'Unsaved changes' });
     sections.appendChild(CFG.saveBar);
@@ -6072,11 +6313,24 @@
   // Feature-detected: a server without these endpoints (404) keeps every other view working; the new views say so.
   const F = window.SFFlows || null;
   const gone = (e) => e && (e.status === 404 || e.status === 405 || e.status === 501);
-  const SETUPST = { status: null, loading: null, error: null, missing: false, at: 0 };
+  // look: the answer of the owner's last look for model servers from this page (POST /api/setup/look-around).
+  const SETUPST = { status: null, loading: null, error: null, missing: false, at: 0, look: null };
+  /** The host's model_servers (or model_servers_error, for a look that broke) and model_servers_at from the newer of
+   *  GET /api/setup's last look and this page's own (a status read while the look ran may arrive after its answer). */
+  function keepLook() {
+    const host = SETUPST.status && isObj(SETUPST.status.host) ? SETUPST.status.host : null;
+    const mine = SETUPST.look;
+    if (!host || !mine || (host.model_servers_at && String(host.model_servers_at) >= String(mine.at || ''))) return;
+    delete host.model_servers;
+    delete host.model_servers_error;
+    if (mine.error) host.model_servers_error = String(mine.error);
+    else host.model_servers = Array.isArray(mine.model_servers) ? mine.model_servers : [];
+    host.model_servers_at = mine.at || null;
+  }
   function loadSetup() {
     if (SETUPST.loading) return SETUPST.loading;
     SETUPST.loading = api('/api/setup')
-      .then((r) => { SETUPST.status = isObj(r) ? r : null; SETUPST.error = null; SETUPST.missing = false; })
+      .then((r) => { SETUPST.status = isObj(r) ? r : null; SETUPST.error = null; SETUPST.missing = false; keepLook(); })
       .catch((e) => { if (gone(e)) SETUPST.missing = true; else if (e.status !== 401) SETUPST.error = e.message; })
       .finally(() => { SETUPST.loading = null; SETUPST.at = Date.now(); invalidate('grid', 'flow', 'doctorBadge'); });
     return SETUPST.loading;
@@ -6154,6 +6408,45 @@
     // A mode you picked is always sent (the job runs with what you saw, even if the saved default changes meanwhile);
     // untouched, the field is left out and the server's default applies.
     return { el: wrap, value: () => chosen || undefined, mode: () => chosen || def, differs: () => !!chosen && chosen !== def };
+  }
+  /** The push of base after a merge (job.push, DESIGN §40), as a chip on the job card: its outcome in words, never a
+   *  bare colour; no chip before the push was asked for. */
+  function pushChip(job) {
+    const p = isObj(job.push) ? job.push : null;
+    if (!p) return null;
+    const o = p.outcome;
+    const words = o === 'succeeded' ? 'pushed' : o === 'failed' ? 'push failed' : o === 'unknown' ? 'push: outcome unknown' : 'pushing…';
+    const cls = o === 'succeeded' ? 'tag-outline' : o === 'failed' ? 'tag-err' : 'tag-warn';
+    return h('span', { class: 'tag ' + cls + ' tag-push', title: 'Push of ' + (job.base || 'the base branch') + ' to ' + String(p.remote || 'the remote') + ': ' + (o ? WORDS.outcome[o] || o : 'asked, no answer yet'), dataset: { push: String(o || 'pending') } },
+      icon('git', 'icon-xs'), words);
+  }
+  /** The drawer's push box (job.push): the outcome in words, the remote and the commit, what git answered (its own
+   *  line for the ref), and, after a look at the remote, what the remote has; an unknown one links its tracker item. */
+  function pushBox(job) {
+    const p = job.push;
+    const o = p.outcome;
+    const resp = isObj(p.response) ? p.response : null;
+    const seen = isObj(p.observed) ? p.observed : null;
+    const base = job.base || 'the base branch';
+    const remote = String(p.remote || 'the remote');
+    const title = o === 'succeeded' ? 'Pushed ' + base + ' to ' + remote : o === 'failed' ? 'The push of ' + base + ' to ' + remote + ' failed'
+      : o === 'unknown' ? 'The push of ' + base + ' to ' + remote + ': outcome unknown' : 'Pushing ' + base + ' to ' + remote + '…';
+    const tone = o ? WORDS.outcomeTone[o] || 'warn' : 'accent';
+    return h('div', { class: 'push-box tone-' + tone, dataset: { push: String(o || 'pending') } },
+      h('span', { class: 'push-icon' }, icon(o === 'succeeded' ? 'git' : 'alert', 'icon-sm')),
+      h('div', { class: 'push-main' },
+        h('div', { class: 'push-title' }, title, ' ', h('span', { class: 'pill no-dot tone-' + tone }, o ? WORDS.outcome[o] || String(o) : 'No answer yet')),
+        o === 'unknown' ? h('p', { class: 'push-sub' }, 'It may or may not have reached ' + remote + '. Look at the remote before you push again: nothing is pushed again by itself.') : null,
+        h('dl', { class: 'sf-kv push-kv' },
+          h('dt', null, 'Remote'), h('dd', null, h('code', null, remote), p.ref ? [' ', h('code', { class: 'sf-muted' }, String(p.ref))] : null),
+          p.commit ? [h('dt', null, 'Commit'), h('dd', null, h('code', { title: String(p.commit) }, String(p.commit).slice(0, 12)))] : null,
+          resp && Array.isArray(resp.ids) && resp.ids.length ? [h('dt', null, 'Git said'), h('dd', null, resp.ids.map((x) => h('code', { class: 'push-said' }, String(x))))] : null,
+          resp && resp.status !== null && resp.status !== undefined ? [h('dt', null, 'Exit status'), h('dd', null, String(resp.status))] : null,
+          seen ? [h('dt', null, 'Looked again'), h('dd', { dataset: { part: 'observed' } }, seen.error ? 'the remote could not be asked: ' + String(seen.error)
+            : seen.remote_commit ? ['the remote has ' + base + ' at ', h('code', { title: String(seen.remote_commit) }, String(seen.remote_commit).slice(0, 12)), seen.remote_commit === p.commit ? ' (this commit)' : ' (not this commit)']
+              : 'the remote does not have it')] : null,
+          p.detail ? [h('dt', null, 'Detail'), h('dd', { class: 'push-detail' }, String(p.detail))] : null,
+          p.item ? [h('dt', null, 'To check'), h('dd', null, itemLink(String(p.item)))] : null)));
   }
   /** The drawer of a delivered job: where its work is, with a copy button; Merge it now is in the actions. */
   function deliveredBox(job) {
@@ -6619,7 +6912,8 @@
   // Drafts persist per flow in localStorage (a per-viewer convenience) until applied. Typed keys never do: they live
   // in WZ.secrets (memory) until they are saved to the server, and are dropped from memory as soon as they are.
   const WZ = { drafts: {}, secrets: new Map(), saved: new Set(), tests: new Map(), notes: new Map(), err: null, apply: null, starting: false,
-    agentMcp: null, agentMcpLoading: false, scoutAsked: new Set(), adjusted: '', lastStep: '', focus: null };
+    agentMcp: null, agentMcpLoading: false, scoutAsked: new Set(), adjusted: '', lastStep: '', focus: null,
+    look: { busy: false, error: null, gone: false } };   // the look for model servers: only when its button is pressed
   const flowKey = (id) => 'sf.flow.' + id;
   function draftOf(id) {
     if (!WZ.drafts[id]) {
@@ -6986,6 +7280,74 @@
       h('p', null, 'The builder and the UX and UI reviewers open pages in a real browser when the ', h('code', null, 'agent-browser'), ' CLI is on the server’s PATH, and read them as text with curl otherwise. ',
         on === true ? 'Nothing to set here.' : ['Install it on the server with ', h('code', null, 'npm install -g agent-browser'), '; nothing to set here.']));
   }
+  /** Drop a refusal ("You looked just now…") once its Retry-After has passed: it is no longer true then. */
+  function lookRefusalOver() {
+    const L = WZ.look;
+    if (L.until && Date.now() >= L.until) { L.error = null; L.until = 0; }
+  }
+  /** POST /api/setup/look-around, once per press (the server refuses a second one too soon: 429). The answer goes
+   *  into the setup status's host as GET /api/setup would give it, so the address hints offer what it found. A
+   *  refusal shows until its Retry-After has passed (one redraw then; it does not look again). */
+  async function lookAround() {
+    const L = WZ.look;
+    if (L.busy) return;
+    const focused = !!(document.activeElement && document.activeElement.dataset && document.activeElement.dataset.action === 'wz-look-around');
+    L.busy = true;
+    L.error = null;
+    L.until = 0;
+    invalidate('flow');
+    try {
+      const r = await api('/api/setup/look-around', { method: 'POST', body: {} });
+      SETUPST.look = isObj(r) ? r : { model_servers: [] };
+      keepLook();
+      L.note = isObj(r) && r.note ? String(r.note) : null;
+    } catch (e) {
+      if (gone(e)) L.gone = true;
+      else if (e.status !== 401) L.error = e.message;
+      if (e.status === 429 && e.retryAfter) {
+        const until = L.until = Date.now() + e.retryAfter * 1000;
+        setTimeout(() => { if (L.until === until) { lookRefusalOver(); invalidate('flow'); } }, e.retryAfter * 1000 + 50);
+      }
+    } finally {
+      L.busy = false;
+      if (focused && !WZ.focus) WZ.focus = { action: 'wz-look-around' };   // the busy button could not keep focus
+      invalidate('flow');
+    }
+  }
+  /** The look-around on the server-details step: a sentence on what pressing it does, the button (busy while it
+   *  looks), and the last look's answer (GET /api/setup keeps it, with when it was taken). Nothing runs by itself. */
+  function lookAroundWidget() {
+    const L = WZ.look;
+    lookRefusalOver();
+    const host = SETUPST.status && isObj(SETUPST.status.host) ? SETUPST.status.host : null;
+    const last = host && host.model_servers_at ? { model_servers: host.model_servers, error: host.model_servers_error, at: host.model_servers_at } : SETUPST.look;
+    // A look that broke found nothing: it gets its error and a next step, not "nothing answered" or what was sent.
+    const broke = last && last.error ? String(last.error) : null;
+    const found = last && !broke && Array.isArray(last.model_servers) ? last.model_servers.filter((m) => isObj(m) && m.url) : null;
+    const b = btn(L.busy ? 'Looking…' : 'Look for model servers', { cls: 'btn-sm', icon: 'search', dataset: { action: 'wz-look-around' }, disabled: L.gone });
+    if (L.busy) setBusy(b, true);
+    b.addEventListener('click', lookAround);
+    const what = (m) => (Array.isArray(m.ids) && m.ids.length ? F.listsText(m.ids) : m.status === 200 ? 'lists no models' : 'wants a key');
+    const answer = [];
+    if (L.gone) answer.push(h('p', { class: 'wz-look-empty' }, 'This server cannot look for model servers. Type each server’s address below.'));
+    if (L.error) answer.push(h('div', { class: 'test-result warn', role: 'alert' }, icon('alert', 'icon-xs'), h('span', null, L.error)));
+    if (broke) {
+      answer.push(h('div', { class: 'test-result warn wz-look-broke', role: 'alert' }, icon('alert', 'icon-xs'),
+        h('span', null, 'The look did not work: ' + broke + '. Look again in a moment, or type each server’s address below.')));
+    } else if (found && found.length) {
+      answer.push(h('ul', { class: 'wz-look-list', 'aria-label': 'Model servers found' }, found.map((m) => h('li', { dataset: { url: String(m.url) } },
+        h('code', null, F.idText(m.url)), h('span', { class: 'muted' }, ' ' + what(m))))));
+    } else if (found) {
+      answer.push(h('p', { class: 'wz-look-empty' }, 'No program listening on this machine answered like a model server. Start your model server and wait until it has loaded its model, then look again. If it runs on another machine, type its address below.'));
+    }
+    return h('div', { class: 'wz-look', 'aria-busy': L.busy ? 'true' : 'false' },
+      h('p', { class: 'wz-look-text' }, 'Asks each program listening on this machine whether it is a model server; it sends no key and changes nothing.'),
+      h('div', { class: 'wz-look-row' }, b,
+        L.busy ? h('span', { class: 'wz-test-hint' }, 'Asking each program listening here…')
+          : last && last.at ? h('span', { class: 'wz-test-hint' }, 'Last look: ', timeEl(last.at)) : null),
+      h('div', { class: 'wz-look-answer', 'aria-live': 'polite' }, L.busy ? null : answer,
+        !L.busy && found && L.note ? h('p', { class: 'wz-look-note muted' }, L.note) : null));
+  }
   function loadAgentMcp() {
     if (WZ.agentMcp || WZ.agentMcpLoading || !F) return;
     WZ.agentMcpLoading = true;
@@ -7001,6 +7363,7 @@
     if (g.widget === 'routes' || g.widget === 'run-routes') widget = routesWidget(flowId, step, g, d, ctx);
     else if (g.widget === 'scout') widget = scoutWidget(g.repo);
     else if (g.widget === 'agent-browser') widget = browserWidget();
+    else if (g.widget === 'look-around') widget = lookAroundWidget();
     const key = g.test ? g.test.kind + ':' + (g.test.server || g.test.provider) : null;
     return h('section', { class: 'wz-group' + (g.title ? '' : ' is-plain'), dataset: { group: g.id } },
       g.title ? h('div', { class: 'wz-group-head' }, h('h3', { class: 'wz-group-title' }, g.title),
@@ -7111,7 +7474,7 @@
     const actions = [modeToggle(flowId, mode)];
     if (flowId !== 'welcome') actions.push(btn('Start over', { cls: 'btn-sm btn-ghost', icon: 'rework', dataset: { action: 'start-over' }, onClick: () => startOver(flowId) }));
     return h('div', { class: 'wz-head' },
-      h('div', { class: 'wz-head-text' }, h('div', { class: 'wz-eyebrow' }, flowId === 'setup' ? 'Guided setup' : flowId === 'start' ? 'Start work' : 'Software Factory'),
+      h('div', { class: 'wz-head-text' }, h('div', { class: 'wz-eyebrow' }, flowId === 'setup' ? 'Guided setup' : flowId === 'start' ? 'Start work' : PRODUCT),
         h('h1', { class: 'wz-h1' }, flowId === 'welcome' ? 'What would you like to do?' : flow.title), flow.sub && flowId !== 'welcome' ? h('p', { class: 'wz-sub' }, flow.sub) : null),
       h('div', { class: 'wz-head-actions' }, actions));
   }
@@ -7167,7 +7530,7 @@
     const st = SETUPST.status;
     const fresh = !!st && st.configured === false && !ctx.used;
     root.appendChild(flowHead('welcome', flow, 'wizard'));
-    const intro = h('p', { class: 'wz-lead' }, 'A coding factory on your own server: agents write the spec, build, review and approve each change to your repositories, and you decide what lands.');
+    const intro = h('p', { class: 'wz-lead' }, 'Welcome to ' + PRODUCT + ': AI agents do the expert work on your own server, and every change has a way back. Its Software Factory writes the spec, builds, reviews and approves each change to your repositories, and you decide what lands.');
     root.appendChild(intro);
     const chips = setupChips();
     if (chips) root.appendChild(chips);
@@ -7200,7 +7563,7 @@
       list.appendChild(h('div', { role: 'listitem', class: 'opt-cell' }, card));
     }
     root.appendChild(list);
-    root.appendChild(h('p', { class: 'wz-foot-links' }, 'See the whole harness on one map: ', h('a', { href: '#/grid' }, 'Grid Card'), ' · Every agent’s working procedure: ', h('a', { href: '#/procedures' }, 'Procedures')));
+    root.appendChild(h('p', { class: 'wz-foot-links' }, 'Every section and what needs you: ', h('a', { href: '#/home' }, 'Home'), ' · The Software Factory on one map: ', h('a', { href: '#/grid' }, 'Grid Card'), ' · Every agent’s working procedure: ', h('a', { href: '#/procedures' }, 'Procedures')));
   }
   /** The steps of your path beside the step (wide screens): each answered step shows its answer and goes back to it. */
   function miniMap(flowId, flow, path, stepId, ctx) {
@@ -7480,8 +7843,12 @@
     const rows = req.summary.map(([k, v]) => [h('dt', null, k), h('dd', null, String(v))]);
     const text = String(F.valueOf(d, 'describe', 'text', '')).trim();
     const pre = req.requests.map((r) => r.method + ' ' + r.path + '\n' + JSON.stringify(r.body, null, 2)).join('\n\n') + (req.message ? '\n\nPOST /api/chats/<new chat>/messages\n' + JSON.stringify({ text: req.message }, null, 2) : '');
+    const first = req.requests[0] || {};
+    const fx = formExt('start', { request: Object.freeze({ kind: req.kind, path: first.path, body: clone(first.body || {}) }),
+      repo: () => (first.body && first.body.repo) || null, routing: () => (first.body ? first.body.routing : undefined) });
     return h('div', { class: 'wz-run' },
       h('dl', { class: 'kv wz-kv' }, rows, text ? [h('dt', null, req.kind === 'chat' ? 'First message' : 'Request'), h('dd', { class: 'wz-text' }, text.length > 400 ? text.slice(0, 400) + '…' : text)] : null),
+      fx.nodes,
       h('details', { class: 'wz-raw' }, h('summary', null, icon('chevron', 'icon-xs chev'), 'Exactly what the server receives'), h('pre', { class: 'code-block wz-json' }, pre)),
       WZ.startError ? h('div', { class: 'form-error', role: 'alert' }, icon('alert', 'icon-sm'), h('span', null, WZ.startError)) : null);
   }
@@ -7695,6 +8062,11 @@
       if (n.agent) { const m = modelOf(n.agent); if (!c) return { tone: null, text: m.model !== '—' ? m.model : '', detail: runsOn(n.agent, m) }; }
       return { tone: c ? (n.id === 'plan-ready' ? 'human' : 'accent') : null, text: c ? plural(c, 'plan') : '', detail: c ? plural(c, 'plan') + ' at this step' : '' };
     }
+    if (n.view) {   // a view module's node: its rail badge (the tracker's: items waiting for you)
+      const v = REG.views.get(n.view);
+      const c = v && v.badge ? v.badge.n : 0;
+      return { tone: c ? 'human' : null, text: c ? c + ' waiting' : '', detail: c ? (v.badge.label || c + ' waiting for you') : '' };
+    }
     if (n.chats) {
       const all = Array.from(S.chats.values()).filter((c) => !S.filterRepo || c.repo === S.filterRepo);
       const run = all.filter((c) => c.status === 'running').length;
@@ -7731,6 +8103,7 @@
     lanes.line.w = Math.max(loopX + 16, hx + humanW / 2 + 14) - lanes.line.x;
     lanes.chat = { x: lanes.line.x + lanes.line.w + GAP, w: 144 };
     lanes.plans = { x: lanes.chat.x + lanes.chat.w + GAP, w: 150 };
+    lanes.housekeeping = lanes.chat;   // under Chat, beside the line's outputs (row 9)
     const width = lanes.plans.x + lanes.plans.w + PAD;
     const rowTop = (r) => TOP + r * ROW;
     const rowC = (r) => rowTop(r) + NH / 2;
@@ -7751,13 +8124,14 @@
     };
     for (const def of F.GRID.nodes) {
       if (def.kind === 'reviewers' || def.kind === 'output') continue;
+      if (def.view && !REG.views.has(def.view)) continue;   // a view module's node, without that module
       if (def.lane === 'setup') place(def, laneC('setup'), rowC(def.row), { w: def.shape === 'pill' ? 116 : 124, h: def.shape === 'pill' ? 34 : NH });
       else if (def.lane === 'line') {
         if (def.id === 'human') place(def, hx, rowC(def.row), { w: humanW, h: NH });
         else if (def.shape === 'diamond') place(def, cx, rowC(def.row), { w: def.id === 'start' ? 120 : 100, h: def.id === 'start' ? 50 : 46 });
         else if (def.shape === 'small') place(def, cx, rowC(def.row), { w: 112, h: 28 });
         else place(def, cx, rowC(def.row), { w: 152, h: NH });
-      } else place(def, laneC(def.lane), rowC(def.row), { w: def.lane === 'chat' ? 132 : 140, h: def.shape === 'pill' ? 34 : NH });
+      } else place(def, laneC(def.lane), rowC(def.row), { w: def.lane === 'chat' ? 132 : def.lane === 'housekeeping' ? 168 : 140, h: def.shape === 'pill' ? 34 : NH });
     }
     const revDef = gridNodeDef('reviewers');
     revs.forEach((r, i) => {
@@ -7857,6 +8231,17 @@
     const hy = hb.y + 20;
     edge('handoff', 'queue', [hb, { x: hb.x, y: hy }, { x: chX, y: hy }, { x: chX, y: q.y }, qr], 'branch as round 1', { lines: ['branch as', 'round 1'], lx: hb.x + 7, ly: hb.y + 9, anchor: 'start' });
     edge('plan-jobs', 'queue', [leftOf(pj), { x: chX, y: pj.y }, { x: chX, y: q.y }, qr], 'each job', { lx: leftOf(pj).x - 6, ly: pj.y - 8, anchor: 'end' });
+    // The Housekeeping Tracker (a view module's node): what a job leaves open comes in from the outputs; a follow-up
+    // goes back to Queued as a new job, joining the plan's "each job" route.
+    const tr = N('tracker');
+    const of = N('out-folder');
+    if (tr && of) {
+      const a = rightOf(of);
+      const lab = labelLines('open items when a job ends', Math.max(70, leftOf(tr).x - a.x - 14), 'edge', 2);
+      edge('out-folder', 'tracker', [a, leftOf(tr)], 'open items when a job ends', { label: lab.join(' '), lines: lab, lx: a.x + 7, ly: a.y - 8 - (lab.length - 1) * 12, anchor: 'start' });
+      const t0 = topOf(tr);
+      edge('tracker', 'queue', [t0, { x: t0.x, y: pj.y }, { x: chX, y: pj.y }, { x: chX, y: q.y }, qr], 'make a job', { lx: t0.x + 7, ly: t0.y - 9, anchor: 'start' });
+    }
     const height = rowTop(9) + NH + PAD;
     return { width, height, nodes, edges: E, panels };
   }
@@ -7870,6 +8255,7 @@
     if (href === '#/welcome') return 'Open Welcome';
     if (href === '#/settings/routing') return 'Open Settings › Routing';
     if (href === '#/settings/repos') return 'Open Settings › Repositories';
+    for (const v of REG.views.values()) if (href === '#/' + v.routes[0]) return 'Open ' + v.title;   // a view module's node
     return 'Open';
   }
   function gridCardFor(id) {
@@ -7921,7 +8307,7 @@
   }
   /** Phones: the map as lists, in the map's own order (row by row), each row with the routes that leave it. */
   function gridList(layout) {
-    const groups = [['setup', 'Set up'], ['line', 'Factory line'], ['chat', 'Chat'], ['plans', 'Plans']];
+    const groups = [['setup', 'Set up'], ['line', 'Factory line'], ['chat', 'Chat'], ['plans', 'Plans'], ['housekeeping', 'Housekeeping']];
     const byId = Object.fromEntries(layout.nodes.map((n) => [n.id, n]));
     const name = (n) => (n.id.indexOf('rev:') === 0 ? 'reviewer-' + n.label : String(n.label).replace(/\n/g, ' '));
     return h('div', { class: 'grid-list' }, groups.map(([lane, title]) => {
@@ -7929,6 +8315,7 @@
       const rank = (n) => (n.id === 'human' ? (gridNodeDef('gate') || {}).row + 0.5 : n.def && typeof n.def.row === 'number' ? n.def.row : 0);
       const items = layout.nodes.filter((n) => (n.def && n.def.lane) === lane || (lane === 'line' && n.id.indexOf('rev:') === 0))
         .sort((a, c) => rank(a) - rank(c) || a.x - c.x);
+      if (!items.length) return null;
       return h('section', { class: 'grid-list-sec' }, h('h2', { class: 'grid-list-title' }, title),
         h('ul', null, items.map((n) => {
           // Labelled routes leaving this node (the reviewers' fan-in has none).
@@ -7960,7 +8347,7 @@
     const focused = act ? (act.matches('.map-node') ? { node: act.dataset.node } : act.dataset.action ? { action: act.dataset.action } : act.dataset.node ? { row: act.dataset.node } : null) : null;
     clear(root);
     if (!F) { root.appendChild(emptyState('alert', 'The Grid Card did not load', 'flows.js is missing from this server.')); return; }
-    root.appendChild(viewHead('Grid Card', 'The whole harness on one map: set up, start, the factory line, chat and plans, joined by their routes. Select a module for its working procedure.',
+    root.appendChild(viewHead('Grid Card', 'The Software Factory on one map: set up, start, the factory line, chat and plans, joined by their routes. Select a module for its working procedure. Every other section is on Home.',
       [h('a', { class: 'btn btn-sm', href: '#/procedures' }, icon('book', 'icon-sm'), 'Procedures'), h('a', { class: 'btn btn-sm btn-primary', href: '#/setup' }, icon('settings', 'icon-sm'), 'Setup')]));
     if (SETUPST.error) root.appendChild(callout('warn', 'alert', 'Setup status unavailable:', SETUPST.error));
     const layout = gridLayout();
@@ -8024,12 +8411,13 @@
     const order = ['factory-line', 'spec-writer', 'builder', 'reviewer', 'approver', 'gate', 'human', 'plans', 'lead', 'coder', 'analyst', 'handoff', 'repo-scout'];
     return { title: '', intro: '', build: '', sections: order.filter((k) => F.AGENT_PROCEDURES[k]).map(builtIn), maps: [], server: false };
   }
-  function mapFigure(title, graph, cls, description) {
+  function mapFigure(title, graph, cls, description, id) {
     const layout = layoutMap(graph, { rankGap: 44 });
     const svg = drawMap(layout, { label: title, nodeClass: (n) => [graph.highlight && graph.highlight.indexOf(n.id) >= 0 ? 'is-default' : '', n.tone === 'human' ? 'has-human' : ''].filter(Boolean).join(' ') });
     // On a phone a wide map opens on its first node (the spine), with a cue that it scrolls.
     const box = mapBox(svg, layout, 'book-map' + (cls ? ' ' + cls : ''), 0.86, { narrowMin: 0.74, center: graph.nodes[0] && graph.nodes[0].id });
-    return h('figure', { class: 'book-fig' }, h('figcaption', null, h('span', { class: 'book-fig-title' }, title), description ? h('span', { class: 'book-fig-desc' }, description) : null), box, box._cue);
+    return h('figure', { class: 'book-fig', dataset: { map: id || '' } }, h('figcaption', null, h('span', { class: 'book-fig-title' }, title), description ? h('span', { class: 'book-fig-desc' }, description) : null,
+      id ? extNodes('map', { id, title }) : null), box, box._cue);
   }
   /** "Runs on deepseek-v4-pro (provider deepseek) · tools: Read, Grep, …": the model itself, not the tier alias. */
   function bookMeta(s) {
@@ -8088,7 +8476,7 @@
         s.summary ? h('p', { class: 'book-sum' }, s.summary) : null,
         meta ? h('p', { class: 'book-meta' }, meta) : null,
         lead.length ? procedureList(lead, 'proc-book') : null);
-      for (const m of s.maps || []) { sec.appendChild(mapFigure(m.title, m.graph, '', m.description)); placed.add(m.id); }
+      for (const m of s.maps || []) { sec.appendChild(mapFigure(m.title, m.graph, '', m.description, m.id)); placed.add(m.id); }
       const builtIn = !data.server || !(data.maps.length || data.sections.some((x) => (x.maps || []).length));
       if (builtIn && s.id === 'factory-line') sec.appendChild(mapFigure('Factory line: from request to output', F.factoryMap(reviewers, maxRes, deliveryDefault()), 'is-line'));
       if (builtIn && (s.id === 'plans' || (s.id === 'lead' && !data.sections.some((x) => x.id === 'plans')))) sec.appendChild(mapFigure('Plans: plan, run, review', F.planMap()));
@@ -8107,7 +8495,7 @@
       book.appendChild(sec);
     }
     const rest = (data.maps || []).filter((m) => !placed.has(m.id));
-    if (rest.length) book.appendChild(h('section', { class: 'book-sec', id: 'proc-maps' }, h('h2', { class: 'book-h2' }, 'Maps'), rest.map((m) => mapFigure(m.title, m.graph, '', m.description))));
+    if (rest.length) book.appendChild(h('section', { class: 'book-sec', id: 'proc-maps' }, h('h2', { class: 'book-h2' }, 'Maps'), rest.map((m) => mapFigure(m.title, m.graph, '', m.description, m.id))));
     root.appendChild(book);
     main.scrollTop = y;
     for (const b of root.querySelectorAll('.map-scroll')) requestAnimationFrame(() => b._fit && b._fit());
@@ -8117,17 +8505,878 @@
     }
   };
 
+  // ================================================================ view modules (Seraphina OS Harness)
+  // A section of the harness lives in its own file, swfactory/web/views/<area>.js, loaded after app.js (index.html,
+  // defer, in order). It calls SF.registerView({...}) once: its routes (#/<name>/…?query), its rail entry, its card
+  // on Home and its renderer. Everything a view needs from this file is on window.SF (below); nothing else here is
+  // reachable from a view file, so a view never depends on app.js internals that another section may change.
+  const PRODUCT = 'Seraphina OS Harness';
+  const REG = { views: new Map(), routes: new Map(), booted: false };
+  const VIEW_ID_RE = /^[a-z][a-z0-9-]{0,31}$/;
+  const EVENT_NAME_RE = /^[a-z][a-z0-9_-]*(\.[a-z0-9_-]+)*$/;
+  /** First hash segments the core owns: a view module cannot take them. */
+  const CORE_ROUTES = new Set(['home', 'factory', 'job', 'plans', 'chat', 'agents', 'settings', 'doctor', 'welcome', 'setup', 'start', 'grid', 'procedures']);
+  const TONES = new Set(['ok', 'accent', 'human', 'warn', 'todo', 'err']);
+  const safely = (what, fn) => { try { return fn(); } catch (e) { console.error(what + ' failed', e); return undefined; } };
+
+  // ---------------------------------------------------------------- live events for view modules
+  const EVENT_SUBS = new Map();
+  const RECONNECT_SUBS = new Set();
+  /** The SSE event types the stream listens to: the core's, then every type a view module subscribed to. */
+  function eventTypes() {
+    const out = EVENT_TYPES.slice();
+    for (const t of EVENT_SUBS.keys()) if (out.indexOf(t) < 0) out.push(t);
+    return out;
+  }
+  /** SF.on(type | [types], fn(ev)) → unsubscribe. ev is {seq, ts, type, repo, job, agent, data}. Events carry
+   *  counts and refs, never the text a person or an agent wrote: fetch the record to show it. */
+  function onEvent(types, fn) {
+    const list = (Array.isArray(types) ? types : [types]).map(String);
+    if (typeof fn !== 'function') throw new Error('SF.on: give a function');
+    for (const t of list) {
+      if (!EVENT_NAME_RE.test(t)) throw new Error('SF.on: not an event type: ' + t);
+      if (!EVENT_SUBS.has(t)) {
+        EVENT_SUBS.set(t, new Set());
+        if (es && es._onMsg && EVENT_TYPES.indexOf(t) < 0) es.addEventListener(t, es._onMsg);
+      }
+      EVENT_SUBS.get(t).add(fn);
+    }
+    return () => { for (const t of list) { const s = EVENT_SUBS.get(t); if (s) s.delete(fn); } };
+  }
+  function dispatchToViews(ev) {
+    const subs = EVENT_SUBS.get(ev.type);
+    if (!subs) return;
+    for (const fn of Array.from(subs)) safely('event ' + ev.type + ' handler', () => fn(ev));
+  }
+  /** SF.onReconnect(fn(why)): the stream came back after a gap ('reconnected') or the server restarted
+   *  ('restarted', its event numbers began again): reload what the view shows. */
+  function onReconnect(fn) { RECONNECT_SUBS.add(fn); return () => RECONNECT_SUBS.delete(fn); }
+  function notifyReconnect(why) {
+    for (const fn of Array.from(RECONNECT_SUBS)) safely('reconnect handler', () => fn(why));
+    if (S.route.view === 'home') loadHome(true);
+  }
+
+  // ---------------------------------------------------------------- extension points of the Software Factory views
+  // Chips on a job card, items in the job drawer's meta row and blocks under it: SF.extend(kind, fn(job) → Node,
+  // [Node] or null). A job card re-renders when its job changes; after data of your own arrived, SF.refreshJobs()
+  // (it redraws the open chat too). More kinds, each fn(arg) → Node, [Node] or null:
+  //   runHead      {mode: 'job'|'chat', owner, name, agent, round, status, start, end}: chips on a run's header (a job's
+  //                Live run, a chat turn's foot); start / end are the agent.start / agent.end data, or null
+  //   chatHead     chat: items in a chat's meta row          planHead  plan: items in a plan detail's meta row
+  //   chatBanner   chat: blocks under a chat's head (banners, a button that starts another chat)
+  //   chatReply    {chat, turn, message, run}: lines under one reply; message is a history entry {role, text, turn,
+  //                label?} and run null, or (a turn shown live) message null and run {name, no (the log's NN, not
+  //                the transcript's turn), status, started (agent.start seen), text (it wrote any)}
+  //   chatStart    {form: 'chat'}: one more start for New chat, returned as {id, title, desc, disabled?, fields() →
+  //                [Node], body() → the POST /api/chats body (throw an Error the dialog shows), onError?(e) → nodes
+  //                shown after the server's refusal (where to fix it), claims?() → agent names only this start
+  //                offers (the No repository start leaves them out)} instead of a Node
+  //   form         a form of the Software Factory (formExt below): New feature, New plan, New chat (under every
+  //                start), Hand off, Change routing, the Start review and the Approve dialog (form 'approve',
+  //                f.job); fields it returns go into the form, f.contribute adds to the body
+  //   map          {id, title}: nodes under a process map's title in Procedures (id: the map's, as GET /api/docs/maps)
+  //   settings     {section: 'page'|'route'|'model'|'provider', …} (settingsExt below): Settings fields and cards
+  //   doctorCheck  a Doctor check {name, ok, level, detail}: a line under it
+  const EXT = { jobCard: [], jobMeta: [], jobHead: [], runHead: [], chatHead: [], planHead: [], chatBanner: [], chatReply: [], chatStart: [], form: [], map: [], settings: [], doctorCheck: [] };
+  function extend(kind, fn) {
+    if (!EXT[kind]) throw new Error('SF.extend: unknown kind ' + kind + ' (use ' + Object.keys(EXT).join(', ') + ')');
+    if (typeof fn !== 'function') throw new Error('SF.extend: give a function');
+    EXT[kind].push(fn);
+    refreshJobs();
+    return () => { const i = EXT[kind].indexOf(fn); if (i >= 0) EXT[kind].splice(i, 1); refreshJobs(); };
+  }
+  function extNodes(kind, arg) {
+    const out = [];
+    for (const fn of EXT[kind]) {
+      const r = safely('SF.extend ' + kind, () => fn(arg));
+      for (const n of [].concat(r === undefined || r === null || r === false ? [] : r)) if (n instanceof Node) out.push(n);
+    }
+    return out;
+  }
+  /** chatStart's specs (objects, not nodes): those with an id, a title, fields() and body(). */
+  function extSpecs(kind, arg) {
+    const out = [];
+    for (const fn of EXT[kind]) {
+      const r = safely('SF.extend ' + kind, () => fn(arg));
+      for (const x of [].concat(r || [])) if (isObj(x) && typeof x.id === 'string' && x.title && typeof x.body === 'function') out.push(x);
+    }
+    return out;
+  }
+  function refreshJobs() {
+    for (const item of BOARD.cards.values()) item._card._sig = null;
+    invalidate('board', 'drawerHead', 'chatConv');
+  }
+  /** A form's view-module fields (SF.extend('form', fn(f))). f: {form: 'feature'|'plan'|'chat'|'handoff'|'routing'|
+   *  'start'|'approve', repo(), routing() (undefined, a preset name or per-step routes), job, chat, request (the Start
+   *  request), onChange(fn) (the repository or the routing changed), contribute(fn(body, action)), onError(fn(err,
+   *  action) → text | null)}. apply(body, action) runs every contribution before the POST (one may throw an Error the
+   *  dialog shows); action is the button's value. error(err, action): after the server refused (an ApiError, its body
+   *  in err.data), the first plain-words text a module gives for it (it may also redraw its fields, e.g. from a 409's
+   *  open_blocking), or null: the server's words then. */
+  function formExt(form, o) {
+    o = o || {};
+    const subs = [];
+    const fills = [];
+    const errs = [];
+    const f = Object.freeze({
+      form, job: o.job || null, chat: o.chat || null, request: o.request || null,
+      repo: () => (o.repo ? o.repo() : null),
+      routing: () => { try { return o.routing ? o.routing() : undefined; } catch (e) { return undefined; } },
+      onChange: (fn) => { if (typeof fn === 'function') subs.push(fn); },
+      contribute: (fn) => { if (typeof fn === 'function') fills.push(fn); },
+      onError: (fn) => { if (typeof fn === 'function') errs.push(fn); },
+    });
+    const nodes = extNodes('form', f);
+    const changed = () => { for (const fn of subs) safely('form ' + form + ' change', () => fn()); };
+    for (const el of o.watch || []) if (el) el.addEventListener('change', changed);
+    const error = (err, action) => {
+      for (const fn of errs) { const t = safely('form ' + form + ' error', () => fn(err, action)); if (typeof t === 'string' && t) return t; }
+      return null;
+    };
+    return { nodes, changed, error, apply(body, action) { for (const fn of fills) fn(body, action); return body; } };
+  }
+  /** Settings fields and cards of a view module (SF.extend('settings', fn(s))). s: {section, draft (the whole draft
+   *  config: edit it in place), orig (as saved), changed(rerender?), invalid(key, msg, input), isInvalid(key),
+   *  errSlot(key), card(id, title, desc, body, extra), saveError()} plus, per section: 'route' {name, entry(),
+   *  set(key, value), onModel(fn): fn() after the box's model changes} (an agent's box in Settings › Routing),
+   *  'model' / 'provider' {name, entry} (a row's draft
+   *  entry), 'page' {} (whole cards, after Routing). */
+  function settingsExt(section, o) {
+    const s = Object.freeze(Object.assign({
+      section, draft: CFG.draft, orig: CFG.orig,
+      changed: (rerender) => { onDraftChange(); if (rerender) rerenderSettings(); },
+      invalid: (key, msg, input) => setInvalid(key, msg, input), isInvalid: (key) => CFG.invalid.has(key), errSlot, card: setCard,
+      saveError: () => (CFG.saveError ? { message: CFG.saveError, section: CFG.saveSection } : null),
+    }, o || {}));
+    return extNodes('settings', s);
+  }
+  /** SF.registerJobTab({id, label, icon, render(panel, job, {repo, id})}): a tab in the job drawer, before Raw;
+   *  its hash is #/job/<repo>/<id>/<tab id>. render runs when the tab opens and on each job.updated; job is null
+   *  while the drawer still loads it. Register it at load time (before the first drawer opens). */
+  const JOB_TABS = new Map();
+  function registerJobTab(spec) {
+    if (!spec || !VIEW_ID_RE.test(spec.id || '') || TABS.some((t) => t[0] === spec.id)) throw new Error('SF.registerJobTab: id missing, invalid or taken');
+    if (typeof spec.render !== 'function') throw new Error('SF.registerJobTab: give render(panel, job, ref)');
+    const at = TABS.findIndex((t) => t[0] === 'raw');
+    TABS.splice(at < 0 ? TABS.length : at, 0, [spec.id, String(spec.label || spec.id), spec.icon || 'layers']);
+    JOB_TABS.set(spec.id, spec);
+  }
+  function renderJobTab(id) {
+    const spec = JOB_TABS.get(id);
+    const panel = D.els && D.els.panels ? D.els.panels[id] : null;
+    if (!spec || !panel || !D.key) return;
+    const job = currentJob();
+    const ref = { repo: D.repo, id: D.id };
+    safely('job tab ' + id, () => spec.render(panel, job, ref));
+  }
+
+  // ---------------------------------------------------------------- a panel for view modules (SF.drawer)
+  // The same right-hand drawer as a job's, modal like it (the app behind is inert, Esc and the scrim close it).
+  const GD = { open: false, key: null, opts: null, view: null, opener: null, els: null };
+  /** SF.drawer.open({key, title, eyebrow?, sub?, body, actions?, back?, onClose?}) → {el, head, body, setTitle,
+   *  setBody, setActions, close}. body and actions are nodes (or arrays of nodes); strings become text. back: the
+   *  hash without the panel (#/messages for #/messages/m/M-1): closing goes there, so the URL stays the truth.
+   *  Opening the same key again updates the panel in place without moving focus. */
+  function openPanel(opts) {
+    opts = opts || {};
+    const drawer = document.getElementById('drawer');
+    if (D.key) hideDrawer();
+    const again = GD.open && GD.key === (opts.key || null);
+    if (!again) GD.opener = document.activeElement;
+    Object.assign(GD, { open: true, key: opts.key || null, opts, view: S.route.view });
+    if (!again || !GD.els) {
+      clear(drawer);
+      const close = h('button', { type: 'button', class: 'btn btn-ghost btn-icon drawer-close', 'aria-label': 'Close panel', title: 'Close (Esc)', dataset: { action: 'close' } }, icon('x'));
+      close.addEventListener('click', () => closePanel(true));
+      const els = { row: h('div', { class: 'drawer-row' }), title: h('h2', { class: 'drawer-title', id: 'drawer-title', tabindex: '-1' }), sub: h('p', { class: 'drawer-sub' }),
+        actions: h('div', { class: 'actions' }), body: h('div', { class: 'panel', role: 'region', 'aria-labelledby': 'drawer-title' }) };
+      els.head = h('header', { class: 'drawer-head' }, els.row, els.title, els.sub, els.actions, close);
+      const offline = h('div', { class: 'drawer-offline', id: 'drawer-offline', role: 'status', hidden: !S.offline },
+        icon('alert', 'icon-sm'), h('span', null, h('strong', null, 'Reconnecting…'), ' What this panel shows may be out of date.'), btn('Retry now', { cls: 'btn-xs', onClick: retryNow }));
+      add(drawer, [els.head, offline, h('div', { class: 'drawer-body' }, els.body)]);
+      drawer.classList.add('is-panel');
+      drawer.classList.toggle('is-wide', !!opts.wide);
+      GD.els = els;
+    }
+    const ctl = panelCtl();
+    ctl.setTitle(opts.title || '');
+    clear(GD.els.row);
+    add(GD.els.row, opts.eyebrow || null);
+    GD.els.row.hidden = !GD.els.row.firstChild;
+    GD.els.sub.textContent = opts.sub ? String(opts.sub) : '';
+    GD.els.sub.hidden = !opts.sub;
+    ctl.setActions(opts.actions || null);
+    ctl.setBody(opts.body || null);
+    if (!again) {
+      drawer.hidden = false;
+      document.getElementById('scrim').hidden = false;
+      setDrawerModal(true);
+      setTimeout(() => { if (GD.els) GD.els.title.focus({ preventScroll: true }); }, 0);
+    }
+    return ctl;
+  }
+  function panelCtl() {
+    return {
+      get el() { return document.getElementById('drawer'); },
+      get head() { return GD.els ? GD.els.head : null; },
+      get body() { return GD.els ? GD.els.body : null; },
+      setTitle(t) { if (GD.els) GD.els.title.textContent = String(t || ''); },
+      setBody(nodes) { if (GD.els) { clear(GD.els.body); add(GD.els.body, nodes); } },
+      setActions(nodes) { if (GD.els) { clear(GD.els.actions); add(GD.els.actions, nodes); GD.els.actions.hidden = !GD.els.actions.firstChild; } },
+      close() { closePanel(false); },
+    };
+  }
+  /** user: the person closed it (Esc, ×, the scrim): go to its back hash when it has one (the route closes it). */
+  function closePanel(user) {
+    if (!GD.open) return;
+    const opts = GD.opts || {};
+    if (user && opts.back && location.hash !== opts.back) { location.hash = opts.back; return; }
+    const opener = GD.opener;
+    Object.assign(GD, { open: false, key: null, opts: null, view: null, opener: null, els: null });
+    const drawer = document.getElementById('drawer');
+    drawer.hidden = true;
+    clear(drawer);
+    drawer.classList.remove('is-panel', 'is-wide');
+    document.getElementById('scrim').hidden = true;
+    setDrawerModal(false);
+    const target = refocusTarget(opener);
+    if (target && typeof target.focus === 'function') target.focus({ preventScroll: true });
+    if (opts.onClose) safely('panel onClose', () => opts.onClose(user));
+  }
+
+  // ---------------------------------------------------------------- registering a view
+  /** SF.registerView(spec) → a handle. spec:
+   *   id       'tracker' (a-z, 0-9, -): the section #view-<id> and its root #<id>-root are made for it
+   *   title    'Housekeeping Tracker': the page title and the section's accessible name
+   *   routes   ['housekeeping'] (default [id]): the first hash segments it owns; #/housekeeping/<a>/<b>?x=1 routes
+   *            to it as {view: id, ext: true, name: 'housekeeping', parts: ['a', 'b'], query: {x: '1'}}
+   *   nav      {label, icon, order, href?, phone?, hidden?} or null: its rail entry (order: Home 0, Factory 10,
+   *            Plans 20, Tracker 25, Chat 30, Messages 40, Operator 70, Personas 75, Agents 80, Settings 90, Grid
+   *            100, Procedures 110, Doctor 120); phone: also in the phone's bottom bar (it holds six: Home, Factory,
+   *            Plans, Chat, Messages, Settings), else the phone reaches it from Home; hidden: until handle.setNav
+   *            (the Operator's, until an operator is marked or could be); null: no entry (Placement)
+   *   home     {title?, text, icon?, order, href?, routes?: [{to, label}], load?: async () => status,
+   *            events?: [types], card?: false} or null: its card on Home. status is {tone: ok|accent|human|warn|
+   *            todo|null, text, detail?, hidden?, needs?: [{key, text, sub?, href, tone?}]}; hidden: true leaves the
+   *            card and its needs out (the operator's while nobody is marked and nothing could make one); needs feed
+   *            Home's "Needs you" strip, every section's merged, most urgent first. card: false feeds "Needs you"
+   *            without a card of its own (Placement: a section of the Software Factory)
+   *   wide     true for a full-width page (no 1400 px cap)
+   *   start(handle)              once, after the page booted (a badge count, whether the nav entry shows)
+   *   enter(route, prev, handle) each time the route comes to this view or moves within it (prev: the previous
+   *                              route of this view, or null when it was another view): load data here
+   *   render(root, route, handle) draw into root; runs after enter and after handle.refresh() (batched per frame)
+   *   leave(next, handle)        the route left this view
+   *   events   {type: fn(ev, handle)}: SSE subscriptions for as long as the page lives */
+  function registerView(spec) {
+    if (!spec || !VIEW_ID_RE.test(spec.id || '')) throw new Error('SF.registerView: id must match ' + VIEW_ID_RE);
+    const id = spec.id;
+    if (REG.views.has(id) || VIEWS.indexOf(id) >= 0) throw new Error('SF.registerView: a view called ' + id + ' exists');
+    if (typeof spec.render !== 'function') throw new Error('SF.registerView: ' + id + ' needs render(root, route, handle)');
+    const routes = (Array.isArray(spec.routes) && spec.routes.length ? spec.routes : [id]).map(String);
+    for (const r of routes) if (!VIEW_ID_RE.test(r) || CORE_ROUTES.has(r) || REG.routes.has(r)) throw new Error('SF.registerView: route #/' + r + ' is invalid or taken');
+    const title = String(spec.title || id);
+    const root = h('div', { class: 'view-pad' + (spec.wide ? ' view-pad-wide' : ''), id: id + '-root' });
+    const section = h('section', { class: 'view view-ext', id: 'view-' + id, 'aria-label': title, hidden: true, dataset: { module: id } }, root);
+    document.getElementById('main').appendChild(section);
+    const v = { id, title, spec, routes, root, section, nav: spec.nav || null, home: spec.home || null, navEl: null, navHidden: !!(spec.nav && spec.nav.hidden),
+      homeStatus: null, homeLoading: null, homeAt: 0, homeStale: true };
+    v.handle = Object.freeze({
+      id, root, title,
+      /** Re-render (batched) if the view is showing. */
+      refresh() { invalidate('view:' + id); },
+      isShown() { return S.route.view === id; },
+      route() { return S.route.view === id ? S.route : null; },
+      /** The rail entry's count (0 or null hides it), with its tooltip. */
+      badge(n, label) { v.badge = { n: Number(n) || 0, label: label || '' }; paintBadge(v); if (S.route.view === 'grid') invalidate('grid'); },
+      /** Show or hide the rail entry (the operator's only shows while an operator is configured). */
+      setNav(show) { v.navHidden = !show; renderRail(); },
+      /** Run home.load again (now if Home shows, else when Home next opens). */
+      refreshHome() { v.homeStale = true; if (S.route.view === 'home') loadHomeCard(v, true); },
+    });
+    REG.views.set(id, v);
+    for (const r of routes) REG.routes.set(r, v);
+    RENDER['view:' + id] = () => {
+      if (S.route.view !== id) return;
+      try { spec.render(root, S.route, v.handle); }
+      catch (e) {
+        console.error('view ' + id + ' failed', e);
+        clear(root);
+        root.appendChild(emptyState('alert', title + ' could not be shown', e && e.message ? e.message : String(e)));
+      }
+    };
+    if (spec.events) for (const t of Object.keys(spec.events)) onEvent(t, (ev) => spec.events[t](ev, v.handle));
+    if (v.home && Array.isArray(v.home.events) && v.home.events.length) onEvent(v.home.events, () => { v.homeStale = true; if (S.route.view === 'home') scheduleHomeCard(v); });
+    if (REG.booted) {
+      renderRail();
+      if (spec.start) safely('view ' + id + ' start', () => spec.start(v.handle));
+      route();
+    }
+    return v.handle;
+  }
+  function routeModules(r, prev) {
+    const was = prev && prev.ext ? REG.views.get(prev.view) : null;
+    const now = r.ext ? REG.views.get(r.view) : null;
+    if (was && was !== now && was.spec.leave) safely('view ' + was.id + ' leave', () => was.spec.leave(r, was.handle));
+    if (now) {
+      if (now.spec.enter) safely('view ' + now.id + ' enter', () => now.spec.enter(r, was === now ? prev : null, now.handle));
+      invalidate('view:' + now.id);
+    }
+  }
+  /** The rail: the static entries of index.html (data-order) with each view module's entry in its place. */
+  function renderRail() {
+    const rail = document.querySelector('.rail');
+    if (!rail) return;
+    for (const v of REG.views.values()) {
+      if (!v.nav) continue;
+      if (!v.navEl) {
+        const n = v.nav;
+        v.navEl = h('a', { class: 'rail-item' + (n.phone ? '' : ' rail-extra'), href: n.href || '#/' + v.routes[0], dataset: { view: v.id, order: String(Number(n.order) || 50) } },
+          icon(n.icon || 'layers'), h('span', null, String(n.label || v.title)), h('span', { class: 'rail-badge', hidden: true }));
+      }
+      v.navEl.hidden = v.navHidden;
+      if (!v.navEl.isConnected) {
+        const order = Number(v.navEl.dataset.order);
+        const after = Array.from(rail.querySelectorAll('.rail-item')).find((a) => a !== v.navEl && Number(a.dataset.order) > order);
+        rail.insertBefore(v.navEl, after || null);
+      }
+      paintBadge(v);
+    }
+    for (const a of $$('.rail-item')) {
+      if (a.dataset.view === S.route.view) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+    }
+  }
+  function paintBadge(v) {
+    const b = v.navEl ? v.navEl.querySelector('.rail-badge') : null;
+    if (!b) return;
+    const n = v.badge ? v.badge.n : 0;
+    b.textContent = n > 99 ? '99+' : String(n);
+    b.hidden = !n;
+    b.title = n && v.badge.label ? v.badge.label : '';
+    if (n && v.badge.label) v.navEl.setAttribute('aria-label', String(v.nav.label || v.title) + ': ' + v.badge.label);
+    else v.navEl.removeAttribute('aria-label');
+  }
+
+  /** Replace root's children with nodes, keeping focus on the element with the same data-focus (or id). */
+  function rebuild(root, nodes) {
+    const act = document.activeElement;
+    let sel = null;
+    if (act && act !== root && root.contains(act)) {
+      if (act.dataset && act.dataset.focus) sel = '[data-focus="' + CSS.escape(act.dataset.focus) + '"]';
+      else if (act.id) sel = '#' + CSS.escape(act.id);
+    }
+    clear(root);
+    add(root, nodes);
+    if (sel) { const el = root.querySelector(sel); if (el && typeof el.focus === 'function') el.focus({ preventScroll: true }); }
+    return root;
+  }
+  /** "This server does not offer …" for a 404/405/501 (an older backend), else the error itself. */
+  function unavailable(e, what) {
+    if (gone(e)) return emptyState('info', what + ' is not on this server yet', 'The server answered ' + e.status + ': update the harness to get it.', null, true);
+    return callout('err', 'alert', 'Could not load ' + what + ':', e && e.message ? e.message : String(e));
+  }
+  /** A view module's screen that is not built yet: its title, one sentence and where its design is. */
+  function placeholder(o) {
+    return h('div', { class: 'sf-placeholder' },
+      viewHead(o.title, o.text || null, o.actions || null),
+      emptyState(o.icon || 'layers', o.empty || 'This screen is being built', o.note || 'Its routes and API are ready; the screen comes with the next build.', null, false),
+      o.doc ? h('p', { class: 'home-doc' }, icon('book', 'icon-xs'), 'Interface notes: ', h('code', null, o.doc)) : null);
+  }
+  const NARROW_MQ = window.matchMedia ? window.matchMedia('(max-width: 720px)') : null;
+  /** The phone layout (≤ 720 px; the smallest target is 390 px): one column, no sideways scroll of the page. */
+  const isNarrow = () => !!(NARROW_MQ && NARROW_MQ.matches);
+
+  // ================================================================ Home (Seraphina OS Harness)
+  // The default route. A Grid Card of the harness's sections: one card per section with one plain sentence, its live
+  // status and an Open action, the routes between them labelled; the v2 sections as "Planned" cards; and above them
+  // "Needs you", everything that waits for the owner, merged from every section (DESIGN §31, the v2 design §2.1).
+  const DESIGN_DOC = 'docs/seraphina/SERAPHINA_OS_HARNESS.md';
+  const HOME_PLANNED = [
+    { id: 'maintenance', title: 'System Maintenance', icon: 'tool', anchor: '§2.2 System Maintenance',
+      text: 'Says in one sentence how your server is, explains what the checks found and fixes it with a way back.', routes: [{ to: 'tracker', label: 'fixes, incidents' }] },
+    { id: 'upgrades', title: 'Upgrades & Enhancements', icon: 'refresh', anchor: '§2.2 Upgrades & Enhancements',
+      text: 'Shows each app’s updates with what changes for your setup, and runs them in a window you approve.', routes: [{ to: 'tracker', label: 'post-upgrade checks' }] },
+    { id: 'research', title: 'Systems Research', icon: 'search', anchor: '§2.2 Systems Research',
+      text: 'Answers questions about your server with sources, then turns the answer you pick into a plan.', routes: [{ to: 'upgrades', label: 'proposals' }] },
+    { id: 'audit', title: 'Systems Audit', icon: 'eye', anchor: '§2.2 Systems Audit',
+      text: 'A checkup of exposure, backups, drift, updates, storage and privileges, each check passing or a finding.', routes: [{ to: 'tracker', label: 'findings' }] },
+    { id: 'model-factory', title: 'Model Factory', icon: 'gauge', anchor: '§2.2 Model Factory',
+      text: 'Finds or makes a model that fits your GPUs, measures it, and offers to route agents to it.', routes: [{ to: 'factory', label: 'a model that fits' }] },
+  ];
+  const HOME = { showAll: false, loadedAt: 0 };
+  /** The Software Factory's own card: the line, plans and chats from /api/state. */
+  function factoryHomeStatus() {
+    if (!S.loaded) return { tone: null, text: S.stateError ? 'cannot load' : 'checking…', detail: S.stateError || '' };
+    const jobs = visibleJobs();
+    const active = jobs.filter((j) => ACTIVE.has(j.stage)).length;
+    const human = jobs.filter((j) => j.stage === 'needs-human').length;
+    const plans = visiblePlans();
+    const chats = Array.from(S.chats.values()).filter((c) => !S.filterRepo || c.repo === S.filterRepo);
+    const detail = [plural(S.repos.length, 'repository', 'repositories'), plural(plans.length, 'plan'), plural(chats.length, 'chat')].join(' · ');
+    if (!S.repos.length) return { tone: freshInstall() ? 'todo' : 'warn', text: 'no repository yet', detail: 'Add a repository in setup to start.' };
+    if (human) return { tone: 'human', text: plural(human, 'job') + ' waiting for you' + (active ? ' · ' + active + ' running' : ''), detail };
+    if (active) return { tone: 'accent', text: plural(active, 'job') + ' running', detail };
+    return { tone: 'ok', text: 'idle, ready for work', detail };
+  }
+  function factoryNeeds() {
+    const out = [];
+    for (const j of visibleJobs().filter((x) => x.stage === 'needs-human').sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')))) {
+      out.push({ key: 'job:' + jobKey(j), tone: 'human', icon: 'user', text: featureTitle(j) || j.id,
+        sub: 'Job ' + j.id + ' stopped for your decision' + (j.reason ? ': ' + firstLine(j.reason) : ''), href: '#/job/' + enc(j.repo) + '/' + enc(j.id) });
+    }
+    for (const p of visiblePlans().filter((x) => x.stage === 'needs-human' || x.stage === 'blocked')) {
+      out.push({ key: 'plan:' + p.repo + '/' + p.id, tone: 'human', icon: 'plan', text: firstLine(p.request) || p.id,
+        sub: 'Plan ' + p.id + (p.stage === 'blocked' ? ' is blocked' : ' waits for your answer') + (p.reason ? ': ' + firstLine(p.reason) : ''), href: '#/plans/' + enc(p.repo) + '/' + enc(p.id) });
+    }
+    return out;
+  }
+  function homeCardsLive() {
+    const cards = [{ id: 'factory', title: 'Software Factory', icon: 'factory', order: 10, href: '#/factory', open: 'Open the board',
+      text: 'Describe a change: agents write the spec, build it, review it and hand it to you or merge it.',
+      routes: [{ to: 'tracker', label: 'acceptance criteria, findings' }], status: factoryHomeStatus(), needs: factoryNeeds(), core: true }];
+    for (const v of REG.views.values()) {
+      if (!v.home) continue;
+      const st = v.homeStatus;
+      if (st && st.hidden) continue;
+      cards.push({ id: v.id, title: v.home.title || v.title, icon: v.home.icon || (v.nav && v.nav.icon) || 'layers', order: Number(v.home.order) || 50,
+        href: v.home.href || (v.nav && v.nav.href) || '#/' + v.routes[0], text: v.home.text || '', routes: v.home.routes || [], open: v.home.open || null,
+        status: st || { tone: null, text: v.home.load ? (v.homeLoading ? 'checking…' : '') : '', detail: '' }, needs: st && Array.isArray(st.needs) ? st.needs : [],
+        card: v.home.card !== false });
+    }
+    return cards.sort((a, b) => a.order - b.order);
+  }
+  function homeTitleOf(id) {
+    if (id === 'factory') return 'Software Factory';
+    const v = REG.views.get(id);
+    if (v) return (v.home && v.home.title) || v.title;
+    const p = HOME_PLANNED.find((x) => x.id === id);
+    return p ? p.title : id;
+  }
+  function loadHomeCard(v, force) {
+    if (!v.home || typeof v.home.load !== 'function') return null;
+    if (v.homeLoading) return v.homeLoading;
+    if (!force && !v.homeStale && Date.now() - v.homeAt < 15000) return null;
+    v.homeLoading = Promise.resolve().then(() => v.home.load(v.handle))
+      .then((st) => { v.homeStatus = isObj(st) ? st : null; })
+      .catch((e) => {
+        v.homeStatus = gone(e) ? { tone: null, text: 'not on this server yet', detail: 'The server answered ' + e.status + '.' }
+          : e && e.status === 401 ? v.homeStatus : { tone: 'warn', text: 'could not load', detail: e && e.message ? e.message : String(e) };
+      })
+      .finally(() => { v.homeLoading = null; v.homeAt = Date.now(); v.homeStale = false; invalidate('home'); });
+    invalidate('home');
+    return v.homeLoading;
+  }
+  const homeTimers = new Map();
+  function scheduleHomeCard(v) {
+    if (homeTimers.has(v.id)) return;
+    homeTimers.set(v.id, setTimeout(() => { homeTimers.delete(v.id); loadHomeCard(v, true); }, 1200));
+  }
+  function loadHome(force) {
+    for (const v of REG.views.values()) loadHomeCard(v, force);
+    if (!S.doctor && !S.doctorLoading) loadDoctor(false);
+  }
+  const NEED_RANK = { err: 0, human: 1, warn: 2, accent: 3, todo: 4, ok: 5 };
+  function needsRow(n) {
+    const tone = TONES.has(n.tone) ? n.tone : 'human';
+    return h('li', null, h('a', { class: 'needs-item', href: n.href || '#/home', dataset: { focus: 'need:' + n.key, need: n.key, tone } },
+      icon(n.icon || (tone === 'err' || tone === 'warn' ? 'alert' : 'user'), 'icon-sm needs-icon'),
+      h('span', { class: 'needs-text' }, String(n.text || '')),
+      h('span', { class: 'needs-where' }, n.where || ''),
+      icon('chevron', 'icon-xs needs-go'),
+      n.sub ? h('span', { class: 'needs-sub' }, String(n.sub)) : null));
+  }
+  function homeNeeds(cards) {
+    const all = [];
+    for (const c of cards) for (const n of c.needs || []) if (isObj(n) && n.text) all.push(Object.assign({ key: c.id + ':' + all.length }, n, { where: c.title }));
+    all.sort((a, b) => (NEED_RANK[a.tone] !== undefined ? NEED_RANK[a.tone] : 1) - (NEED_RANK[b.tone] !== undefined ? NEED_RANK[b.tone] : 1));
+    const loading = Array.from(REG.views.values()).some((v) => v.homeLoading && !v.homeStatus);
+    const sec = h('section', { class: 'needs' + (all.length ? ' has-items' : ''), 'aria-labelledby': 'needs-t', dataset: { count: String(all.length) } });
+    sec.appendChild(h('div', { class: 'needs-head' }, icon(all.length ? 'user' : 'check-circle', 'icon-sm'),
+      h('h2', { class: 'needs-title', id: 'needs-t' }, 'Needs you'), h('span', { class: 'count-pill' + (all.length ? ' has' : '') }, String(all.length)),
+      h('span', { class: 'spacer' }), loading ? h('span', { class: 'needs-note' }, 'checking…') : null));
+    if (!all.length) {
+      sec.appendChild(h('p', { class: 'needs-empty' }, loading ? 'Checking every section…' : 'Nothing waits for you right now. Decisions, product questions and messages for you appear here first.'));
+      return sec;
+    }
+    const MAX = 4;
+    const shown = HOME.showAll ? all : all.slice(0, MAX);
+    sec.appendChild(h('ul', { class: 'needs-list' }, shown.map(needsRow)));
+    if (all.length > MAX) {
+      const more = btn(HOME.showAll ? 'Show the ' + MAX + ' most important' : 'Show all ' + all.length, { cls: 'btn-ghost btn-sm needs-more', dataset: { focus: 'needs-more', action: 'needs-more' } });
+      more.setAttribute('aria-expanded', HOME.showAll ? 'true' : 'false');
+      more.addEventListener('click', () => { HOME.showAll = !HOME.showAll; invalidate('home'); });
+      sec.appendChild(h('div', { class: 'needs-foot' }, h('span', { class: 'needs-note' }, HOME.showAll ? 'All ' + all.length + ', most urgent first.' : 'The ' + MAX + ' most important of ' + all.length + '.'), more));
+    }
+    return sec;
+  }
+  function homeRoutes(routes) {
+    const list = (routes || []).filter((r) => isObj(r) && r.to && r.label);
+    if (!list.length) return null;
+    return h('p', { class: 'home-card-routes' }, list.map((r, i) => [i ? ' · ' : null, h('span', { class: 'home-route-label' }, String(r.label)), ' → ', h('span', { class: 'home-route-to' }, homeTitleOf(r.to))]));
+  }
+  function homeCard(c) {
+    const st = c.status || {};
+    const tone = TONES.has(st.tone) ? st.tone : null;
+    const tid = 'home-' + c.id + '-t';
+    const actions = [h('a', { class: 'btn btn-sm btn-primary', href: c.href, dataset: { action: 'open', focus: 'open:' + c.id }, 'aria-label': (c.open || 'Open') + ': ' + c.title }, icon('arrow-right', 'icon-sm'), c.open || 'Open')];
+    if (c.core) {
+      actions.push(h('nav', { class: 'home-sub-links', 'aria-label': 'Software Factory' },
+        [['#/plans', 'Plans'], ['#/chat', 'Chat'], ['#/agents', 'Agents'], ['#/grid', 'Grid Card'], ['#/procedures', 'Procedures']].map(([href, label]) => h('a', { href, dataset: { focus: 'sub:' + href } }, label))));
+    }
+    return h('article', { class: 'home-card' + (tone ? ' has-' + tone : ''), 'aria-labelledby': tid, dataset: { section: c.id } },
+      h('div', { class: 'home-card-head' }, h('span', { class: 'home-card-icon' }, icon(c.icon)), h('h2', { class: 'home-card-title', id: tid }, c.title)),
+      h('p', { class: 'home-card-status' }, h('span', { class: 'map-dot-sm tone-' + (tone === 'err' ? 'warn' : tone || 'none') }), h('span', { class: 'home-status-text' }, st.text ? String(st.text) : '')),
+      h('p', { class: 'home-card-text' }, c.text),
+      st.detail ? h('p', { class: 'home-card-detail' }, String(st.detail)) : null,
+      homeRoutes(c.routes),
+      h('div', { class: 'home-card-actions' }, actions));
+  }
+  /** A path that wraps after its slashes, never inside a name (the text is unchanged: <wbr> adds none). */
+  function pathBreaks(path) {
+    const parts = String(path).split('/');
+    return parts.map((part, i) => (i < parts.length - 1 ? [part + '/', h('wbr')] : part));
+  }
+  function plannedCard(p) {
+    const tid = 'home-' + p.id + '-t';
+    const copy = h('button', { type: 'button', class: 'btn btn-ghost btn-icon btn-xs', 'aria-label': 'Copy the design document’s path', title: 'Copy the path', dataset: { focus: 'doc:' + p.id } }, icon('copy', 'icon-xs'));
+    copy.addEventListener('click', () => copyText(DESIGN_DOC, 'Path copied: ' + DESIGN_DOC));
+    return h('article', { class: 'home-card is-planned', 'aria-labelledby': tid, dataset: { section: p.id, planned: '1' } },
+      h('div', { class: 'home-card-head' }, h('span', { class: 'home-card-icon' }, icon(p.icon)), h('h2', { class: 'home-card-title', id: tid }, p.title), h('span', { class: 'tag tag-outline' }, 'Planned')),
+      h('p', { class: 'home-card-text' }, p.text),
+      homeRoutes(p.routes),
+      h('div', { class: 'home-doc is-planned-doc' }, h('span', { class: 'home-doc-what' }, icon('book', 'icon-xs'), 'Design: ' + p.anchor), h('span', { class: 'home-doc-path' }, h('code', null, pathBreaks(DESIGN_DOC)), copy)));
+  }
+  function homeHealth(needCount) {
+    const level = doctorLevel();
+    const fresh = freshInstall();
+    const parts = [];
+    let tone = 'ok';
+    if (fresh) { parts.push('This harness is not set up yet.'); tone = 'todo'; }
+    else if (level === 'error' || level === 'warn') {
+      const bad = S.doctor.checks.filter((c) => !c.ok && (c.level || 'error') !== 'info').length;
+      parts.push('Doctor found ' + plural(bad, 'thing') + ' to look at.');
+      tone = level === 'error' ? 'warn' : 'todo';
+    } else if (level === 'ok') parts.push('Your harness is healthy.');
+    else parts.push('Checking your harness…');
+    parts.push(needCount ? plural(needCount, 'thing') + (needCount === 1 ? ' needs' : ' need') + ' you.' : 'Nothing needs you.');
+    const link = fresh ? h('a', { href: '#/welcome', dataset: { focus: 'health-link' } }, 'Start with Welcome')
+      : level === 'error' || level === 'warn' ? h('a', { href: '#/doctor', dataset: { focus: 'health-link' } }, 'Open Doctor') : null;
+    return h('p', { class: 'home-health' }, h('span', { class: 'map-dot-sm tone-' + tone }), h('span', null, parts.join(' ')), link);
+  }
+  RENDER.home = function () {
+    if (S.route.view !== 'home') return;
+    const root = document.getElementById('home-root');
+    const cards = homeCardsLive();
+    const needs = homeNeeds(cards);
+    const needCount = Number(needs.dataset.count) || 0;
+    const nodes = [
+      h('div', { class: 'view-head home-head' },
+        h('div', null, h('div', { class: 'wz-eyebrow' }, PRODUCT), h('h1', { class: 'view-title', id: 'home-title', tabindex: '-1' }, 'Home'),
+          h('p', { class: 'view-sub' }, 'Your harness on one card: what needs you first, then every section with how it is doing now.')),
+        h('span', { class: 'spacer' }),
+        h('div', { class: 'home-head-actions' }, h('a', { class: 'btn btn-sm', href: '#/welcome', dataset: { focus: 'welcome' } }, icon('help', 'icon-sm'), 'Welcome'),
+          h('a', { class: 'btn btn-sm', href: '#/doctor', dataset: { focus: 'doctor' } }, icon('doctor', 'icon-sm'), 'Doctor'))),
+      homeHealth(needCount),
+      freshInstall() ? setupChips() : null,
+      needs,
+      h('h2', { class: 'home-group-title', id: 'home-sections-t' }, 'Sections'),
+      h('div', { class: 'home-grid', role: 'list', 'aria-labelledby': 'home-sections-t' }, cards.filter((c) => c.card !== false).map((c) => h('div', { class: 'home-cell', role: 'listitem' }, homeCard(c)))),
+      h('h2', { class: 'home-group-title', id: 'home-planned-t' }, 'Planned for v2'),
+      h('p', { class: 'home-group-sub' }, 'Designed, not built yet: each card says what the section will do and where its design is written down.'),
+      h('div', { class: 'home-grid is-planned', role: 'list', 'aria-labelledby': 'home-planned-t' }, HOME_PLANNED.map((p) => h('div', { class: 'home-cell', role: 'listitem' }, plannedCard(p)))),
+      h('section', { class: 'wz-proc-card home-proc', 'aria-labelledby': 'home-proc-t' }, h('h2', { class: 'wz-proc-title', id: 'home-proc-t' }, 'How Home works'),
+        procedureList([
+          ['Start with Needs you.', 'Everything that waits for your decision is listed first, most urgent at the top, and each line opens the place that owns it.'],
+          ['Open a section to work in it.', 'Each card says in one sentence what the section does and how it is doing now; the arrows name what one section hands to another.'],
+          ['Planned sections come later.', 'Their cards say what they will do and where the design is written down; nothing there runs yet.'],
+        ])),
+    ];
+    rebuild(root, nodes);
+  };
+
+  // ---------------------------------------------------------------- one vocabulary for every section
+  // The words a status has on every page, whichever section shows it: the tracker's own (items.WORDS) for an item,
+  // the drift checks' (driftsources.STATES) and GPU custody's (custody.CustodyClient's history and leases). A view
+  // module reads them from SF.words instead of keeping a copy.
+  const WORDS = Object.freeze({
+    /** items.WORDS: an item's status. */
+    items: Object.freeze({ proposed: 'Suggested', open: 'To do', doing: 'Working on it', done: 'Waiting for a check', verified: 'Proven', deferred: 'Later', dropped: 'Dropped' }),
+    /** driftsources.STATES: a drift source's last check. Only "Checked" (ok) ever says anything about drift. */
+    drift: Object.freeze({ ok: 'Checked', cannot_read: 'Cannot read', busy: 'Check in progress', unreachable: 'Cannot reach it', stale: 'Observation too old', error: 'Error', never: 'Not checked yet' }),
+    driftTone: Object.freeze({ ok: 'ok', cannot_read: 'warn', busy: 'accent', unreachable: 'warn', stale: 'warn', error: 'err', never: 'muted' }),
+    /** custody.Lease.state: a GPU lease. */
+    lease: Object.freeze({ held: 'Held', released: 'Given back', lost: 'Lost', unknown: 'Outcome unknown', unreleased: 'Not given back' }),
+    /** outcomes.STATES: what an outside call did (DESIGN §40), in words, never as a bare colour. */
+    outcome: Object.freeze({ succeeded: 'Succeeded', failed: 'Failed', unknown: 'Outcome unknown: it may or may not have happened' }),
+    outcomeTone: Object.freeze({ succeeded: 'ok', failed: 'err', unknown: 'warn' }),
+    /** outcomes.UNKNOWN_TITLE: the start of a tracker item's title for an outcome a person must check. */
+    unknownTitle: 'Outcome unknown: check before retrying',
+    /** receipts.OUTCOMES: a receipt's state. Never green: the harness never re-checks her checks; an unknown outcome
+     *  is amber and a reported failure red. */
+    receiptTone: Object.freeze({ nothing_verified: 'warn', partly_verified: 'warn', reported_verified: 'neutral', outcome_unknown: 'warn', reported_failed: 'err' }),
+    /** The operator persona in one sentence (Settings, Personas and the Operator page). */
+    operatorHelp: 'Acts on the server with her own tools, outside the harness. The harness records what she reports; it does not approve or block her actions.',
+  });
+  /** A custody reason code in plain words: the register's own (codes: GET /api/custody reason_codes, custody.REFUSAL_WORDS),
+   *  else the code as it came. FULL "the card cannot fit this model now", HELD "the card is held by someone else". */
+  function custodyReason(code, codes) {
+    const c = String(code || '');
+    return (isObj(codes) && typeof codes[c] === 'string' && codes[c]) || CUSTODY_FALLBACK[c] || c;
+  }
+  const CUSTODY_FALLBACK = Object.freeze({ HELD: 'the card is held by someone else', FULL: 'the card cannot fit this model now' });
+  const secsWords = (n) => (isFinite(Number(n)) ? String(Math.round(Number(n) * 10) / 10) + 's' : 'a while');
+  /** One line of a custody register's history or journal (CustodyClient._note: claim, renew, release, call, epoch,
+   *  residency, wait; the journal's "requested") in plain words: a refused claim's reason in words, a HELD wait and how
+   *  it ended, and a renew or release "not sent" to a register that restarted. codes: GET /api/custody reason_codes. */
+  function custodyAnswer(x, codes) {
+    const op = String((x && x.op) || '');
+    const o = String((x && x.outcome) || '');
+    const reason = String((x && x.reason) || '');
+    const notSent = /^not sent: /.test(reason);
+    if (o === 'requested') return 'Asked, with no answer recorded: outcome unknown';
+    if (op === 'claim') {
+      if (o === 'denied') return 'Lease denied' + (x.words ? ': ' + x.words : reason ? ': ' + custodyReason(reason, codes) : '');
+      return { granted: 'Lease granted', unknown: 'Outcome unknown: the request was not sent again', stale: 'Stale answer refused' }[o] || 'Lease ' + o;
+    }
+    if (op === 'wait') {
+      const s2 = secsWords(x.seconds);
+      return { waiting: 'Waits up to ' + s2 + ': the card is held by someone else', granted: 'The hold ended after ' + s2 + ': lease granted',
+        gave_up: 'Gave up after ' + s2 + ': the card is still held', cancelled: 'Stopped waiting: the run was cancelled',
+        ended: 'Stopped waiting: ' + (reason ? custodyReason(reason, codes) : 'another answer') }[o] || 'Wait ' + o;
+    }
+    if (op === 'release') {
+      if (o === 'lost' && notSent) return 'Not released: the register restarted, so it no longer knows this lease';
+      return { released: 'Lease given back', unreleased: 'Could not be given back', unknown: 'Give-back outcome unknown', lost: 'Lost: not given back' }[o] || 'Release ' + o;
+    }
+    if (op === 'renew') {
+      if (o === 'lost' && notSent) return 'Not renewed: the register restarted, so it no longer knows this lease';
+      return o === 'held' ? 'Renewal failed: held until it expires' : o === 'lost' ? 'Renewal refused: lease lost' : o === 'unknown' ? 'Renewal outcome unknown' : 'Renewal ' + o;
+    }
+    if (op === 'residency') return o === 'stale' ? 'Stale residency refused' : o === 'unread' ? 'Residency could not be read' : 'Residency ' + o;
+    if (op === 'epoch') return 'The register restarted';
+    if (op === 'call') return 'A call under a lease was cut off: outcome unknown';
+    return (op + ' ' + o).trim();
+  }
+  /** Whether a custody answer is a plain grant or give-back (anything else is amber: never red or green, the register
+   *  is the operator's and the harness only asked). */
+  const custodyPlain = (x) => !!x && ((x.op === 'claim' && x.outcome === 'granted') || (x.op === 'release' && x.outcome === 'released') || (x.op === 'wait' && x.outcome === 'granted'));
+  /** Text from the server as a sentence of the page: a full stop added when it has none, after a closing bracket too
+   *  ("(not listed: kate)."); it stays the server's words. */
+  function sentence(text) {
+    const s = String(text === null || text === undefined ? '' : text).trim();
+    return s && !/[.!?…]$/.test(s) ? s + '.' : s;
+  }
+  /** SF.announce(text): the page's one polite live region, outside every view's root (a root is rebuilt on each
+   *  render, which would announce it all again): a count, a pairing's progress, a new banner. Said once per call. */
+  const LIVE = { el: null, timer: null };
+  function announce(text) {
+    if (!LIVE.el) {
+      LIVE.el = h('div', { class: 'sr-only', id: 'sf-announce', role: 'status', 'aria-live': 'polite', dataset: { live: 'app' } });
+      document.body.appendChild(LIVE.el);
+    }
+    const s = String(text === null || text === undefined ? '' : text);
+    LIVE.el.textContent = '';
+    clearTimeout(LIVE.timer);
+    LIVE.timer = setTimeout(() => { LIVE.el.textContent = s; }, 60);
+  }
+  /** An item on the Housekeeping Tracker: its page, and a link to it that shows its ref (job:repo/id/I-3, system:S-2). */
+  const itemHref = (ref) => '#/housekeeping/' + enc(ref);
+  function itemLink(ref, cls) {
+    return h('a', { class: 'item-link' + (cls ? ' ' + cls : ''), href: itemHref(ref), title: 'Open it on the Housekeeping Tracker', dataset: { item: String(ref) } },
+      icon('checklist', 'icon-xs'), String(ref));
+  }
+
+  // ---------------------------------------------------------------- changes before import: DESIGN §15 and §33
+  /** "Changes before import" on a profile card page (Personas) and a wake persona's page (Messages & Wakes), from the
+   *  answer's import block (null before an import: nothing). The baseline sentence first, word for word: the first
+   *  import is the baseline, so there is no diff or history of what came before it. Then the operator's receipts
+   *  attached here by id, in the order given, each as she reported it: outside text (text nodes only), labelled
+   *  "Reported by the operator", never green or ticked, not verified above verified. Attach takes receipt ids (typed,
+   *  or picked by id from her receipts) and who attaches them; Detach is on every row, a missing one too. A 400 changes
+   *  nothing and is shown as the field's error, as the server words it.
+   *  o: {persona, onChange(import), state, bare}: state is the caller's object, kept across renders ({ids, by, error,
+   *  open}); bare: the caller's own section gives the heading. */
+  function beforeImport(block, o) {
+    if (!isObj(block)) return null;
+    const st = o.state || {};
+    const rows = (Array.isArray(block.changes_before_import) ? block.changes_before_import : []).filter(isObj);
+    const LABEL = 'Reported by the operator';
+    const tone = (state) => WORDS.receiptTone[state] || 'warn';
+    const reportedTone = (state) => (state === 'unknown' ? 'warn' : state === 'failed' ? 'err' : 'neutral');
+    const pillOf = (text, t, title) => h('span', { class: 'pill no-dot tone-' + t, title: title || null }, text);
+    const when = (iso) => { const t = parseTs(iso); return isFinite(t) ? h('time', { datetime: String(iso), title: String(iso) + ' (UTC)' }, new Date(t).toLocaleString()) : h('span', null, String(iso || '—')); };
+    const byWords = (by) => (by === 'operator' ? 'by the operator' : 'by the owner');
+    const list = (items, cls) => h('ul', { class: 'bi-list ' + cls }, items.map((x) => h('li', null, String(x))));
+    const err = h('p', { class: 'field-error bi-err', role: 'alert', hidden: !st.error, dataset: { errFor: 'before-import' } }, st.error || '');
+    const showErr = (msg) => { st.error = msg || null; err.textContent = msg || ''; err.hidden = !msg; };
+    async function post(body, button, okText) {
+      showErr(null);
+      setBusy(button, true);
+      try {
+        const r = await api('/api/personas/' + enc(o.persona) + '/before-import', { method: 'POST', body });
+        st.ids = '';
+        toast(okText, { kind: 'ok' });
+        if (o.onChange) o.onChange(r && isObj(r.import) ? r.import : null);
+      } catch (e) {
+        showErr(e && e.message ? e.message : String(e));
+      } finally {
+        if (button.isConnected) setBusy(button, false);
+      }
+    }
+    const detach = (id) => btn('Detach', { cls: 'btn-xs btn-ghost', icon: 'x', title: 'Take receipt ' + id + ' off this import', dataset: { action: 'detach', receipt: id, focus: 'bi-detach:' + id },
+      onClick: (e) => post({ detach: [id], by: st.by || 'owner' }, e.currentTarget, 'Detached ' + id + '.') });
+    const rowEl = (r) => {
+      const id = String(r.id || '');
+      const attached = h('p', { class: 'bi-attached sf-muted' }, 'Attached ', r.attached_at ? when(r.attached_at) : '', ' ', byWords(r.by), '.');
+      if (r.missing) {
+        return h('li', { class: 'bi-row is-missing', dataset: { receipt: id, state: 'missing' } },
+          h('div', { class: 'bi-row-head' }, h('code', { class: 'bi-id' }, id), h('span', { class: 'tag tag-warn' }, 'Missing'), h('span', { class: 'tag tag-outline bi-label' }, icon('shield', 'icon-xs'), LABEL), h('span', { class: 'spacer' }), detach(id)),
+          h('p', { class: 'bi-note' }, ((n) => n.charAt(0).toUpperCase() + n.slice(1))(sentence(String(r.note || 'the receipts index no longer holds this receipt')))), attached);
+      }
+      const out = isObj(r.outcome) ? r.outcome : {};
+      const rep = isObj(r.reported_outcome) ? r.reported_outcome : null;
+      const nv = Array.isArray(r.not_verified) ? r.not_verified : [];
+      const v = Array.isArray(r.verified) ? r.verified : [];
+      return h('li', { class: 'bi-row', dataset: { receipt: id, state: String(out.state || '') } },
+        h('div', { class: 'bi-row-head' }, r.time ? when(r.time) : null, h('code', { class: 'bi-id' }, id),
+          h('span', { class: 'tag tag-outline bi-label', title: 'What she wrote, as she wrote it: the harness never re-checks it' }, icon('shield', 'icon-xs'), LABEL),
+          r.gone ? h('span', { class: 'tag tag-outline' }, 'File gone') : null, h('span', { class: 'spacer' }), detach(id)),
+        h('p', { class: 'bi-intent' }, String(r.intent || '')),
+        h('div', { class: 'bi-outcome' }, pillOf(String(out.words || out.state || ''), tone(out.state)),
+          rep ? pillOf('The change: ' + String(rep.words || ''), reportedTone(rep.state), 'The outcome her receipt itself reports') : null),
+        h('h4', { class: 'bi-h4' }, 'Not verified (' + nv.length + ')'), nv.length ? list(nv, 'bi-nv') : h('p', { class: 'sf-muted bi-none' }, 'None reported.'),
+        h('h4', { class: 'bi-h4' }, 'Verified, as she reports (' + v.length + ')'), v.length ? list(v, 'bi-v') : h('p', { class: 'bi-nothing' }, 'Nothing verified'),
+        attached);
+    };
+    // Attach: ids typed (one per line, or spaces and commas between), or ticked in her receipts list (by id).
+    const ids = h('textarea', { class: 'textarea mono-input', rows: '2', spellcheck: 'false', placeholder: 'r-20261025-013', 'aria-label': 'Receipt ids to attach', dataset: { focus: 'bi-ids', field: 'before-import-ids' } });
+    ids.value = st.ids || '';
+    ids.addEventListener('input', () => { st.ids = ids.value; });
+    const by = selectEl([['owner', 'You (the owner)'], ['operator', 'The operator, through you']], st.by || 'owner', { class: 'select select-sm', 'aria-label': 'Who attaches them', dataset: { focus: 'bi-by', field: 'before-import-by' } });
+    by.addEventListener('change', () => { st.by = by.value; });
+    const picks = h('div', { class: 'bi-picks' });
+    const pickBtn = btn('Pick from her receipts', { cls: 'btn-sm btn-ghost', icon: 'list', dataset: { action: 'pick-receipts', focus: 'bi-pick' }, onClick: async (e) => {
+      const b = e.currentTarget;
+      setBusy(b, true);
+      try {
+        const r = await api('/api/operator/receipts?limit=200');
+        const have = new Set(rows.map((x) => String(x.id)));
+        const seen = new Set();
+        const read = (Array.isArray(r && r.receipts) ? r.receipts : []).filter((x) => isObj(x) && x.status === 'read' && x.id && !have.has(String(x.id)) && !seen.has(x.id) && seen.add(x.id));
+        clear(picks);
+        add(picks, read.length ? h('ul', { class: 'bi-pick-list', 'aria-label': 'Her receipts, newest first' }, read.map((x) => {
+          const box = h('input', { type: 'checkbox', dataset: { receipt: String(x.id) } });
+          box.addEventListener('change', () => {
+            const cur = (ids.value.match(/[A-Za-z0-9][A-Za-z0-9._:-]*/g) || []).filter((y) => y !== x.id);
+            if (box.checked) cur.push(String(x.id));
+            ids.value = cur.join('\n'); st.ids = ids.value;
+          });
+          return h('li', null, h('label', { class: 'check' }, box, h('code', null, String(x.id)), ' ', x.time ? h('span', { class: 'sf-muted' }, new Date(parseTs(x.time)).toLocaleDateString()) : null,
+            ' ', h('span', { class: 'bi-pick-intent' }, String(x.intent || ''))));
+        })) : h('p', { class: 'sf-muted' }, 'No receipt the harness has read is left to attach.'));
+      } catch (x) { showErr(x && x.message ? x.message : String(x)); }
+      finally { if (b.isConnected) setBusy(b, false); }
+    } });
+    const attach = btn('Attach', { cls: 'btn-sm btn-primary', icon: 'plus', dataset: { action: 'attach', focus: 'bi-attach' }, onClick: (e) => {
+      const list2 = Array.from(new Set((ids.value.match(/[^\s,]+/g) || [])));
+      if (!list2.length) { showErr('Type or pick at least one receipt id.'); return; }
+      post({ attach: list2, by: by.value }, e.currentTarget, 'Attached ' + plural(list2.length, 'receipt') + '.');
+    } });
+    const form = h('details', { class: 'bi-form', open: st.open ? true : null, dataset: { focus: 'bi-form' } },
+      h('summary', null, icon('plus', 'icon-sm'), 'Attach receipts…'),
+      h('div', { class: 'bi-form-body' },
+        field('Receipt ids', ids, 'Only a receipt the harness has read can be attached. They are chosen by id, never by what they say.'),
+        h('div', { class: 'sf-row bi-form-row' }, field('Who attaches them', by), pickBtn), picks, h('div', { class: 'actions' }, attach)));
+    form.addEventListener('toggle', () => { st.open = form.open; });
+    return h(o.bare ? 'div' : 'section', { class: 'bi-sec', 'aria-labelledby': o.bare ? null : 'bi-t-' + o.persona, dataset: { part: 'before-import' } },
+      o.bare ? null : h('h2', { class: 'bi-title', id: 'bi-t-' + o.persona, tabindex: '-1' }, 'Changes before import'),
+      h('p', { class: 'bi-baseline', dataset: { part: 'baseline' } }, String(block.baseline || '')),
+      h('p', { class: 'sf-muted bi-model' }, 'Workspace model ', h('code', null, String(block.model || '')), block.version_id ? [' · version ', h('code', null, String(block.version_id))] : null,
+        block.imported_at ? [' · imported ', when(block.imported_at)] : null),
+      rows.length ? h('ol', { class: 'bi-rows', 'aria-label': 'Receipts attached as the changes before this import, in the order given' }, rows.map(rowEl))
+        : h('p', { class: 'sf-muted bi-empty' }, 'No receipt is attached: nothing is recorded about what changed before the import.'),
+      err, form);
+  }
+
+  // ---------------------------------------------------------------- window.SF: the one namespace view modules use
+  // Text-only DOM building (strings always become text nodes, never HTML), the API client, toasts, the live event
+  // stream, the panel, empty states and the phone rules. Frozen: a view module cannot replace a helper for the others.
+  const SF = Object.freeze({
+    version: 1,
+    product: PRODUCT,
+    // views and extension points
+    registerView, registerJobTab, extend, refreshJobs,
+    // DOM: h(tag, props, ...children); strings are text, props.text sets textContent, on<event> props add listeners
+    h, add, clear, icon, btn, field, selectEl, callout, emptyState, setBusy, timeEl, viewHead,
+    skeleton: skeletonLines,
+    procedureList, rebuild, placeholder, unavailable, trackFades,
+    text: (s) => document.createTextNode(s === null || s === undefined ? '' : String(s)),
+    /** Escape-first Markdown for text that is meant as Markdown (agent files, specs): no raw HTML, http(s) links only.
+     *  Never for messages, receipts, inbound text or anything DESIGN §34-§36 says is textContent only. */
+    md: (text, cls) => MD.render(String(text || ''), cls),
+    safeHref,
+    // formatting
+    relTime, fmtDur, fmtNum, plural, firstLine, enc, isObj, sentence,
+    // words every section shares (statuses of items, drift checks and leases), and links to the tracker
+    custodyAnswer, custodyReason, custodyPlain, itemHref, itemLink, beforeImport,
+    words: WORDS,
+    itemWord: (status) => WORDS.items[status] || String(status || ''),
+    // the server: api(path, {method?, body?, text?, retry409?}) → JSON (or text); errors throw ApiError {status,
+    // message} with the server's {error} verbatim; a 401 goes to the login page
+    api, ApiError, gone,
+    // feedback
+    toast, toastError, copyText, openModal, confirmModal, announce,
+    // live: on(type | [types], fn(ev)) → off(); onReconnect(fn(why)) → off(); conn() → open | connecting | retrying
+    onReconnect,
+    on: onEvent,
+    conn: () => S.conn,
+    // the right-hand panel (one at a time; a job's drawer replaces it)
+    drawer: Object.freeze({ open: openPanel, close: () => closePanel(false), isOpen: (key) => GD.open && (key === undefined || GD.key === key) }),
+    // read-only state of the page
+    route: () => S.route,
+    go: (hash) => { if (location.hash !== hash) location.hash = hash; },
+    jobs: () => Array.from(S.jobs.values()),
+    job: (repo, id) => S.jobs.get(repo + '/' + id) || null,
+    repos: () => S.repos.slice(),
+    agents: () => S.agents.slice(),
+    filterRepo: () => S.filterRepo,
+    isNarrow,
+    /** Per-viewer conveniences only (a remembered tab or filter; keys 'sf.<area>.<name>'): never a token, a
+     *  passphrase or message text. */
+    storage: Object.freeze({ get: lsGet, set: lsSet }),
+  });
+  Object.defineProperty(window, 'SF', { value: SF, writable: false, configurable: false, enumerable: true });
+
   // ================================================================ routing
-  const VIEWS = ['factory', 'plans', 'chat', 'agents', 'settings', 'doctor', 'flow', 'grid', 'procedures'];
+  const VIEWS = ['home', 'factory', 'plans', 'chat', 'agents', 'settings', 'doctor', 'flow', 'grid', 'procedures'];
+  /** "a=1&b=two" → {a: '1', b: 'two'} (a view's #/route?query; the last value of a repeated key wins). */
+  function parseQuery(q) {
+    const out = {};
+    for (const pair of String(q || '').split('&')) {
+      if (!pair) continue;
+      const i = pair.indexOf('=');
+      let k = i >= 0 ? pair.slice(0, i) : pair;
+      let v = i >= 0 ? pair.slice(i + 1) : '';
+      try { k = decodeURIComponent(k.replace(/\+/g, ' ')); v = decodeURIComponent(v.replace(/\+/g, ' ')); } catch (e) { continue; }
+      out[k] = v;
+    }
+    return out;
+  }
   function parseRoute() {
-    const raw = location.hash.replace(/^#\/?/, '');
+    const full = location.hash.replace(/^#\/?/, '');
+    const qi = full.indexOf('?');
+    const raw = qi >= 0 ? full.slice(0, qi) : full;
     let parts;
     try { parts = raw.split('/').filter(Boolean).map(decodeURIComponent); } catch (e) { parts = []; }
-    const v = parts[0] || 'factory';
+    const v = parts[0] || 'home';
+    if (v === 'home') return { view: 'home' };
+    if (v === 'factory') return { view: 'factory' };
     if (v === 'job' && parts.length >= 3) {
       // A job opened from a plan's graph keeps the plan behind the drawer.
       const fromPlan = S.route.view === 'plans' && !!D.back;
-      return { view: fromPlan ? 'plans' : 'factory', plan: fromPlan ? S.route.plan : null, job: { repo: parts[1], id: parts[2], tab: parts[3] || null } };
+      // A job opened from Home ("Needs you") keeps Home behind the drawer, like a plan's.
+      const behind = fromPlan ? 'plans' : S.route.view === 'home' ? 'home' : 'factory';
+      return { view: behind, plan: fromPlan ? S.route.plan : null, job: { repo: parts[1], id: parts[2], tab: parts[3] || null } };
     }
     if (v === 'plans') return { view: 'plans', plan: parts[1] && parts[2] ? { repo: parts[1], id: parts[2] } : null };
     if (v === 'chat') return { view: 'chat', chat: parts[1] || null };
@@ -8140,15 +9389,24 @@
     }
     if (v === 'grid') return { view: 'grid', node: parts[1] || null };
     if (v === 'procedures') return { view: 'procedures', section: parts[1] || null };
-    return { view: 'factory' };
+    // A view module's route: #/<name>/<part>/…?<query> → {view: its id, name, parts, query}.
+    const mod = REG.routes.get(v);
+    if (mod) return { view: mod.id, ext: true, name: v, parts: parts.slice(1), query: qi >= 0 ? parseQuery(full.slice(qi + 1)) : {} };
+    return { view: 'home' };
   }
   function route() {
     // In-page anchors (the skip link's #main) are not routes: keep the current view.
     if (location.hash && !/^#\/?$|^#\//.test(location.hash) && S.route.view) return;
     const r = parseRoute();
     const prev = S.route;
+    r.hash = location.hash;
     S.route = r;
-    for (const v of VIEWS) {
+    // A job opened from another page (Home, a view module's link) closes back to that page, focus on its opener.
+    if (r.job && !prev.job && !D.key) {
+      if (!D.back && prev.hash && prev.view !== 'factory') D.back = prev.hash;
+      if (!D.opener && document.activeElement && document.activeElement !== document.body) D.opener = document.activeElement;
+    }
+    for (const v of VIEWS.concat(Array.from(REG.views.keys()))) {
       const sec = document.getElementById('view-' + v);
       if (sec) sec.hidden = v !== r.view;
     }
@@ -8158,8 +9416,13 @@
     const flowChanged = r.view === 'flow' && (prev.view !== 'flow' || prev.flow !== r.flow);
     const changedView = prev.view !== r.view;
     if (changedView) document.getElementById('main').scrollTop = 0;
+    // A panel a view module opened (SF.drawer) closes when its view is left, or when the route goes back to the
+    // hash the panel names as its way out; a view that still wants it opens it again.
+    if (GD.open && (r.view !== GD.view || (GD.opts.back && location.hash === GD.opts.back))) closePanel(false);
     if (r.job) openDrawer(r.job.repo, r.job.id, r.job.tab);
     else if (D.key) hideDrawer();
+    if (r.view === 'home') { loadHome(prev.view !== 'home'); invalidate('home'); }
+    routeModules(r, prev);
     if (r.view === 'factory') invalidate('strip', 'board', 'backlog');
     if (r.view === 'plans') {
       if (!PL.loaded && !PL.loading) loadPlans();
@@ -8187,7 +9450,7 @@
       invalidate('plans');
     }
     if (r.view === 'chat') { if (!CH.listLoaded) loadChats(); selectChat(r.chat); }
-    if (r.view === 'agents') { AG.sel = r.agent || AG.sel; invalidate('agents'); }
+    if (r.view === 'agents') { if (prev.view !== 'agents') AG.shown = null; AG.sel = r.agent || AG.sel; invalidate('agents'); }
     if (r.view === 'settings') {
       if (!CFG.orig && !CFG.loading) loadConfig();
       invalidate('settings');
@@ -8230,7 +9493,9 @@
   function isTyping(t) { return !!t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)); }
   function focusSearch() {
     const v = S.route.view;
-    const el = v === 'factory' && !D.key ? document.getElementById('board-search') : v === 'chat' ? document.getElementById('chat-search') : document.getElementById('repo-filter');
+    const mod = REG.views.get(v);
+    const own = mod && mod.section ? mod.section.querySelector('[data-sf-search]') : null;
+    const el = own || (v === 'factory' && !D.key ? document.getElementById('board-search') : v === 'chat' ? document.getElementById('chat-search') : document.getElementById('repo-filter'));
     if (el) { el.focus(); if (el.select) el.select(); }
   }
   function showShortcuts() {
@@ -8250,6 +9515,7 @@
       const t = e.target;
       if (t && (t.id === 'board-search' || t.id === 'chat-search') && t.value) { t.value = ''; t.dispatchEvent(new Event('input')); e.preventDefault(); return; }
       if (D.key) { e.preventDefault(); closeDrawer(); return; }
+      if (GD.open) { e.preventDefault(); closePanel(true); return; }
       if (isTyping(t)) { t.blur(); return; }
       // A map card closes and focus goes back to its node on the map.
       if (S.route.view === 'grid' && S.route.node) { e.preventDefault(); GRIDV.focusNode = S.route.node; location.hash = '#/grid'; return; }
@@ -8298,7 +9564,7 @@
     search.addEventListener('input', () => { S.search = search.value; invalidate('board'); });
     const chatSearch = document.getElementById('chat-search');
     chatSearch.addEventListener('input', () => { CH.search = chatSearch.value; invalidate('chatList'); });
-    document.getElementById('scrim').addEventListener('click', closeDrawer);
+    document.getElementById('scrim').addEventListener('click', () => { if (GD.open) closePanel(true); else closeDrawer(); });
     // The skip link must not change the hash: that is the router's.
     document.querySelector('.skip-link').addEventListener('click', (e) => {
       e.preventDefault();
@@ -8349,11 +9615,26 @@
         if (/^#?\/?$/.test(location.hash) && SETUPST.status && SETUPST.status.configured === false && unused) location.replace('#/welcome');
       });
     } else loadSetup();
+    REG.booted = true;
+    renderRail();
     route();
+    for (const v of REG.views.values()) if (v.spec.start) safely('view ' + v.id + ' start', () => v.spec.start(v.handle));
     connect();
     loadDoctor(false);
     loadChats();
     loadPlans();
   }
-  init();
+  // Deferred scripts run in document order before DOMContentLoaded: app.js defines window.SF, each views/<area>.js
+  // registers itself, and only then does the page start (routes, the rail and the event stream know every view).
+  let booted = false;
+  function boot() {
+    if (booted) return;
+    booted = true;
+    init();
+  }
+  if (document.readyState === 'complete') boot();
+  else {
+    document.addEventListener('DOMContentLoaded', boot);
+    window.addEventListener('load', boot);
+  }
 })();

@@ -1,0 +1,31 @@
+{
+ "body": null,
+ "headers": {
+  "Connection": "close",
+  "Content-Type": "application/json"
+ },
+ "json": {
+  "command": "probe",
+  "exit_code": 0,
+  "finished_at": "2026-10-25T15:12:22",
+  "health": "passed",
+  "high_command": "startup",
+  "log_file": "/var/log/20261025-151222-probe.log",
+  "messages": [],
+  "number": 66,
+  "pulse": {
+   "activity": 1413,
+   "array": 202,
+   "config": 1,
+   "current_at": "2026-10-25T15:12:36",
+   "disks": 319,
+   "tasks": 1332
+  },
+  "scheduled_at": "2026-10-25T15:12:22",
+  "started_at": "2026-10-25T15:12:22",
+  "status": "terminated"
+ },
+ "method": "GET",
+ "path": "/snapraid/v1/activity",
+ "status": 200
+}

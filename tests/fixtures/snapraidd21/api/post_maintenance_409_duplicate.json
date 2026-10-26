@@ -1,0 +1,14 @@
+{
+ "body": {},
+ "headers": {
+  "Connection": "close",
+  "Content-Type": "application/json"
+ },
+ "json": {
+  "message": "Maintenance already running or scheduled",
+  "success": false
+ },
+ "method": "POST",
+ "path": "/snapraid/v1/maintenance",
+ "status": 409
+}

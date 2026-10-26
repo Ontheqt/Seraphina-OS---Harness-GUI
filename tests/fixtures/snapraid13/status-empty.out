@@ -1,0 +1,20 @@
+Self test...
+Loading state from /var/snapraid/snapraid.content...
+WARNING! Content file '/var/snapraid/snapraid.content' not found, attempting with another copy...
+Loading state from /mnt/disk1/.snapraid/snapraid.content...
+WARNING! Content file '/mnt/disk1/.snapraid/snapraid.content' not found, attempting with another copy...
+Loading state from /mnt/disk2/.snapraid/snapraid.content...
+No content file found. Assuming empty.
+Using 0 MiB of memory for the file-system.
+SnapRAID status report:
+
+   Files Fragmented Excess  Wasted  Used    Free  Use Name
+            Files  Fragments  GB      GB      GB
+       0       0       0     0.0       0       -   -  d1
+       0       0       0     0.0       0       -   -  d2
+       0       0       0     0.0       0       -   -  d3
+ --------------------------------------------------------------------------
+       0       0       0     0.0       0       0   0%
+
+WARNING! Free space info will be valid after the first sync.
+The array is empty.

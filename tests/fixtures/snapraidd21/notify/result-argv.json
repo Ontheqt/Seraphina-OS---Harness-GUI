@@ -1,0 +1,90 @@
+[
+ {
+  "phase": "04-after-maintenance",
+  "argv": "[WARNING] SnapRAID Maintenance warning default -1 maintenance 0"
+ },
+ {
+  "phase": "05-after-stop-during-sync",
+  "argv": "[ERROR] SnapRAID Maintenance error high warning maintenance 1"
+ },
+ {
+  "phase": "06-recovery-maintenance",
+  "argv": "[WARNING] SnapRAID Maintenance warning default -1 maintenance 0"
+ },
+ {
+  "phase": "07-after-threshold-abort",
+  "argv": "[ERROR] SnapRAID Maintenance error high warning maintenance 2"
+ },
+ {
+  "phase": "08-after-undelete",
+  "argv": "[WARNING] SnapRAID Undelete warning default -1 undelete 0"
+ },
+ {
+  "phase": "11-after-scheduled-run",
+  "argv": "[WARNING] SnapRAID Maintenance warning default -1 maintenance 0"
+ },
+ {
+  "phase": "13-after-truncation-abort",
+  "argv": "[ERROR] SnapRAID Maintenance error high warning maintenance 1"
+ },
+ {
+  "phase": "15-after-heal",
+  "argv": "[INFO] SnapRAID Heal info low +1 heal 0"
+ },
+ {
+  "phase": "16-update-threshold",
+  "argv": "[ERROR] SnapRAID Maintenance error high warning maintenance 2"
+ },
+ {
+  "phase": "16-update-threshold",
+  "argv": "[WARNING] SnapRAID Maintenance warning default -1 maintenance 0"
+ },
+ {
+  "phase": "all-in-order",
+  "argv": "[WARNING] SnapRAID Maintenance warning default -1 maintenance 0"
+ },
+ {
+  "phase": "all-in-order",
+  "argv": "[ERROR] SnapRAID Maintenance error high warning maintenance 1"
+ },
+ {
+  "phase": "all-in-order",
+  "argv": "[WARNING] SnapRAID Maintenance warning default -1 maintenance 0"
+ },
+ {
+  "phase": "all-in-order",
+  "argv": "[ERROR] SnapRAID Maintenance error high warning maintenance 2"
+ },
+ {
+  "phase": "all-in-order",
+  "argv": "[WARNING] SnapRAID Undelete warning default -1 undelete 0"
+ },
+ {
+  "phase": "all-in-order",
+  "argv": "[WARNING] SnapRAID Undelete warning default -1 undelete 0"
+ },
+ {
+  "phase": "all-in-order",
+  "argv": "[WARNING] SnapRAID Maintenance warning default -1 maintenance 0"
+ },
+ {
+  "phase": "all-in-order",
+  "argv": "[ERROR] SnapRAID Maintenance error high warning maintenance 1"
+ },
+ {
+  "phase": "all-in-order",
+  "argv": "[WARNING] SnapRAID Undelete warning default -1 undelete 0"
+ },
+ {
+  "phase": "all-in-order",
+  "argv": "[INFO] SnapRAID Heal info low +1 heal 0"
+ },
+ {
+  "phase": "all-in-order",
+  "argv": "[ERROR] SnapRAID Maintenance error high warning maintenance 2"
+ },
+ {
+  "phase": "all-in-order",
+  "argv": "[WARNING] SnapRAID Maintenance warning default -1 maintenance 0"
+ }
+]

@@ -1,0 +1,63 @@
+{
+ "body": null,
+ "headers": {
+  "Connection": "close",
+  "Content-Type": "application/json"
+ },
+ "json": {
+  "active": [],
+  "history": [
+   {
+    "command": "probe",
+    "exit_code": 0,
+    "finished_at": "2026-10-25T15:11:51",
+    "health": "passed",
+    "high_command": "suspend_idle",
+    "log_file": "/var/log/20261025-151150-probe.log",
+    "messages": [],
+    "number": 65,
+    "scheduled_at": "2026-10-25T15:11:50",
+    "started_at": "2026-10-25T15:11:50",
+    "status": "terminated"
+   },
+   {
+    "command": "probe",
+    "exit_code": 0,
+    "finished_at": "2026-10-25T15:10:51",
+    "health": "passed",
+    "high_command": "suspend_idle",
+    "log_file": "/var/log/20261025-151050-probe.log",
+    "messages": [],
+    "number": 64,
+    "scheduled_at": "2026-10-25T15:10:50",
+    "started_at": "2026-10-25T15:10:50",
+    "status": "terminated"
+   },
+   {
+    "command": "probe",
+    "exit_code": 0,
+    "finished_at": "2026-10-25T15:09:50",
+    "health": "passed",
+    "high_command": "suspend_idle",
+    "log_file": "/var/log/20261025-150950-probe.log",
+    "messages": [],
+    "number": 63,
+    "scheduled_at": "2026-10-25T15:09:50",
+    "started_at": "2026-10-25T15:09:50",
+    "status": "terminated"
+   }
+  ],
+  "pending": [],
+  "pulse": {
+   "activity": 1002,
+   "array": 206,
+   "config": 5,
+   "current_at": "2026-10-25T15:12:10",
+   "disks": 308,
+   "tasks": 926
+  }
+ },
+ "method": "GET",
+ "path": "/snapraid/v1/tasks?limit_history=3&limit_messages=5",
+ "status": 200
+}

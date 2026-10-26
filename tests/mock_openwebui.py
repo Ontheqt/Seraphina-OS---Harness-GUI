@@ -29,7 +29,12 @@ no ``chat_id`` (DESIGN.md section 33):
   - ``files`` (knowledge) adds a ``{"sources": [...]}`` first SSE frame (or a top-level ``sources``);
   - the caller's ``tools`` pass through and the upstream ``tool_calls`` come back unexecuted;
   - ``model`` becomes the preset's ``base_model_id`` upstream; an unknown model is a 400.
-  ``forbidden`` records every request that carried ``tool_ids``, ``chat_id``, ``id`` or ``session_id``.
+  ``forbidden`` records every request that carried ``tool_ids``, ``chat_id``, ``id``, ``session_id`` or
+  ``features`` (which switches on Open WebUI's built-in memory, among others).
+- Anything that would change Open WebUI's state (a POST other than chat completions, any PUT, PATCH or
+  DELETE: creating or updating a model, a tool, a function, a knowledge base, a setting) is recorded in
+  ``writes`` as ``(method, path)`` and refused (404 or 405): the harness never writes there (DESIGN §33,
+  the capability map's acceptance test).
 
 Example::
 
@@ -59,7 +64,7 @@ OWNER_KEY = "sk-owner-0123456789abcdef0123456789abcdef"
 READER_KEY = "sk-reader-0123456789abcdef0123456789abcd"
 OPENWEBUI_ONLY = ("stream_response", "stream_delta_chunk_size", "function_calling", "reasoning_tags",
                   "compact_token_threshold", "system", "note_id", "tool_approval_mode", "model_controls")
-FORBIDDEN = ("tool_ids", "chat_id", "id", "session_id")
+FORBIDDEN = ("tool_ids", "chat_id", "id", "session_id", "features")
 Reply = Callable[[dict], "dict | None"]
 
 
@@ -83,12 +88,22 @@ class MockOpenWebUI:
         self.upstream: list[dict] = []              # what the upstream server got for each
         self.forbidden: list[dict] = []             # requests that carried a FORBIDDEN key
         self.gets: list[tuple[str, str | None]] = []   # (path, the key used or None)
+        self.writes: list[tuple[str, str]] = []       # (method, path) of every request that would change state
         self._lock = threading.Lock()
         self._ids = itertools.count(1)
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
     # -- the workspace models ---------------------------------------------------------
+
+    def add_relay_connection(self, model_id: str = "gpt-6.1-codex") -> dict:
+        """A base model on a connection an admin labelled local that is a relay to a hosted service (a proxy
+        signed in to a subscription, in a container on the same machine): Open WebUI lists it like any local
+        model. Returns its listing entry."""
+        entry = {"id": model_id, "name": model_id, "object": "model", "owned_by": "openai",
+                 "connection_type": "local"}
+        self.base_models.append(entry)
+        return entry
 
     def add_workspace_model(self, model_id: str, *, system: str = "", params: dict | None = None,
                             meta: dict | None = None, name: str | None = None,
@@ -204,7 +219,7 @@ class MockOpenWebUI:
         if record is None and body.get("model") not in base_ids:
             raise LookupError("Model not found")
         upstream = {key: copy.deepcopy(value) for key, value in body.items()
-                    if key not in ("files", "filter_ids", "variables", "params", "features", *FORBIDDEN)}
+                    if key not in ("files", "filter_ids", "variables", "params", *FORBIDDEN)}
         stream = bool(body.get("stream"))
         sources = [{"source": {"id": entry.get("id"), "type": entry.get("type")}, "document": ["…"]}
                    for entry in body.get("files") or [] if isinstance(entry, dict)]
@@ -313,10 +328,28 @@ class _Handler(BaseHTTPRequestHandler):
                                     "DEFAULT_MODEL_PARAMS": copy.deepcopy(self.mock.default_params)})
         return self._json(404, {"detail": "Not Found"})
 
+    def _refuse_write(self, method: str) -> None:
+        path = urllib.parse.urlsplit(self.path).path
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        with self.mock._lock:
+            self.mock.writes.append((method, path))
+        self._json(405 if method != "POST" else 404, {"detail": "Not Found"})
+
+    def do_PUT(self) -> None:
+        self._refuse_write("PUT")
+
+    def do_PATCH(self) -> None:
+        self._refuse_write("PATCH")
+
+    def do_DELETE(self) -> None:
+        self._refuse_write("DELETE")
+
     def do_POST(self) -> None:
         path = urllib.parse.urlsplit(self.path).path
         raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
         if path not in ("/api/chat/completions", "/api/v1/chat/completions"):
+            with self.mock._lock:
+                self.mock.writes.append(("POST", path))
             return self._json(404, {"detail": "Not Found"})
         user = self._user()
         if user is None:

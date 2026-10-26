@@ -1,0 +1,47 @@
+Loading state from /var/snapraid/snapraid.content...
+WARNING! Content file '/var/snapraid/snapraid.content' not found, attempting with another copy...
+Loading state from /mnt/disk1/.snapraid/snapraid.content...
+WARNING! Content file '/mnt/disk1/.snapraid/snapraid.content' not found, attempting with another copy...
+Loading state from /mnt/disk2/.snapraid/snapraid.content...
+No content file found. Assuming empty.
+Comparing...
+add docs/readme.txt
+add docs/readme.txt
+add docs/readme.txt
+add media/photos/img1.jpg
+add media/photos/img1.jpg
+add media/photos/img1.jpg
+add media/photos/img2.jpg
+add media/photos/img2.jpg
+add media/photos/img2.jpg
+add media/photos/img3.jpg
+add media/photos/img3.jpg
+add media/photos/img3.jpg
+add media/photos/img4.jpg
+add media/photos/img4.jpg
+add media/photos/img4.jpg
+add media/photos/img5.jpg
+add media/photos/img5.jpg
+add media/photos/img5.jpg
+add media/big.bin
+add media/big.bin
+add media/big.bin
+add media/notes/a:b.txt
+add media/notes/a:b.txt
+add media/notes/a:b.txt
+add media/notes/back\\slash.txt
+add media/notes/back\\slash.txt
+add media/notes/back\\slash.txt
+add media/notes/\<img\ src\=x\ onerror\=alert\(1\)\>.jpg
+add media/notes/invoice‮gpj.exe
+add media/notes/line\
+break.txt
+
+       0 equal
+      30 added
+       0 removed
+       0 updated
+       0 moved
+       0 copied
+       0 restored
+There are differences!

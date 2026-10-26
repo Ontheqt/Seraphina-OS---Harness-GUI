@@ -15,11 +15,25 @@ A route names a logical model. At run start it becomes a placement:
 - **escalation**: a route's ``escalate`` rungs replace the builder's model on its k-th send-back
   (a CHANGES round or a rework): rung k, the last one beyond the list, skipping rungs none of
   whose builds answers.
+- **GPU custody** (DESIGN §37, custody.py): a build whose provider needs a request lease (custody
+  configured, and lazy_load or allow_model_swap) is usable only once the operator's custody register
+  grants one (the placement's claim, a custody.Claims); a denial, an error, a timeout or an unreachable
+  register passes the build over, so the run follows the overflow path. A HELD answer (someone else
+  holds the card) first waits, for at most the provider's overflow_after_seconds; FULL (the card cannot
+  fit the model now) passes the build over at once, to the next build (another card or a smaller
+  build), then the overflow. An overflow the register caused says why in its words ("the card cannot
+  fit this model now").
+- **independence**: a judge (a reviewer or the approver) whose model is of a family the builder ran
+  on in that round (the approver: in any round) runs on its ``independent_alternate`` instead
+  (judge_choice; under GPU custody, an alternate the register gives no lease for counts as not
+  answering); with none, the run goes ahead and says its independence is reduced (or accepted,
+  when the routing says ``independent_alternate: false``). A family is a model entry's ``family``
+  label, else one read from its model id (default_family).
 
 Every placement other than a route's first build says why (Choice.notes and why, which the callers
 put in agent.start, job.runs and a log line): nothing here falls back silently. The reason a run
 shows is its placement's (placement_reason): the route's own on the route's model, else the
-overflow's or the escalation rung's. Prices (USD per
+overflow's, the escalation rung's or the independent alternate's. Prices (USD per
 million tokens) price each run (run_cost); estimate() predicts tokens, cost and duration from a
 repo's past jobs or a default table; profiles (named sets of per-agent placements, each with a
 reason) are read and checked here.
@@ -35,6 +49,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from . import custody
 from .config import ModelConfig, ProviderConfig
 from .harness.providers import SLICE_SECONDS, provider_semaphore
 from .settings import fetch_json, is_local_url, reach
@@ -45,8 +60,31 @@ EFFORTS = ("minimal", "low", "medium", "high", "xhigh", "max")
 ANTHROPIC_EFFORTS = ("low", "medium", "high", "xhigh", "max")   # Claude's output_config.effort
 REASON_KINDS = ("capability", "time", "stage-fit", "cost")
 PROFILE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$")
-ROUTE_KEYS = ("model", "driver", "extra_body", "effort", "escalate", "reason")   # a per-agent placement
+ROUTE_KEYS = ("model", "driver", "extra_body", "effort", "escalate", "reason",
+              "independent_alternate")   # a per-agent placement
 REASON_CHARS = 200
+# A placement's claim (custody.Claims): (provider, model id) -> (usable, why not). It takes the build's request
+# lease when its provider needs one.
+Claim = Callable[[ProviderConfig, str], "tuple[bool, str]"]
+
+# Model families (the independence guard): a model entry's own `family` label, else one read from its model id.
+FAMILY_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,40}$")
+VENDOR_ALIASES = {"meta-llama": "meta", "mistralai": "mistral", "deepseek-ai": "deepseek", "x-ai": "xai",
+                  "google-deepmind": "google", "zai-org": "z-ai", "thudm": "z-ai", "moonshot": "moonshotai",
+                  "alibaba": "qwen", "qwenlm": "qwen", "ibm-granite": "ibm", "xiaomimimo": "xiaomi"}
+# a model name (a whole word of the id, or one followed by its version: qwen3, gpt-4o) and the family it names
+NAME_FAMILIES = (("claude", "anthropic"), ("gpt", "openai"), ("chatgpt", "openai"), ("codex", "openai"),
+                 ("gemini", "google"), ("gemma", "google"), ("qwen", "qwen"), ("qwq", "qwen"),
+                 ("deepseek", "deepseek"), ("llama", "meta"), ("codellama", "meta"), ("mistral", "mistral"),
+                 ("mixtral", "mistral"), ("codestral", "mistral"), ("devstral", "mistral"), ("magistral", "mistral"),
+                 ("grok", "xai"), ("kimi", "moonshotai"), ("glm", "z-ai"), ("mimo", "xiaomi"), ("phi", "microsoft"),
+                 ("granite", "ibm"), ("nemotron", "nvidia"))
+# a path segment that is a vendor (when no model name says more); any other segment (hf.co, a quantizer's or a
+# router's namespace, a user's) names no family
+KNOWN_VENDORS = frozenset({family for _, family in NAME_FAMILIES} | set(VENDOR_ALIASES.values())
+                          | {"cohere", "amazon", "minimax"})
+OPENAI_O_SERIES = frozenset({"o1", "o3", "o4"})
+JUDGE_HINT = "independent_alternate is for the judges (reviewer-<lens> and approver)"
 
 # Estimates (estimate()): rough per-job defaults, replaced by the median of a repo's past jobs once
 # it has MIN_HISTORY of them. Tokens of one agent over a whole job, every round together.
@@ -256,52 +294,72 @@ def model_aware(provider: ProviderConfig) -> bool:
 
 
 def needs_probe(builds: list[Build], has_overflow: bool) -> bool:
-    """Whether there is anything to choose: several builds, an overflow, or a model-aware server."""
-    return len(builds) > 1 or has_overflow or any(model_aware(build.provider) for build in builds)
+    """Whether there is anything to choose: several builds, an overflow, a model-aware server, or a server
+    under GPU custody (its lease decides whether the build is usable)."""
+    return len(builds) > 1 or has_overflow or any(model_aware(build.provider) or custody.needs_lease(build.provider)
+                                                  for build in builds)
 
 
-def choose_build(builds: list[Build], reach_: Reachability) -> tuple[int | None, dict | None, list[str]]:
+def choose_build(builds: list[Build], reach_: Reachability,
+                 claim: Claim | None = None) -> tuple[int | None, dict | None, list[str]]:
     """(the first usable build's index or None, the swap it needs or None, why earlier builds were passed over).
 
     Usable: its provider answers and, on a model-aware server, it has the build's model loaded, or
-    allow_model_swap lets the request load it (the swap: {provider, from, to})."""
+    allow_model_swap lets the request load it (the swap: {provider, from, to}); with claim, a build whose
+    provider needs a request lease also needs the custody register to grant one (DESIGN §37). Without claim
+    (a probe that only looks, such as the escalation rungs' check) no lease is asked for."""
     notes: list[str] = []
     for index, build in enumerate(builds):
         up, why = reach_.up(build.provider)
         if not up:
             notes.append(f"build {build.where()} is unavailable: {why}")
             continue
-        if not model_aware(build.provider):
-            return index, None, notes
-        loaded, why = reach_.loaded_model(build.provider)
-        if loaded == build.model_id:
-            return index, None, notes
-        if build.provider.allow_model_swap:
-            return index, {"provider": build.provider.name, "from": loaded, "to": build.model_id}, notes
-        if loaded:
-            notes.append(f"build {build.where()} is unavailable: {build.provider.name} has {loaded} loaded "
-                         f"and allow_model_swap is off")
-        else:
-            notes.append(f"build {build.where()} is unavailable: cannot tell which model {build.provider.name} "
-                         f"has loaded ({why}) and allow_model_swap is off")
+        swap = None
+        if model_aware(build.provider):
+            loaded, why = reach_.loaded_model(build.provider)
+            if loaded != build.model_id:
+                if not build.provider.allow_model_swap:
+                    notes.append(f"build {build.where()} is unavailable: {build.provider.name} has {loaded} loaded "
+                                 f"and allow_model_swap is off" if loaded else
+                                 f"build {build.where()} is unavailable: cannot tell which model "
+                                 f"{build.provider.name} has loaded ({why}) and allow_model_swap is off")
+                    continue
+                swap = {"provider": build.provider.name, "from": loaded, "to": build.model_id}
+        if claim is not None:
+            granted, why = claim(build.provider, build.model_id)
+            if not granted:
+                notes.append(f"build {build.where()} is unavailable: GPU custody: {why}")
+                continue
+        return index, swap, notes
     return None, None, notes
 
 
-def choose(builds: list[Build], overflow: list[Build] | None, reach_: Reachability, overflow_key: str = "") -> Choice:
+def choose(builds: list[Build], overflow: list[Build] | None, reach_: Reachability, overflow_key: str = "",
+           claim: Claim | None = None) -> Choice:
     """The build a run uses: the first usable of builds; else the overflow's first usable build; else
-    builds[0] anyway (the run then fails on it and says why; no silent fallback elsewhere)."""
+    builds[0] anyway (the run then fails on it and says why; no silent fallback elsewhere: on a server under
+    custody without a lease its calls are refused, custody.lease_problem)."""
     if not needs_probe(builds, overflow is not None):
         return Choice()
-    index, swap, notes = choose_build(builds, reach_)
+    index, swap, notes = choose_build(builds, reach_, claim)
     if index is not None:
         return Choice(index=index, swap=swap, notes=notes)
-    why = "no build answered (" + "; ".join(notes) + ")"
+    why = f"{none_answered(builds, claim)} (" + "; ".join(notes) + ")"
     if overflow:
-        found, swap, more = choose_build(overflow, reach_)
+        found, swap, more = choose_build(overflow, reach_, claim)
         if found is not None:
             return Choice(index=found, overflowed=True, swap=swap, notes=notes + more, why=why)
         notes = notes + more + [f"the overflow {overflow_key or 'model'} is unavailable too"]
     return Choice(notes=notes + [f"running on {builds[0].where()} anyway"])
+
+
+def none_answered(builds: list[Build], claim: Claim | None) -> str:
+    """Why none of builds runs, in the words an overflow's why starts with: the custody register's when it
+    refused every build for the same reason (FULL: "the card cannot fit this model now"), else "no build
+    answered"."""
+    found = claim.common_refusal([(b.provider.name, b.model_id) for b in builds]) \
+        if isinstance(claim, custody.Claims) else None
+    return found or "no build answered"
 
 
 def escalation_start(rungs: int, sendbacks: int) -> int | None:
@@ -389,10 +447,12 @@ def on_build(model: ModelConfig, build: Build) -> ModelConfig:
 
 
 def place_live(config: Any, model: ModelConfig, reach_: Reachability | None = None,
-               cli: bool = False) -> tuple[ModelConfig, dict, list[str]]:
+               cli: bool = False, claim: Claim | None = None) -> tuple[ModelConfig, dict, list[str]]:
     """(the model a chat turn or a lead run runs on, placement info for agent.start, notes): model on
     the first of its builds that answers, else its overflow (config.model of the overflow key) on that
-    model's first usable build. A CLI driver reaches its own endpoint, so cli=True keeps model as it is.
+    model's first usable build. A CLI driver reaches its own endpoint, so cli=True keeps model as it is
+    (its request lease, when its provider needs one, is the caller's: chats.place_run). claim: the
+    placement's custody.Claims (DESIGN §37).
     """
     if cli:
         return model, {}, []
@@ -401,7 +461,7 @@ def place_live(config: Any, model: ModelConfig, reach_: Reachability | None = No
     key = overflow_key(config, model)
     overflow_model = config.model(key) if key else None
     overflow = config_builds(config, overflow_model) if overflow_model is not None else None
-    choice = choose(builds, overflow, reach_, key or "")
+    choice = choose(builds, overflow, reach_, key or "", claim)
     if choice.overflowed and overflow_model is not None and overflow is not None:
         placed = on_build(overflow_model, overflow[choice.index])
         info = {"overflow": {"from": model.key, "to": overflow_model.key, "why": choice.why}}
@@ -418,7 +478,8 @@ def place_live(config: Any, model: ModelConfig, reach_: Reachability | None = No
 
 def wait_live(config: Any, model: ModelConfig, placed: ModelConfig, info: dict, cancel: threading.Event,
               on_wait: Callable[[], None] | None = None, reach_: Reachability | None = None,
-              cli: bool = False) -> tuple[ModelConfig, dict, list[str], Callable[[], None]] | None:
+              cli: bool = False, claim: Claim | None = None
+              ) -> tuple[ModelConfig, dict, list[str], Callable[[], None]] | None:
     """The slot wait of a chat turn or lead run that place_live put on one of model's own builds
     (placed, info), as the orchestrator does it for a job's run: when model has an overflow
     and placed's provider max_concurrency and overflow_after_seconds, wait at most that long for one
@@ -438,9 +499,11 @@ def wait_live(config: Any, model: ModelConfig, placed: ModelConfig, info: dict, 
         return placed, info, [], release
     if cancel.is_set():
         return None
+    if isinstance(claim, custody.Claims):   # the run waited its time: the overflow's HELD answers do not wait
+        claim.stop_waiting(f"waited {seconds:g}s for a slot of {provider.name}")
     overflow_model = config.model(key)
     builds = config_builds(config, overflow_model)
-    found, swap, notes = choose_build(builds, reach_ or REACHABILITY)
+    found, swap, notes = choose_build(builds, reach_ or REACHABILITY, claim)
     if found is None:   # nowhere to go: keep waiting for the slot, as without an overflow
         release = take_slot(provider, float("inf"), cancel)
         if release is None:
@@ -476,8 +539,8 @@ def reason(value: Any, label: str = "reason") -> dict | None:
 
 def placement_reason(route_reason: dict | None, info: dict) -> dict | None:
     """Why a run goes where its placement put it: the route's own reason while it runs on the route's
-    model (on any of its builds); an overflow's or an escalation rung's own reason otherwise (the
-    route's reason was given for another model)."""
+    model (on any of its builds); an overflow's, an escalation rung's or an independent alternate's
+    own reason otherwise (the route's reason was given for another model)."""
     overflow = info.get("overflow")
     if isinstance(overflow, dict):
         why = str(overflow.get("why") or "").split(" (", 1)[0]
@@ -486,7 +549,160 @@ def placement_reason(route_reason: dict | None, info: dict) -> dict | None:
     if isinstance(escalation, dict):
         return {"kind": "capability", "text": f"escalation rung {escalation.get('rung')} of {escalation.get('of')} "
                                               f"after {escalation.get('sendbacks')} send-back(s)"}
+    shared = info.get("shared_model")
+    if info.get("independence") == "alternate" and isinstance(shared, dict):
+        return {"kind": "stage-fit", "text": alternate_text(shared)}
     return route_reason
+
+
+def alternate_text(shared: dict) -> str:
+    """The reason text of a judge run moved to its independent alternate."""
+    return (f"independent alternate: the builder ran on the {shared.get('family')} family "
+            f"({shared.get('builder_model')}) this round, like {shared.get('model')}")[:REASON_CHARS]
+
+
+# ---------------------------------------------------------------- independence (the judges and the builder)
+
+
+def is_judge(agent: str) -> bool:
+    """A judge of the build: a reviewer (reviewer-<lens>) or the approver."""
+    return agent == "approver" or agent.startswith("reviewer-")
+
+
+def default_family(model_id: Any) -> str:
+    """The family a model id names when its entry gives none: the first model name among the words of the whole
+    id, its path segments included (claude is anthropic, gpt openai, gemini and gemma google, qwen, deepseek,
+    llama meta, mistral, grok xai, kimi moonshotai, glm z-ai, mimo xiaomi, phi microsoft, granite ibm; o1, o3
+    and o4 openai), matched as a whole word or with its version (qwen3, gpt-4o; not gptq); else a known vendor
+    among its path segments (meta/muse-spark is meta; a few spellings folded: meta-llama is meta); else the
+    first word of its last segment. A hub, quantizer, router or user namespace (hf.co, unsloth, openrouter)
+    names no family, so hf.co/<user>/Qwen3-...-GGUF is qwen; an id that names no family (strata) is its own,
+    so label such entries."""
+    text = str(model_id or "").strip().lower()
+    segments = [segment.strip() for segment in text.split("/") if segment.strip()]
+    words = [word for segment in segments for word in re.split(r"[\s_:@-]+", segment) if word]
+    for word in words:
+        if word in OPENAI_O_SERIES:
+            return "openai"
+        for name, family in NAME_FAMILIES:
+            if word == name or (word.startswith(name) and re.match(r"[0-9.]", word[len(name):])):
+                return family
+    for segment in segments[:-1]:
+        if segment in VENDOR_ALIASES:
+            return VENDOR_ALIASES[segment]
+        if segment in KNOWN_VENDORS:
+            return segment
+    last = [word for word in re.split(r"[\s_:@-]+", segments[-1]) if word] if segments else []
+    first = re.match(r"[a-z]+", last[0]) if last else None
+    return first.group(0) if first else (last[0] if last else "unknown")
+
+
+def entry_family(entry: Any, model_id: Any = None) -> str:
+    """A model entry's family: its own family label (lowercased), else default_family of its model id."""
+    entry = entry if isinstance(entry, dict) else {}
+    label = entry.get("family")
+    if isinstance(label, str) and label.strip():
+        return label.strip().lower()
+    return default_family(model_id if model_id is not None else entry.get("model"))
+
+
+def model_family(model: ModelConfig) -> str:
+    """The family of the model a ModelConfig runs: its family label, else default_family of its model id."""
+    label = getattr(model, "family", None)
+    return label.strip().lower() if isinstance(label, str) and label.strip() else default_family(model.model)
+
+
+def route_family(route: Any) -> str:
+    """The family of a snapshot route (or a job.runs entry): its family, else default_family of its model id
+    (a job.json from before families). A CLI route's family is its model entry's: the CLI's own model
+    mapping is not looked into, so label the entry with the family the CLI really runs."""
+    route = route if isinstance(route, dict) else {}
+    label = route.get("family")
+    if isinstance(label, str) and label.strip():
+        return label.strip().lower()
+    return default_family(route.get("model_id") or route.get("model"))
+
+
+def judge_choice(route: dict, builder: dict[str, str]) -> tuple[dict, str | None]:
+    """(the route a judge runs on, its independence) for a round whose builder ran on builder's families
+    ({family: the builder's model key}): the judge's own route and None when its family is not one of
+    them; its independent_alternate and "alternate" when the alternate's family is not one either; else
+    its own route and shared_status(route): "reduced" (the run goes ahead, and says so), or "accepted"
+    when the routing accepts the shared family (independent_alternate: false)."""
+    if route_family(route) not in builder:
+        return route, None
+    alternate = route.get("independent_alternate")
+    if isinstance(alternate, dict) and route_family(alternate) not in builder:
+        return alternate, "alternate"
+    return route, shared_status(route)
+
+
+def shared_status(route: dict) -> str:
+    """The independence of a judge run on a family the builder ran on: "accepted" when the judge's route
+    says independent_alternate: false (the owner chose it, say a local security fine-tune whose findings
+    stay local), else "reduced"."""
+    return "accepted" if route.get("independent_alternate") is False else "reduced"
+
+
+def shared_model(route: dict, builder: dict[str, str], model_id: str | None = None) -> dict:
+    """What a judge shares with the builder: {model, model_id, family, builder_model} of route (the judge's
+    model of the builder's family)."""
+    family = route_family(route)
+    return {"model": route.get("model"), "model_id": model_id or route.get("model_id"), "family": family,
+            "builder_model": builder.get(family)}
+
+
+def builder_placements(route: dict) -> list[tuple[str, dict]]:
+    """Every route a builder snapshot route can run on, labelled: the route, its overflow, each escalation
+    rung and its overflow (a CLI route never overflows); each model key once, its labels joined
+    ("overflow, rung 2")."""
+    found: list[tuple[str, dict]] = []
+
+    def add(label: str, part: Any) -> None:
+        if not isinstance(part, dict):
+            return
+        for index, (known, placed) in enumerate(found):
+            if placed.get("model") == part.get("model"):
+                found[index] = (f"{known}, {label}", placed)
+                return
+        found.append((label, part))
+
+    def with_overflow(label: str, part: Any) -> None:
+        add(label, part)
+        if isinstance(part, dict) and "cli_model" not in part:
+            add(f"{label} overflow" if label != "route" else "overflow", part.get("overflow"))
+
+    with_overflow("route", route)
+    for index, rung in enumerate(route.get("escalate") or [], start=1):
+        with_overflow(f"rung {index}", rung)
+    return found
+
+
+def independence_map(snapshot: dict) -> list[dict]:
+    """What the guard does with the judges of a routing snapshot for each model the builder can run on
+    (builder_placements): [{builder: {via, model, family}, alternate: {judge: the alternate's model key},
+    reduced: {judge: its model key, shared with the builder's family}, accepted: {judge: its model key,
+    shared by the routing's choice}}]. A reviewer is compared with that model's family; the approver, which
+    judges the whole branch once, with every placement up to that one (the code it approves may have been
+    written on any of them). Judges that stay independent are not listed. A judge's own overflow is decided
+    at run time, so it is not in the map."""
+    builder = snapshot.get("builder")
+    if not isinstance(builder, dict):
+        return []
+    judges = {agent: route for agent, route in snapshot.items() if is_judge(str(agent)) and isinstance(route, dict)}
+    rows = []
+    so_far: dict[str, str] = {}
+    for via, placed in builder_placements(builder):
+        family = route_family(placed)
+        families = {family: str(placed.get("model"))}
+        so_far.setdefault(family, str(placed.get("model")))
+        found: dict[str, dict] = {"alternate": {}, "reduced": {}, "accepted": {}}
+        for agent in sorted(judges):
+            chosen, status = judge_choice(judges[agent], dict(so_far) if agent == "approver" else families)
+            if status is not None:
+                found[status][agent] = chosen.get("model")
+        rows.append({"builder": {"via": via, "model": placed.get("model"), "family": family}, **found})
+    return rows
 
 
 def effort_problem(provider_type: str | None, effort: Any) -> str | None:
@@ -515,11 +731,12 @@ def effort_body(provider_type: str, effort: str | None) -> dict:
 
 
 def check_placement(entry: Any, label: str, models: set[str] | None = None, drivers: set[str] | None = None,
-                    allowed: tuple[str, ...] | None = ROUTE_KEYS) -> dict:
-    """entry as a per-agent placement {model?, driver?, extra_body?, effort?, escalate?, reason?}, with
-    its reason normalised; ValueError naming label for a key outside allowed (None: any) or a bad value
-    (model and the escalate rungs must be keys of models, driver a configured driver, when those sets
-    are given)."""
+                    allowed: tuple[str, ...] | None = ROUTE_KEYS, agent: str | None = None) -> dict:
+    """entry as a per-agent placement {model?, driver?, extra_body?, effort?, escalate?, reason?,
+    independent_alternate?}, with its reason normalised; ValueError naming label for a key outside allowed
+    (None: any) or a bad value (model, the escalate rungs and the independent alternate must be keys of
+    models, driver a configured driver, when those sets are given; independent_alternate may instead be
+    false, which accepts the builder's family; with agent, only a judge may name either)."""
     if not isinstance(entry, dict):
         raise ValueError(f"{label} must be an object like {{\"model\": ...}}")
     unknown = sorted(str(key) for key in set(entry) - set(allowed)) if allowed else []
@@ -546,6 +763,15 @@ def check_placement(entry: Any, label: str, models: set[str] | None = None, driv
             for rung in rungs:
                 if rung not in models:
                     raise ValueError(f"{label}.escalate: {rung!r} is not a key of models")
+    alternate = entry.get("independent_alternate")
+    if alternate is not None:
+        if alternate is not False and (not isinstance(alternate, str) or not alternate):
+            raise ValueError(f"{label}.independent_alternate must be a model key, or false to accept the "
+                             f"builder's family")
+        if agent is not None and not is_judge(agent):
+            raise ValueError(f"{label}: {JUDGE_HINT}")
+        if models is not None and alternate is not False and alternate not in models:
+            raise ValueError(f"{label}.independent_alternate {alternate!r} is not a key of models")
     if "reason" in entry:
         checked["reason"] = reason(entry["reason"], f"{label}.reason")
     return checked
@@ -575,7 +801,7 @@ def check_profiles(raw: dict, models: set[str] | None = None, drivers: set[str] 
         for agent, entry in agents.items():
             if agent_name_re is not None and not agent_name_re.fullmatch(str(agent)):
                 raise ValueError(f"{label}.agents: invalid agent name {agent!r}")
-            check_placement(entry, f"{label}.agents.{agent}", models, drivers)
+            check_placement(entry, f"{label}.agents.{agent}", models, drivers, agent=str(agent))
     default = raw.get("default_profile")
     if default is not None and (not isinstance(default, str) or not isinstance(profiles.get(default), dict)):
         raise ValueError(f"default_profile {default!r} is not a key of profiles")
@@ -603,19 +829,21 @@ def profile_routes(raw: dict, name: str | None) -> dict[str, dict]:
     if name is None:
         return {}
     agents = _dict(_dict(_dict(raw.get("profiles")).get(name)).get("agents"))
-    return {str(agent): check_placement(entry, f"profiles.{name}.agents.{agent}")
+    return {str(agent): check_placement(entry, f"profiles.{name}.agents.{agent}", agent=str(agent))
             for agent, entry in agents.items() if entry is not None}
 
 
 def merged_placements(base: dict[str, dict], top: dict[str, dict]) -> dict[str, dict]:
     """Per agent, top's keys over base's (a per-run route over a profile's placement). A top entry that
-    names another model than base's and gives no reason drops base's reason: it was given for base's
-    model."""
+    names another model than base's drops base's reason and independent alternate unless it gives its
+    own: they were given for base's model (its family, for the alternate)."""
     merged = {agent: dict(entry) for agent, entry in base.items()}
     for agent, entry in top.items():
         under = dict(merged.get(agent, {}))
-        if entry.get("model") and entry["model"] != under.get("model") and "reason" not in entry:
-            under.pop("reason", None)
+        if entry.get("model") and entry["model"] != under.get("model"):
+            for key in ("reason", "independent_alternate"):
+                if key not in entry:
+                    under.pop(key, None)
         merged[agent] = {**under, **entry}
     return merged
 
@@ -678,7 +906,9 @@ def estimate(roles: list[Role], history: dict[str, list[dict]], kind: str = "fea
     MIN_HISTORY of them is estimated by their median, else by DEFAULT_TOKENS. plan_jobs: the job
     counts of the repo's past plans (their median once there are MIN_HISTORY, else
     DEFAULT_PLAN_JOBS). Stages run one after another; the reviewers of a round start together and
-    share each provider's slots (parallel_seconds). Escalation rungs and overflows are not in it.
+    share each provider's slots (parallel_seconds). Escalation rungs and overflows are not in it. A
+    role whose route carries independence ("alternate", "reduced" or "accepted") and instead_of (the
+    judge's own model key, for an alternate) passes them on to its row.
     """
     rows: list[dict] = []
     timed: list[tuple[Role, float]] = []
@@ -698,7 +928,8 @@ def estimate(roles: list[Role], history: dict[str, list[dict]], kind: str = "fea
                      "provider": role.model.provider.name, "model_id": role.model.model,
                      "local": is_local_url(role.model.provider.base_url), "tokens": tokens, "basis": basis,
                      "cost_usd": cost, "priced": priced, "seconds": round(seconds), "tokens_per_second": speed,
-                     **({"reason": role.route["reason"]} if role.route.get("reason") else {})})
+                     **({"reason": role.route["reason"]} if role.route.get("reason") else {}),
+                     **{key: role.route[key] for key in ("independence", "instead_of") if role.route.get(key)}})
     stages: list[dict] = []
     for stage in ("lead", "spec", "build", "review", "approve"):
         members = [(role, seconds) for role, seconds in timed if role.stage == stage]
@@ -709,6 +940,9 @@ def estimate(roles: list[Role], history: dict[str, list[dict]], kind: str = "fea
     job_seconds = sum(stage["seconds"] for stage in stages if stage["stage"] != "lead")
     jobs = 1
     notes = ["the builder's escalation rungs, overflows and extra review rounds are not priced in"]
+    if any(role.route.get("independence") == "alternate" for role in roles):
+        notes.append("a judge on the builder's own model family is priced on its independent alternate, where the "
+                     "independence guard puts it while the builder is on its own model")
     if kind == "plan":
         counts = [int(count) for count in plan_jobs or [] if isinstance(count, int) and count > 0]
         jobs = int(statistics.median(counts)) if len(counts) >= MIN_HISTORY else DEFAULT_PLAN_JOBS

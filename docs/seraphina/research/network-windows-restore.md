@@ -22,7 +22,7 @@ Short links used below:
   (main at 2026-10-20, `VERSION.txt` 1.105.0; newest stable tag v1.104.2)
 - `DD/` = https://github.com/docker/docs/blob/7e40e5a15d9de1d61489c664e56f319005e40a96/content/manuals/engine/
   (docs for Docker Engine 29; newest engine tag `docker-v29.9.2`)
-- `SF/` = `/home/user/software-factory/` (this repository)
+- `SF/` = the root of this repository
 
 ---
 

@@ -883,7 +883,8 @@ class PlanManager:
                                                  secrets=self._item_secrets())
                 except (OSError, ValueError):
                     items = None
-                placed = place_run(config, route, getattr(self.factory, "reach", None), cancel, emit)
+                placed = place_run(config, route, getattr(self.factory, "reach", None), cancel, emit,
+                                   f"lead {plan['repo']}/{plan['id']}")
                 if placed is None:
                     result = AgentRun(ok=False, error="cancelled while waiting for a slot")
                     break

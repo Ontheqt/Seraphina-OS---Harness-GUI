@@ -1,0 +1,81 @@
+{
+ "body": null,
+ "headers": {
+  "Connection": "close",
+  "Content-Type": "application/json"
+ },
+ "json": {
+  "active": [],
+  "history": [
+   {
+    "command": "read",
+    "exit_code": 0,
+    "finished_at": "2026-10-25T15:00:41",
+    "health": "passed",
+    "high_command": "startup",
+    "log_file": "/var/log/20261025-150041-read.log",
+    "messages": [
+     {
+      "level": "info",
+      "text": "Loading state from /var/content/snapraid.content..."
+     },
+     {
+      "level": "error",
+      "text": "WARNING! Content file '/var/content/snapraid.content' not found, attempting with another copy...",
+      "type": "soft"
+     },
+     {
+      "level": "info",
+      "text": "Loading state from /mnt/d1/snapraid.content..."
+     },
+     {
+      "level": "error",
+      "text": "WARNING! Content file '/mnt/d1/snapraid.content' not found, attempting with another copy...",
+      "type": "soft"
+     },
+     {
+      "level": "info",
+      "text": "Loading state from /mnt/d2/snapraid.content..."
+     },
+     {
+      "level": "info",
+      "text": "No content file found. Assuming empty."
+     },
+     {
+      "level": "info",
+      "text": "Using 0 MiB of memory for the file-system."
+     }
+    ],
+    "number": 2,
+    "scheduled_at": "2026-10-25T15:00:40",
+    "started_at": "2026-10-25T15:00:41",
+    "status": "terminated"
+   },
+   {
+    "command": "probe",
+    "exit_code": 0,
+    "finished_at": "2026-10-25T15:00:40",
+    "health": "passed",
+    "high_command": "startup",
+    "log_file": "/var/log/20261025-150040-probe.log",
+    "messages": [],
+    "number": 1,
+    "scheduled_at": "2026-10-25T15:00:40",
+    "started_at": "2026-10-25T15:00:40",
+    "status": "terminated"
+   }
+  ],
+  "pending": [],
+  "pulse": {
+   "activity": 13,
+   "array": 12,
+   "config": 1,
+   "current_at": "2026-10-25T15:00:50",
+   "disks": 19,
+   "tasks": 13
+  }
+ },
+ "method": "GET",
+ "path": "/snapraid/v1/tasks",
+ "status": 200
+}

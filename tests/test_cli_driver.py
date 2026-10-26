@@ -19,6 +19,7 @@ from unittest import mock
 from swfactory.drivers import cli
 from swfactory.drivers.cli import PRESETS, CliRunner
 from swfactory.gridcard import factory_grid
+from swfactory.harness import sandbox
 from swfactory.runners import AgentRun, RunContext, make_runner
 
 FAKE_CLI = Path(__file__).resolve().parent / "fake_cli.py"
@@ -145,6 +146,26 @@ class CliTestCase(unittest.TestCase):
         path = self.tmp / "replay.jsonl"
         path.write_text(sample)
         return str(path)
+
+
+class PrivilegesTest(CliTestCase):
+    """DESIGN §17: a CLI agent runs outside bwrap, so the driver starts it with no new privileges (setpriv): no
+    setuid program (sudo, sudo-rs or classic) gives it more rights than the harness's user."""
+
+    @unittest.skipUnless(sandbox.setpriv_path(), "setpriv (util-linux) is not installed here")
+    def test_the_cli_runs_without_new_privileges(self) -> None:
+        if sandbox.no_new_privs_set():
+            self.skipTest("this test process has no-new-privileges already")
+        run = self.fake().run(self.ctx(), "Build it.")
+        self.assertTrue(run.ok, run.error)
+        self.assertIs(self.recorded()["no_new_privs"], True)
+        self.assertEqual(self.recorded()["argv"][:2], ["-p", "Build it."], "the CLI's own argv is unchanged")
+
+    def test_a_missing_cli_still_reads_as_not_found(self) -> None:
+        runner = CliRunner(None, driver("claude", command=str(self.tmp / "no-such-cli")))
+        run = runner.run(self.ctx(), "Build it.")
+        self.assertFalse(run.ok)
+        self.assertIn("command not found", run.error)
 
 
 class PresetArgvTest(CliTestCase):

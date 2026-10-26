@@ -1,0 +1,31 @@
+# Seraphina OS Harness: one connection to the link (docs/seraphina/BACKUPS_SNAPRAID.md §3.2). Started by
+# seraphina-snapraidd.socket; never enabled by itself.
+#
+# The SnapRAID Daemon's login (one line, user:password) is the systemd credential "basic": the owner writes it to
+# /etc/seraphina/snapraidd-basic.cred (root, 0600) himself, and systemd gives this instance its own copy. The
+# harness's user cannot read it. Nothing the link prints reaches the journal (StandardError=null).
+# UNVERIFIED on a systemd-booted machine until lab L14 passes.
+
+[Unit]
+Description=Seraphina's link to the SnapRAID Daemon (one request)
+
+[Service]
+Type=simple
+ExecStart=/usr/local/libexec/seraphina/sf-snapraidd serve
+StandardInput=socket
+StandardOutput=socket
+StandardError=null
+DynamicUser=yes
+LoadCredential=basic:/etc/seraphina/snapraidd-basic.cred
+StateDirectory=seraphina-snapraidd
+StateDirectoryMode=0700
+RuntimeMaxSec=60
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost

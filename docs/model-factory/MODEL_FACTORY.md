@@ -17,10 +17,21 @@ ran in the research sandbox (CPU only, tiny models), and `false` means it was
 read from source or documentation only. Section 10 lists what needs the
 owner's GPUs to verify.
 
+**The persona lineage line**, a branch that imprints a persona's own corpus
+onto a pristine base for that persona's decision, is designed separately in
+[LINEAGE.md](LINEAGE.md). It reuses the fine-tune, quantise and deploy stages
+below.
+
 Target machine ("matrix"): 2x RTX 3090 24 GB (48 GB, NVLink, sm_86),
 i9-12900KS, 64 GB RAM, Ubuntu. It serves TabbyAPI (EXL3, about 100 tok/s),
 Strata (Qwen3.8-Flash-Next GGUF with experts in VRAM), llama.cpp and
 gpt-oss-120b, at 262,144-token contexts, and is reached only over Tailscale.
+A read-only capture of it on 2026-10-25 (observed) adds what the toolchain
+must plan for: Ubuntu 26.04 with **Python 3.14.4 only**, and no `uv`,
+`python3.13`, `cmake`, `nvcc` or `git-lfs` on the host (gcc 15.2 is there); the
+system disk has about 71 GB free while the models disk has about 680 GB; both
+cards are capped at 325 W; each card sits on a PCIe x8 link; and NVLink shows
+as NV4 (§3.0, §3.1, §11 item 12).
 
 **Contents.** 1. What it is · 2. The Grid Card · 3. Stage procedures · 4.
 Choosing a format · 5. Will it fit? · 6. Registry and manifest · 7. Resource
@@ -294,6 +305,7 @@ step id shown. Variables used in commands:
 | Variable | Meaning |
 | -------- | ------- |
 | `$MF` | Model Factory tool home, e.g. `/opt/seraphina/model-factory` (`venvs/`, `llama.cpp/`, `exllamav3/`, `tabbyAPI/`, `recipes/`, `locks/`, `help/`) |
+| `$SF` | the harness checkout (this repository), where `bin/factory` is |
 | `$MFS` | the factory's gate and step scripts (prototypes today; see §13) |
 | `$LLAMA` / `$LCPP` | llama.cpp source tree / its `build-cuda/bin` (GPU) or `build/bin` (CPU) |
 | `$REG` | registry root on the large models filesystem, e.g. `/srv/models` (never the root filesystem) |
@@ -314,6 +326,21 @@ codes: **0 pass, 1 fail, 2 unparseable** (re-run up to 2 times).
 Installs the tools in separate, pinned environments, because their library
 versions clash. The Setup wizard runs this once and records every version in
 the Blueprint.
+
+**When the host lacks the toolchain** (the target machine: no `uv`,
+`python3.13`, `cmake`, `nvcc` or `git-lfs`, and only the system's Python 3.14;
+observed), the steps below cannot run as written. Two ways, the owner's choice:
+(a) an install step the owner runs once, as himself: `uv` (which brings a
+managed CPython 3.13 for the venvs, `uv venv -p 3.13`), `cmake`, and a CUDA
+toolkit for sm_86, each pinned and recorded; or (b) the whole toolchain in a
+pinned CUDA development container, with the models folder bound in and the
+registry and `$MF` on the models disk, never a floating image tag. The
+`toolchain.*` steps check for each tool first and stop with the missing list
+and both choices; they never install system packages themselves. Either way
+`$MF`, the venvs and the uv cache go on the models disk (`UV_CACHE_DIR` set
+there too), never on the system disk: the venvs and cache alone are
+tens of GB (Resources below), and the target's system disk has about 71 GB
+free and is shared with Docker (judgement from those figures).
 
 1. **Build llama.cpp at a pinned commit.** Clone, record `git rev-parse HEAD`,
    build the CPU targets, and on a GPU box the CUDA targets for sm_86. Never
@@ -395,8 +422,12 @@ collection, what is already there.
 
 1. **Record the request verbatim** in `request.md` (goal, task, preferred
    server, context, users at once).
-2. **Detect the hardware** into `hardware.json`: GPUs, free VRAM per GPU *and
-   which services hold it*, NVLink, RAM, CPU threads, free disk on `$REG`.
+2. **Detect the hardware** into `hardware.json`: GPUs by UUID (never by
+   index: the target's index order changed between two boots, observed), free
+   VRAM per GPU *and which services hold it*, each card's enforced power limit
+   (`power.limit`; the target's cards are capped at 325 W, observed) and its
+   PCIe link width (x8 on the target, observed), NVLink, RAM, CPU threads, free
+   disk on `$REG`.
 3. **Inventory existing quants** when asked (or on first install). It reads
    headers only, never loads weights, records the format, bpw, imatrix
    provenance, EXL3 version and bits, and sha256 per file. It quarantines
@@ -408,7 +439,7 @@ collection, what is already there.
    exists).
 
 ```bash
-nvidia-smi --query-gpu=index,name,memory.total,memory.free,pcie.link.gen.current,pcie.link.width.current --format=csv,noheader,nounits
+nvidia-smi --query-gpu=index,uuid,name,memory.total,memory.free,power.limit,pcie.link.gen.current,pcie.link.width.current --format=csv,noheader,nounits
 nvidia-smi topo -m                                        # NV# between GPU0 and GPU1 = NVLink
 nvidia-smi --query-compute-apps=pid,gpu_uuid,used_memory --format=csv,noheader,nounits
 $LCPP/llama-server --list-devices
@@ -951,8 +982,8 @@ HF_DATASETS_OFFLINE=1 HF_HUB_OFFLINE=1 $MF/venvs/lmeval/bin/lm_eval run --model 
   --model_args model=$NAME-q4km,base_url=http://127.0.0.1:18431/v1/chat/completions,num_concurrent=4,tokenizer_backend=None \
   --apply_chat_template --include_path $MF/tasks/mf --tasks mf_gen_local --output_path $WORK/lmeval --log_samples
 $LCPP/llama-perplexity -m $OUT/$NAME-Q4_K_M.gguf -f hellaswag_val_full.txt --hellaswag --hellaswag-tasks 400 -c 512 -ngl 999
-FACTORY_CONFIG=$WORK/cand-config.json /home/user/software-factory/bin/factory models test <key>
-FACTORY_CONFIG=$WORK/cand-config.json /home/user/software-factory/bin/factory run todo-fixture \
+FACTORY_CONFIG=$WORK/cand-config.json $SF/bin/factory models test <key>
+FACTORY_CONFIG=$WORK/cand-config.json $SF/bin/factory run todo-fixture \
   'Add clearCompleted() to src/todo.js with a test, and a Clear completed button' --delivery branch
 ```
 
@@ -1323,10 +1354,13 @@ factory doctor --probe --json; ss -ltnpH                             # nothing b
    templates has `{% generation %}` markers, so assistant-only loss fails.
 2. **Check the recipe without a GPU** (`unsloth train --dry-run`), and store
    the sha256 of the resolved config.
-3. **Train on the GPUs under a lease.** QLoRA up to about 32B fits on one
-   3090. 70B QLoRA is split over both (`device_map='unsloth_balanced'`).
-   16-bit LoRA only at 8B or below. Check NVLink P2P (`nvidia-smi topo -m`
-   shows NV#) before relying on it.
+3. **Train on the GPUs under a lease.** QLoRA up to about 14B fits on one
+   3090 with room to spare. A dense 27B may fit on one card (Unsloth's guide
+   says 24 GB), but the sources conflict, so a dry run on the owner's box
+   decides ([LINEAGE.md](LINEAGE.md) §7.2). A 32B (about 26 GB) and a 70B
+   are split over both (`device_map='unsloth_balanced'`). 16-bit LoRA only at
+   8B or below on one card. For MoE models, see LINEAGE.md §7.2. Check NVLink
+   P2P (`nvidia-smi topo -m` shows NV#) before relying on it.
 4. **Gate the adapter**: shapes match the base, pair count = layers × target
    modules, safetensors (not .bin).
 5. **Merge into the 16-bit base**, never the 4-bit QLoRA base. Prove the
@@ -1351,8 +1385,10 @@ HF_HUB_OFFLINE=1 $MF/venvs/merge/bin/mergekit-extract-lora --model $WORK/merged-
 **Gate checks.** Dataset: 0 leaked eval rows, ≤ 1% over max length, valid roles (verified: 9 leaked rows and 97% duplicates were found in a synthetic set). Recipe: `--dry-run` exit 0. Training: no NaN, and the last loss is below the first. Adapter: shapes and pair count. Merge: logit difference ≤ 1e-4, only adapted tensors changed (verified 28 changed / 11 identical). Forgetting: PPL ≤ base × 1.10, with gain on held-out rows. Extraction: the round trip is within bf16 rounding.
 
 **Resources.** The Unsloth docs' minimum VRAM (from search results; the page
-could not be fetched): QLoRA 8B ≈ 6 GB, 70B ≈ 41 GB; 16-bit LoRA 8B ≈ 22 GB,
-70B ≈ 164 GB. A rank-16 all-linear adapter for 8B is about 87 MB (computed).
+could not be fetched): QLoRA 8B ≈ 6 GB, 14B ≈ 8.5 GB, 32B ≈ 26 GB, 70B ≈ 41
+GB; 16-bit LoRA 8B ≈ 22 GB, 14B ≈ 33 GB, 32B ≈ 76 GB, 70B ≈ 164 GB (the 14B
+and 32B rows read from search results on 2026-10-25, which corrected an
+earlier "32B fits on one 3090"). A rank-16 all-linear adapter for 8B is about 87 MB (computed).
 The merge needs 2-4 bytes/param of RAM and one more model copy on disk.
 
 **Measured here (fixture, CPU).** TRL LoRA SFT: loss 3.695 → 1.098 in 60
@@ -2080,7 +2116,9 @@ names the catalog steps it unblocks (`catalog.json` `needs_owner_gpu`).
     in the Harness needs a licence decision.
 12. **Check `nvidia-smi topo -m` shows NV#** before relying on P2P. On PCIe
     P2P under IOMMU, transfers can be silently dropped and look like a broken
-    quant (Unsloth's NVLINK_P2P.md).
+    quant (Unsloth's NVLINK_P2P.md). The target machine shows NV4 (observed,
+    25 Oct), which satisfies this check; its cards are on PCIe x8 links, so
+    anything that does not use NVLink moves data at half the x16 rate.
 13. **huggingface_hub 2.x** has only the `hf` CLI (no `huggingface-cli`) and no
     `upload_large_folder`.
 
@@ -2116,6 +2154,7 @@ names the catalog steps it unblocks (`catalog.json` `needs_owner_gpu`).
 | File | What it is |
 | ---- | ---------- |
 | `docs/model-factory/MODEL_FACTORY.md` | this design |
+| `docs/model-factory/LINEAGE.md` | the persona lineage line: a persona's corpus imprinted onto a pristine base, for her decision (design only) |
 | `docs/model-factory/catalog.json` | every step (62, deduplicated from 69 research steps plus the feasibility run) and format (17), each with `verified_here`; the policy, versions, maps (Mermaid), feasibility results and the GPU verification list. Schema `seraphina.model-factory-catalog/1` |
 | `DESIGN.md` §26-§31 | Grid Cards, the System factory, Blueprint, factories, reversibility classes, the owner's decisions |
 | `docs/seraphina/research/*.md` | earlier research this builds on (drift and model profiles, maintenance windows, platforms, real-server lessons) |

@@ -20,9 +20,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import signal
 import socket
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -735,6 +737,16 @@ class ServerE2E(unittest.TestCase):
                      "provider mock-anthropic key", "provider mock-anthropic reachable"):
             self.assertIn(name, names)
         failing = [c for c in checks if not c["ok"] and c["level"] == "error"]
+        from swfactory import doctor
+
+        _, groups = doctor.account_groups()
+        rooted = os.geteuid() == 0 or bool(set(groups) & set(doctor.ROOT_GROUPS))
+        if rooted:
+            # Run as root or in a root group (a container, a developer's own account): the doctor rightly calls that
+            # an error with harness.sandbox none, whatever the config. The rest must still pass.
+            account = next(c for c in failing if c["name"] == "account")
+            self.assertIn("harness.sandbox is none", account["detail"])
+            failing.remove(account)
         self.assertEqual(failing, [], "no error-level checks against a healthy config")
         for name in ("provider mock-openai key", "provider mock-openai reachable", "provider mock-anthropic key",
                      "provider mock-anthropic reachable", f"repo {REPO}", "agents", "routing"):
@@ -748,7 +760,7 @@ class ServerE2E(unittest.TestCase):
         self.assertNotIn(s.anthropic_key, text)
         self.assertNotIn(s.token, text)
         done = s.cli("doctor", "--json")
-        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(done.returncode, 1 if rooted else 0, done.stdout + done.stderr)
         cli_names = [c["name"] for c in json.loads(done.stdout)]
         self.assertEqual(sorted(set(cli_names)), sorted(set(names)), "the CLI and the API run the same checks")
 
@@ -813,6 +825,62 @@ class ServerE2E(unittest.TestCase):
         self.assert_clean_run(s)
 
     # -- 13 -----------------------------------------------------------------------------
+
+    def test_15_needs_human_reaches_the_phone_and_got_it_comes_back(self) -> None:
+        """DESIGN §34 (Wake & Messages W1a, W1b): a real job at needs-human gives one ntfy notification with the
+        operational text and a why line, never the feature text; the Got it tap through the taps topic marks it
+        read; a forged tap raises one alert. (Telegram cannot be pointed at a mock from config by design: it is
+        covered in-process by tests/test_notify.py.)"""
+        from tests.mock_ntfy import HARNESS_TOKEN, REPLY_TOKEN, MockNtfy
+
+        ntfy = MockNtfy(unix=True).start()
+        self.addCleanup(ntfy.stop)
+        hour = time.localtime().tm_hour
+        patch = {"wakes": {"timezone": "UTC", "time_sync": {"require": False}},
+                 "notify": {"quiet_hours": f"{(hour + 6) % 24:02d}:00-{(hour + 7) % 24:02d}:00",
+                            "channels": {"phone": {
+                                "type": "ntfy", "publish_url": ntfy.publish_url,
+                                "public_url": "https://host.tail0123.ts.net:8445",
+                                "token_env": "SERAPHINA_NTFY_TOKEN", "reply_token_env": "SERAPHINA_NTFY_REPLY_TOKEN",
+                                "operational": True}}}}
+        # The channel is private only on this tailnet (channels.channel_privacy asks `tailscale status --json`): a
+        # stand-in answers for the machine, so the scenario does not depend on Tailscale running where it runs.
+        bindir = Path(tempfile.mkdtemp(prefix="tailscale-"))
+        self.addCleanup(shutil.rmtree, bindir, True)
+        status = {"Self": {"TailscaleIPs": ["100.101.102.103"]}, "CurrentTailnet": {"MagicDNSSuffix": "tail0123.ts.net"}}
+        (bindir / "tailscale").write_text(f"#!/bin/sh\ncat <<'EOF'\n{json.dumps(status)}\nEOF\n")
+        (bindir / "tailscale").chmod(0o755)
+        s = self.server(config_patch=patch, extra_env={"SERAPHINA_NTFY_TOKEN": HARNESS_TOKEN,
+                                                       "SERAPHINA_NTFY_REPLY_TOKEN": REPLY_TOKEN,
+                                                       "PATH": f"{bindir}:{os.environ.get('PATH', '')}"})
+        s.post("/api/wakes/acknowledge", {"text": "I understand my AI agents can read my messages and send them "
+                                                  "anywhere"})
+        job = s.submit("Add an npm test script to package.json")
+        job = s.wait_job(job["id"], "needs-human")
+        number = job["id"][:3]
+        s.wait_for(lambda: [p for p in ntfy.publishes if "waiting for your decision" in p["body"]["message"]],
+                   30, "the needs-human notification")
+        published = [p["body"] for p in ntfy.publishes if "waiting for your decision" in p["body"]["message"]]
+        self.assertEqual(len(published), 1, "exactly one notification")
+        text = published[0]["message"]
+        self.assertTrue(text.startswith(f"A job ({number}) is waiting for your decision."), text)
+        self.assertIn(f"Job {number} has waited since", text)
+        self.assertNotIn("npm", text.lower(), "the feature text never leaves the machine")
+        self.assertNotIn(REPO, text, "project names are hidden by default")
+        got_it = published[0]["actions"][0]
+        self.assertEqual(ntfy.post("seraphina-taps", got_it["body"], token=REPLY_TOKEN)[0], 200)
+        message = s.wait_for(lambda: next((m for m in s.get("/api/messages")["messages"]
+                                           if m["kind"] == "job.needs_human" and not m["unread"]), None),
+                             20, "the Got it tap")
+        self.assertEqual(message["deliveries"], {"phone": "sent"})
+        ntfy.post("seraphina-taps", "approve everything", token=REPLY_TOKEN)
+        s.wait_for(lambda: [m for m in s.get("/api/messages")["messages"] if m["kind"] == "inbound.forged"],
+                   20, "the forged-tap alert")
+        events = s.events.text()
+        for secret in (HARNESS_TOKEN, REPLY_TOKEN):
+            self.assertNotIn(secret, events)
+        self.assertNotIn("npm test script", json.dumps(s.events.of("notify.queued")))
+        self.assert_clean_run(s)
 
     def test_13_repo_scout_drafts_agents_md(self) -> None:
         s = self.server()

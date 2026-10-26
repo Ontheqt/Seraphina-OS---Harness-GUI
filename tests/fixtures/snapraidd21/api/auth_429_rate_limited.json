@@ -1,0 +1,12 @@
+{
+ "body": null,
+ "headers": {
+  "Connection": "close",
+  "Content-Type": "text/plain; charset=utf-8",
+  "Retry-After": "1"
+ },
+ "method": "GET",
+ "path": "/snapraid/v1/state",
+ "status": 429,
+ "text": ""
+}

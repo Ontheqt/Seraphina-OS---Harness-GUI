@@ -1,0 +1,67 @@
+version:13.0
+unixtime:1792928543
+time:2026-10-25 11:42:23
+command:list
+argv:0:/usr/local/bin/snapraid
+argv:1:-c
+argv:2:/etc/snapraid.conf
+argv:3:-l
+argv:4:/var/lib/seraphina-snapraid/runs/J-1/snapraid.log
+argv:5:list
+conf:file:/etc/snapraid.conf
+blocksize:65536
+data:d1:/mnt/disk1/
+data:d2:/mnt/disk2/
+data:d3:/mnt/disk3/
+mode:par2
+parity:0:/mnt/parity1/snapraid.parity
+2-parity:0:/mnt/parity2/snapraid.2-parity
+autosave:1000000000
+filter:exclude /lost+found/
+filter:exclude *.unrecoverable
+filter:exclude /seraphina-restored/
+filter:exclude /.seraphina-trash/
+content:/var/snapraid/snapraid.content
+msg:progress: Loading state from /var/snapraid/snapraid.content...
+msg:verbose:       30 files
+msg:verbose:        0 hardlinks
+msg:verbose:        0 symlinks
+msg:verbose:        2 empty dirs
+msg:progress: Listing...
+file:d1:docs/readme.txt:3000:1792928531:479208866:14
+file:d1:media/big.bin:2000000:1792928531:602360433:22
+file:d1:media/notes/a\db.txt:1500:1792928531:609042809:24
+file:d1:media/notes/back\\slash.txt:1600:1792928531:609215136:25
+file:d1:media/photos/img1.jpg:201000:1792928531:482360426:17
+file:d1:media/photos/img2.jpg:202000:1792928531:490360427:18
+file:d1:media/photos/img3.jpg:203000:1792928531:498360427:19
+file:d1:media/photos/img4.jpg:204000:1792928531:506360428:20
+file:d1:media/photos/img5.jpg:205000:1792928531:514360428:21
+file:d2:docs/readme.txt:3000:1792928531:609466720:14
+file:d2:media/big.bin:2000000:1792928531:730360441:22
+file:d2:media/notes/<img src=x onerror=alert(1)>.jpg:1700:1792928531:940414746:26
+file:d2:media/notes/a\db.txt:1500:1792928531:737459723:24
+file:d2:media/notes/back\\slash.txt:1600:1792928531:737689924:25
+file:d2:media/notes/invoice‮gpj.exe:1800:1792928531:940580243:27
+file:d2:media/notes/line\nbreak.txt:1900:1792928531:940740476:28
+file:d2:media/photos/img1.jpg:201000:1792928531:610360434:17
+file:d2:media/photos/img2.jpg:202000:1792928531:618360434:18
+file:d2:media/photos/img3.jpg:203000:1792928531:626360435:19
+file:d2:media/photos/img4.jpg:204000:1792928531:638360435:20
+file:d2:media/photos/img5.jpg:205000:1792928531:646360436:21
+file:d3:docs/readme.txt:3000:1792928531:738353077:13
+file:d3:media/big.bin:2000000:1792928531:934360453:21
+file:d3:media/notes/a\db.txt:1500:1792928531:940050785:23
+file:d3:media/notes/back\\slash.txt:1600:1792928531:940241272:24
+file:d3:media/photos/img1.jpg:201000:1792928531:742360442:16
+file:d3:media/photos/img2.jpg:202000:1792928531:754360442:17
+file:d3:media/photos/img3.jpg:203000:1792928531:766360443:18
+file:d3:media/photos/img4.jpg:204000:1792928531:782360444:19
+file:d3:media/photos/img5.jpg:205000:1792928531:794360445:20
+msg:status: 
+msg:status:       30 files, for 0 GB
+msg:status:        0 links
+summary:file_count:30
+summary:file_size:9068700
+summary:link_count:0
+summary:exit:ok

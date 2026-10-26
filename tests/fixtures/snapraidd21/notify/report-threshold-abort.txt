@@ -1,0 +1,31 @@
+INSTANCE: lab
+HOSTNAME: <host>
+HEALTH:  [pending]
+STATUS: Pending
+BAD BLOCKS: 0
+
+DATA DISKS
+d1 [??]     -
+d2 [??]     -
+
+PARITY DISKS
+parity [??]     -
+
+START NOTIFICATION: Completed successfully
+Duration: 0s
+
+SYNC: FAILED (2)
+!! Too many files were removed (25, limit is 20). Sync aborted.
+Duration: 0s
+I/O Errs: 0
+Data Errs: 0
+Soft Errors: 0
+
+ERRORS:
+- WARNING! UUID is unsupported for disks: 'd1'msg:error: , 'd2'msg:error: . Not using inodes to detect move operations.
+- Too many files were removed (25, limit is 20). Sync aborted.
+
+SCRUB: CANCELED
+!! The preceding sync operation failed with exit code 2
+Duration: 0s
+

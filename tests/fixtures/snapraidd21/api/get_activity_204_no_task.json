@@ -1,0 +1,10 @@
+{
+ "body": null,
+ "headers": {
+  "Connection": "close"
+ },
+ "method": "GET",
+ "path": "/snapraid/v1/activity",
+ "status": 204,
+ "text": ""
+}

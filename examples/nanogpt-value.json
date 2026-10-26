@@ -1,5 +1,5 @@
 {
-  "description": "All-API value routing through NanoGPT (one NANOGPT_API_KEY): Muse Spark 1.3 builds and escalates to GPT-6.1 Sol high, then xhigh, on CHANGES; four independent families review (Qwen3.8 Max security, GPT-6.1 Sol code, Claude Sonnet 5.5 UX, Gemini 4 Argon UI); Claude Opus 5.5 high writes the spec, approves and leads; MiMo V2.6 Pro scouts. Claude runs on NanoGPT's Anthropic-format endpoint, so adaptive thinking, effort and caching keep working. Prices from examples/prices/nanogpt-2026-10-21.json. Model ids are unverified: run factory doctor to check them.",
+  "description": "All-API value routing through NanoGPT (one NANOGPT_API_KEY): Muse Spark 1.3 builds and escalates to GPT-6.1 Sol high, then xhigh, on CHANGES; four independent families review (Qwen3.8 Max security, GPT-6.1 Sol code, Claude Sonnet 5.5 UX, Gemini 4 Argon UI); Claude Opus 5.5 high writes the spec, approves and leads; MiMo V2.6 Pro scouts. Once the builder is on GPT, MiMo V2.6 Pro takes the code lens (its independent alternate), so the four lenses stay four families. Claude runs on NanoGPT's Anthropic-format endpoint, so adaptive thinking, effort and caching keep working. Prices from examples/prices/nanogpt-2026-10-21.json. Model ids are unverified: run factory doctor to check them.",
   "providers": {
     "nanogpt": {
       "type": "openai",
@@ -260,8 +260,9 @@
       "model": "gpt-sol-high",
       "reason": {
         "kind": "stage-fit",
-        "text": "OpenAI family, independent of the builder; GPT-6.1 Sol at high reasoning"
-      }
+        "text": "OpenAI family, independent of the Meta builder; GPT-6.1 Sol at high reasoning (MiMo V2.6 Pro, Xiaomi, takes over when the builder escalates to GPT: a family no other lens uses)"
+      },
+      "independent_alternate": "mimo"
     },
     "reviewer-ux": {
       "model": "claude-sonnet",
@@ -282,7 +283,8 @@
       "reason": {
         "kind": "capability",
         "text": "the merge gate: independent judgment on Opus 5.5 high"
-      }
+      },
+      "independent_alternate": "gpt-sol-xhigh"
     },
     "lead": {
       "model": "claude-opus",

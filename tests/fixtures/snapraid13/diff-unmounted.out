@@ -1,0 +1,34 @@
+Loading state from /var/snapraid/snapraid.content...
+Comparing...
+move docs/readme.txt -> docs/readme-moved.txt
+update media/big.bin
+add media/new.bin
+remove docs/readme.txt
+remove media/photos/img1.jpg
+remove media/photos/img2.jpg
+remove media/photos/img3.jpg
+remove media/photos/img4.jpg
+remove media/photos/img5.jpg
+remove docs/readme.txt
+remove media/photos/img1.jpg
+remove media/photos/img2.jpg
+remove media/photos/img3.jpg
+remove media/photos/img4.jpg
+remove media/photos/img5.jpg
+remove media/big.bin
+remove media/notes/a:b.txt
+remove media/notes/back\\slash.txt
+WARNING! All the files previously present in disk 'd3' at dir '/mnt/disk3/'
+are now missing or have been rewritten!
+This could occur when some disks are not mounted
+in the expected directory.
+WARNING! UUID is unsupported for disks: 'd3'. Not using inodes to detect move operations.
+
+      13 equal
+       1 added
+      15 removed
+       1 updated
+       1 moved
+       0 copied
+       0 restored
+There are differences!

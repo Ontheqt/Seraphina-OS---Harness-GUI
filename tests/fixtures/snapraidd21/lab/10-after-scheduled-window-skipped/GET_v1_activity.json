@@ -1,0 +1,293 @@
+{
+ "body": null,
+ "headers": {
+  "Connection": "close",
+  "Content-Type": "application/json"
+ },
+ "json": {
+  "block_begin": 0,
+  "block_end": 500,
+  "block_idx": 0,
+  "blocks_count": 24,
+  "blocks_done": 1,
+  "command": "fix",
+  "cpu_usage": 0,
+  "elapsed_seconds": 0,
+  "error_data": 0,
+  "error_io": 0,
+  "error_recovered": 24,
+  "error_soft": 24,
+  "error_unrecoverable": 0,
+  "eta_seconds": 0,
+  "exit_code": 0,
+  "finished_at": "2026-10-25T15:02:37",
+  "health": "passed",
+  "high_command": "undelete",
+  "log_file": "/var/log/20261025-150237-fix.log",
+  "messages": [
+   {
+    "level": "info",
+    "text": "Self-test..."
+   },
+   {
+    "level": "info",
+    "text": "Loading state from /var/content/snapraid.content..."
+   },
+   {
+    "level": "info",
+    "text": "Loaded state in 0 seconds"
+   },
+   {
+    "level": "verbose",
+    "text": "364 files"
+   },
+   {
+    "level": "verbose",
+    "text": "0 hardlinks"
+   },
+   {
+    "level": "verbose",
+    "text": "0 symlinks"
+   },
+   {
+    "level": "verbose",
+    "text": "0 empty dirs"
+   },
+   {
+    "level": "info",
+    "text": "Searching disk d1..."
+   },
+   {
+    "level": "info",
+    "text": "Searching disk d2..."
+   },
+   {
+    "level": "info",
+    "text": "Selecting..."
+   },
+   {
+    "level": "verbose",
+    "text": "<missing>"
+   },
+   {
+    "level": "info",
+    "text": "Scanning disk d1..."
+   },
+   {
+    "level": "info",
+    "text": "Scanning disk d2..."
+   },
+   {
+    "level": "info",
+    "text": "Using 0 MiB of memory for the file-system."
+   },
+   {
+    "level": "info",
+    "text": "Initializing..."
+   },
+   {
+    "level": "info",
+    "text": "Selecting..."
+   },
+   {
+    "level": "info",
+    "text": "Fixing..."
+   },
+   {
+    "level": "info",
+    "text": "Missing file '/mnt/d1/docs/d1-docs-000.bin'."
+   },
+   {
+    "level": "info",
+    "text": "Missing file '/mnt/d1/docs/d1-docs-001.bin'."
+   },
+   {
+    "level": "info",
+    "text": "Missing file '/mnt/d1/docs/d1-docs-002.bin'."
+   },
+   {
+    "level": "info",
+    "text": "Missing file '/mnt/d1/docs/d1-docs-004.bin'."
+   },
+   {
+    "level": "info",
+    "text": "Missing file '/mnt/d1/docs/d1-docs-005.bin'."
+   },
+   {
+    "level": "info",
+    "text": "Missing file '/mnt/d1/docs/d1-docs-006.bin'."
+   },
+   {
+    "level": "info",
+    "text": "Missing file '/mnt/d1/docs/d1-docs-007.bin'."
+   },
+   {
+    "level": "info",
+    "text": "Missing file '/mnt/d1/docs/d1-docs-008.bin'."
+   },
+   {
+    "level": "info",
+    "text": "Missing file '/mnt/d1/docs/d1-docs-009.bin'."
+   },
+   {
+    "level": "info",
+    "text": "Missing file '/mnt/d1/docs/d1-docs-010.bin'."
+   },
+   {
+    "level": "info",
+    "text": "Missing file '/mnt/d1/docs/d1-docs-011.bin'."
+   },
+   {
+    "level": "info",
+    "text": "Missing file '/mnt/d1/docs/d1-docs-012.bin'."
+   },
+   {
+    "level": "info",
+    "text": "Missing file '/mnt/d1/docs/d1-docs-013.bin'."
+   },
+   {
+    "level": "info",
+    "text": "Missing file '/mnt/d1/docs/d1-docs-014.bin'."
+   },
+   {
+    "level": "info",
+    "text": "Missing file '/mnt/d1/docs/d1-docs-015.bin'."
+   },
+   {
+    "level": "info",
+    "text": "Missing file '/mnt/d1/docs/d1-docs-016.bin'."
+   },
+   {
+    "level": "info",
+    "text": "Missing file '/mnt/d1/docs/d1-docs-017.bin'."
+   },
+   {
+    "level": "info",
+    "text": "Missing file '/mnt/d1/docs/d1-docs-018.bin'."
+   },
+   {
+    "level": "info",
+    "text": "Missing file '/mnt/d1/docs/d1-docs-019.bin'."
+   },
+   {
+    "level": "info",
+    "text": "Missing file '/mnt/d1/docs/d1-docs-020.bin'."
+   },
+   {
+    "level": "info",
+    "text": "Missing file '/mnt/d1/docs/d1-docs-021.bin'."
+   },
+   {
+    "level": "info",
+    "text": "Missing file '/mnt/d1/docs/d1-docs-022.bin'."
+   },
+   {
+    "level": "info",
+    "text": "Missing file '/mnt/d1/docs/d1-docs-023.bin'."
+   },
+   {
+    "level": "info",
+    "text": "Missing file '/mnt/d1/docs/d1-docs-024.bin'."
+   },
+   {
+    "level": "info",
+    "text": ""
+   },
+   {
+    "level": "info",
+    "text": "24 soft errors"
+   },
+   {
+    "level": "info",
+    "text": "0 io errors"
+   },
+   {
+    "level": "info",
+    "text": "0 data errors"
+   },
+   {
+    "level": "info",
+    "text": "24 recovered errors"
+   },
+   {
+    "level": "info",
+    "text": "0 unrecoverable errors"
+   },
+   {
+    "level": "info",
+    "text": "Everything OK"
+   },
+   {
+    "level": "info",
+    "text": "Scanning..."
+   },
+   {
+    "level": "info",
+    "text": "Scanned d1 in 0 seconds"
+   },
+   {
+    "level": "info",
+    "text": "Scanned d2 in 0 seconds"
+   },
+   {
+    "level": "info",
+    "text": "Applying..."
+   },
+   {
+    "level": "error",
+    "text": "WARNING! UUID is unsupported for disks: 'd1'msg:error: , 'd2'msg:error: . Not using inodes to detect move operations.",
+    "type": "soft"
+   },
+   {
+    "level": "verbose",
+    "text": "364 equal"
+   },
+   {
+    "level": "verbose",
+    "text": "0 added"
+   },
+   {
+    "level": "verbose",
+    "text": "0 removed"
+   },
+   {
+    "level": "verbose",
+    "text": "0 updated"
+   },
+   {
+    "level": "verbose",
+    "text": "0 moved"
+   },
+   {
+    "level": "verbose",
+    "text": "0 copied"
+   },
+   {
+    "level": "verbose",
+    "text": "0 relocated"
+   },
+   {
+    "level": "verbose",
+    "text": "0 restored"
+   }
+  ],
+  "number": 29,
+  "progress": 100,
+  "pulse": {
+   "activity": 561,
+   "array": 117,
+   "config": 2,
+   "current_at": "2026-10-25T15:05:20",
+   "disks": 137,
+   "tasks": 488
+  },
+  "scheduled_at": "2026-10-25T15:02:35",
+  "size_done_bytes": 3422,
+  "speed_mbs": 0,
+  "started_at": "2026-10-25T15:02:37",
+  "status": "terminated"
+ },
+ "method": "GET",
+ "path": "/snapraid/v1/activity",
+ "status": 200
+}

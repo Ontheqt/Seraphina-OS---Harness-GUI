@@ -1,0 +1,1197 @@
+#!/usr/bin/python3 -I
+"""sf-snapraidd: Seraphina's link to the SnapRAID Daemon, and the daemon's report forwarder (DESIGN.md section 41;
+docs/seraphina/BACKUPS_SNAPRAID.md sections 3.2 and 7.1).
+
+The owner installs a copy at /usr/local/libexec/seraphina/sf-snapraidd (root, 0755). It has exactly three modes:
+
+- ``serve``, the link. systemd starts one instance per connection on /run/seraphina-snapraidd/link.sock
+  (seraphina-snapraidd.socket, Accept=yes; the instance runs as a dynamic user with the daemon's login as a systemd
+  credential). It reads one JSON request line (at most 16 KiB) from the socket and writes one JSON answer line:
+  {"ok": true, ...} or {"ok": false, "error": "<code>", "words": "<a plain sentence>"}. Its operations are info,
+  read, run, review, fixes, act and journal (the design's table in section 3.2); each may make only the daemon calls
+  that table names, and nothing else can be built (REQUESTS below; a test walks every operation).
+- ``notify result [--narrow] <level> <kind> <code> <subject>``, the forwarder: the daemon runs it after each report
+  (its ``notify_result``). It checks its arguments against the daemon's fixed sets, reads the report on standard
+  input to the end and throws it away (untrusted text with file names; no decision is taken from it), and posts
+  one event, {"kind": "parity.report", "subject": <kind>, "detail": "level=<level> code=<code>"}, to the harness's
+  hook API. ``notify test`` posts a test event. Exit 0 when the harness answered 2xx, else 1 (the daemon then shows
+  "Notification failed" on that report, which Seraphina reads from the task list).
+- ``explain``: for the owner running his own sudo, what the root-owned settings file
+  /etc/seraphina/snapraidd.json.new allows and every change from the installed one. Changes nothing.
+
+The daemon's login (HTTP Basic, ``user:password``) is read on every call to the daemon, from the systemd credential
+named by the settings (``credential``, default "basic", read from $CREDENTIALS_DIRECTORY) or from a root-only file
+(``credential_file``), and goes only into that call's Authorization header: never logged, printed, returned or
+written. The harness never holds it (design section 3.2, D7): the same login could switch the daemon's freeze off.
+
+What it never does: no shell; no daemon URL, path or query from the caller; no ``/schedule``, no config change, no
+``/clear``, ``/report``, ``/refresh`` or ``/suspend_idle``; never an action outside its settings' allow classes;
+never an action after a refusal of the checks in design section 2.4, without every fact its binding names
+(REQUIRED_BINDING), or with a binding that no longer holds; never a second send of one approval (its intent line in
+actions.jsonl refuses another act with the same id), so never an action again after an unknown outcome (DESIGN.md
+section 40); never a POST later than SEND_DEADLINE seconds into its instance, so nothing is sent after the harness
+has stopped waiting (its own wait is longer than the unit's RuntimeMaxSec); never an undelete across two disks
+(the daemon would bring back every chosen name on every chosen disk); never passes on a file name except through
+review, fixes and run (a page at a time, for the cockpit); never the daemon's notify or hook commands, a device
+node, a serial or a label.
+
+Standard library only; never imported by the harness (the tests load it by path).
+"""
+
+from __future__ import annotations
+
+import base64
+import contextlib
+import dataclasses
+import hashlib
+import http.client
+import json
+import os
+import pwd
+import re
+import socket
+import stat
+import struct
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable
+
+VERSION = 1
+PHASE = "P3"
+MAX_REQUEST = 16 * 1024
+PAGE = 500
+MAX_DIFFS = 100000            # the most changed files the daemon keeps in memory (daemon/state.h:330)
+MAX_FILTERS = 1000            # paths per undelete approval
+MAX_PATH = 4096               # the system's path limit (PATH_MAX); the daemon refuses a longer filter with 400
+MAX_REPORT = 1 << 20          # the forwarder reads at most this much of a report, and keeps none of it
+CONNECT_TIMEOUT = 2.0
+READ_TIMEOUT = 15.0
+HOOK_CONNECT_TIMEOUT = 1.0
+HOOK_TOTAL_TIMEOUT = 3.0
+RESTART_SLACK = 10.0          # a move of the daemon's start time by more than this is a restart
+JOURNAL_KEEP = 50
+SEND_DEADLINE = 35.0          # no POST after this many seconds of the instance: with its own 2 + 15 s it ends
+                              # before the unit's RuntimeMaxSec (60), which the harness outwaits (snapraidd.ACT_TIMEOUT)
+MAX_MESSAGES = 100000         # a whole task's messages, read only to find the daemon's own "Stop requested"
+STOP_REQUESTED = "Stop requested"
+NOTIFICATION_FAILED = "Notification failed (check syslog for details)"
+
+# ---------------------------------------------------------------- fixed locations (section 3.2)
+LINK = "/usr/local/libexec/seraphina/sf-snapraidd"
+CONFIG = "/etc/seraphina/snapraidd.json"
+CREDENTIAL_FILE = "/etc/seraphina/snapraidd-basic.cred"
+HOOK_HEADER = "/etc/seraphina/snapraidd-hook.header"
+STATE = "/var/lib/seraphina-snapraidd"
+CONFIG_KEYS = ("v", "caller", "allow", "daemon", "hook", "credential", "credential_file")
+ALLOW_CLASSES = ("read", "act", "accept")
+DAEMON_RE = re.compile(r"^http://(?:127\.0\.0\.1|\[::1\]):([0-9]{1,5})$")
+HOOK_RE = re.compile(r"^http://(?:127\.0\.0\.1|\[::1\]):([0-9]{1,5})/api/hooks/event$")
+CREDENTIAL_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+USER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+
+# Every request the link can make: (method, path) and the query keys each may carry, which the link fills itself.
+REQUESTS: dict[tuple[str, str], tuple[str, ...]] = {
+    ("GET", "/metrics"): (),
+    ("GET", "/snapraid/v1/state"): (),
+    ("GET", "/snapraid/v1/tasks"): ("limit_history", "limit_messages"),
+    ("GET", "/snapraid/v1/activity"): ("limit_messages",),
+    ("GET", "/snapraid/v1/array"): ("limit_diffs", "limit_fixes"),
+    ("GET", "/snapraid/v2/disks"): (),
+    ("GET", "/snapraid/v2/config"): (),
+    ("POST", "/snapraid/v1/stop"): (),
+    ("POST", "/snapraid/v1/hold_off"): (),
+    ("POST", "/snapraid/v1/maintenance"): (),
+    ("POST", "/snapraid/v1/undelete"): (),
+    ("POST", "/snapraid/v1/heal"): (),
+}
+ACTIONS = ("stop", "hold_off", "maintenance", "undelete", "heal")
+OPS: dict[str, tuple[str, tuple[str, ...]]] = {   # op: (allow class, the fields it takes)
+    "info": ("read", ()), "read": ("read", ("what",)), "run": ("read", ("number",)),
+    "review": ("read", ("disk", "change", "q", "offset")), "fixes": ("read", ("offset",)),
+    "act": ("act", ("approval", "action", "body", "expect")), "journal": ("read", ("limit",)),
+}
+READS = ("state", "tasks", "activity", "array", "disks", "config")
+CHANGES = ("removed", "updated", "added", "moved", "copied", "relocated", "restored")
+DIFF_KEYS = tuple(f"diff_{change}" for change in ("equal", *CHANGES))
+BAD_HEALTH = ("degraded", "prefail", "failing")
+HEALTHS = ("pending", "passed", "corrupt", "degraded", "prefail", "failing")
+# The daemon's own fixed cancel and failure messages, copied from its source (daemon/runner.c:103, 582, 596, 840-1140,
+# 1632-1678, 1704-1718, 2219, 2265; elem.c:353): passed on; any other exit_msg is not
+FIXED_MESSAGES = re.compile(
+    r"^(?:The preceding [a-z_]{1,20} operation (?:failed with exit code -?[0-9]{1,4}|was canceled|was signaled with "
+    r"signal [A-Z0-9]{1,16}\(-?[0-9]{1,3}\)|failed to execute|failed during the (?:pre|post)-hook)"
+    r"|The [a-z_]{1,20} operation was canceled during report notification"
+    r"|Array is (?:DEGRADED! Task aborted!|in PREFAIL! Task aborted!|FAILING!!! Task aborted!!!)"
+    r"|Canceled by user request|Canceled before shutdown|Notification failed \(check syslog for details\)"
+    r"|Stop requested|Pre-hook aborted because the system is shutting down"
+    r"|The docker executable was not found(?: while unpausing containers)?|Failed to (?:inspect|pause|unpause) docker "
+    r"containers|The (?:pre|post)_run_script terminated with (?:exit code -?[0-9]{1,4}|signal [A-Z0-9]{1,16}"
+    r"\(-?[0-9]{1,3}\)))$")
+TASK_FIELDS = ("number", "command", "high_command", "status", "health", "exit_code", "exit_sig", "scheduled_at",
+               "started_at", "finished_at", "progress", "eta_seconds", "elapsed_seconds", "error_io", "error_data",
+               "error_soft")
+STATE_FIELDS = ("health", "health_reason", "active_command", "next_command", "progress", "eta_seconds")
+ARRAY_FIELDS = ("blocks_bad", "blocks_count", "blocks_rehash", "blocks_unscrubbed", "blocks_unsynced",
+                "block_size_bytes", "files_count", "data_disks_count", "parity_disks_count", "extra_disks_count",
+                "free_space_bytes", "total_space_bytes", "health", "hold_off", "engine_version", "daemon_version",
+                *DIFF_KEYS, "fix_recovered", "fix_unrecoverable", "last_command", "last_command_at", "last_sync_at",
+                "last_scrub_at", "last_diff_at")
+CONFIG_FIELDS = ("maintenance_schedule", "sync_threshold_deletes", "sync_threshold_updates", "sync_prehash",
+                 "sync_prevent_truncations", "scrub_percentage", "scrub_older_than", "touch_zero_subseconds",
+                 "probe_interval_minutes", "spindown_idle_minutes", "notify_result_level", "notify_syslog_enabled",
+                 "notify_syslog_level", "notify_differences", "check_updates", "config_full_access")
+REASONS = {
+    "bad_request": "The request could not be read.",
+    "not_allowed": "Seraphina may only read the protection service. The link's settings allow no more.",
+    "auth_off": "The protection service accepts commands without a password. Seraphina will not use it until it "
+                "has one.",
+    "engine_too_old": "The protection service runs SnapRAID {version}, which it cannot drive. Nothing was sent.",
+    "changed": "Something changed since you looked. Look again.",
+    "health": "See to the disk first: the protection service would cancel this run.",
+    "not_running": "The protection service is not answering.",
+    "used": "This go-ahead was already sent once. Nothing was sent again. Look again for a fresh one.",
+    "no_binding": "The request does not say what you were shown. Nothing was sent. Look again.",
+    "too_slow": "The protection service answered too slowly. Nothing was sent. Look again.",
+    "one_disk": "Files come back one disk at a time. Nothing was sent.",
+}
+# The facts each action's approval must bind (design section 6.1's table); the link refuses an act without any of
+# them, so nothing can send an action bound to nothing. "accept" is a maintenance with ignore_thresholds.
+REQUIRED_BINDING = {
+    "stop": ("started_at", "active_number"),
+    "hold_off": ("started_at", "schedule", "hold_off"),
+    "maintenance": ("started_at", "thresholds", "prevent_truncations", "nothing_queued", "health"),
+    "accept": ("started_at", "thresholds", "prevent_truncations", "nothing_queued", "scan"),
+    "undelete": ("started_at", "scan", "health"),
+    "heal": ("started_at", "blocks_bad", "health"),
+}
+NOTIFY_LEVELS = ("critical", "error", "warning", "info")
+NOTIFY_KINDS = ("maintenance", "heal", "undelete", "refresh", "report")
+NOTIFY_SUBJECT_RE = re.compile(r"^\[(?:CRITICAL|ERROR|WARNING|INFO)\] SnapRAID [A-Za-z ]{1,40}$")
+
+
+class Refused(Exception):
+    """A request the link will not carry out: a code and a plain sentence."""
+
+    def __init__(self, code: str, words: str | None = None, **extra: Any) -> None:
+        super().__init__(words or REASONS.get(code, code))
+        self.code = code
+        self.words = words or REASONS.get(code, code)
+        self.extra = extra
+
+
+class Transport(Exception):
+    """A daemon call with no answer: kind "never_left" (the connection was never made) or "unknown" (the request
+    may have been read: a reset, an end of stream or a timeout after sending)."""
+
+    def __init__(self, kind: str, words: str) -> None:
+        super().__init__(words)
+        self.kind = kind
+        self.words = words
+
+
+def now_iso(when: float | None = None) -> str:
+    return datetime.fromtimestamp(time.time() if when is None else when, timezone.utc) \
+        .isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+# ---------------------------------------------------------------- where everything is
+
+
+@dataclasses.dataclass(frozen=True)
+class Paths:
+    """Every location the link reads or writes; the tests build one in a temporary tree (Paths.under)."""
+
+    link: str = LINK
+    config: str = CONFIG
+    credential_file: str = CREDENTIAL_FILE
+    hook_header: str = HOOK_HEADER
+    state: str = STATE
+
+    @classmethod
+    def under(cls, root: str | os.PathLike, **changes: Any) -> Paths:
+        base = str(root).rstrip("/")
+        moved = {field.name: base + getattr(cls, field.name) for field in dataclasses.fields(cls)}
+        moved.update(changes)
+        return cls(**moved)
+
+
+def path_problems(path: str, lstat: Callable[[str], Any] = os.lstat, secret: bool = False) -> list[str]:
+    """Why path is not a safe root-owned file: it and every folder above it owned by root and writable by nobody
+    else (as the reader checks its own, DESIGN §41); with secret, the file readable by root only too."""
+    problems: list[str] = []
+    parts = [part for part in path.split("/") if part]
+    for index in range(len(parts), -1, -1):
+        current = "/" + "/".join(parts[:index])
+        try:
+            info = lstat(current)
+        except FileNotFoundError:
+            if current == path:
+                problems.append(f"{current} does not exist")
+                break
+            continue
+        except OSError as exc:
+            problems.append(f"{current} cannot be checked ({exc.strerror})")
+            continue
+        if info.st_uid != 0:
+            problems.append(f"{current} is not owned by root")
+        elif stat.S_ISLNK(info.st_mode) and current == path:
+            problems.append(f"{current} is a symbolic link")
+        elif info.st_mode & 0o022 and not (stat.S_ISDIR(info.st_mode) and info.st_mode & stat.S_ISVTX):
+            problems.append(f"{current} can be changed by users other than root")
+        elif secret and current == path and info.st_mode & 0o077:
+            problems.append(f"{current} can be read by users other than root")
+    return problems
+
+
+def check_config(cfg: Any) -> list[str]:
+    """The link's own settings ({v, caller, allow, daemon, hook, credential | credential_file}): what is wrong."""
+    if not isinstance(cfg, dict):
+        return ["the link's settings are not a JSON object"]
+    problems = []
+    unknown = sorted(set(cfg) - set(CONFIG_KEYS))
+    if unknown:
+        problems.append(f"the link's settings have keys it does not know: {', '.join(unknown)}")
+    if cfg.get("v") != 1:
+        problems.append("the link's settings must say \"v\": 1")
+    if not isinstance(cfg.get("caller"), str) or not USER_RE.fullmatch(cfg["caller"]):
+        problems.append("caller must be the harness's user name")
+    allow = cfg.get("allow")
+    if not isinstance(allow, list) or "read" not in allow or not set(allow) <= set(ALLOW_CLASSES) or \
+            ("accept" in allow and "act" not in allow):
+        problems.append("allow must be a list holding \"read\", optionally \"act\", and \"accept\" only with \"act\"")
+    if not isinstance(cfg.get("daemon"), str) or not DAEMON_RE.fullmatch(cfg["daemon"]):
+        problems.append("daemon must be http://127.0.0.1:<port> or http://[::1]:<port>")
+    hook = cfg.get("hook")
+    if hook is not None and (not isinstance(hook, dict) or set(hook) - {"url", "header_file"} or
+                             not isinstance(hook.get("url"), str) or not HOOK_RE.fullmatch(hook["url"]) or
+                             hook.get("header_file", HOOK_HEADER) != HOOK_HEADER):
+        problems.append(f"hook must be {{\"url\": \"http://127.0.0.1:<port>/api/hooks/event\", \"header_file\": "
+                        f"\"{HOOK_HEADER}\"}}")
+    if "credential" in cfg and "credential_file" in cfg:
+        problems.append("name either credential (a systemd credential) or credential_file, not both")
+    if "credential" in cfg and (not isinstance(cfg["credential"], str) or
+                                not CREDENTIAL_NAME_RE.fullmatch(cfg["credential"])):
+        problems.append("credential must be a systemd credential's name")
+    if "credential_file" in cfg and cfg["credential_file"] != CREDENTIAL_FILE:
+        problems.append(f"credential_file can only be {CREDENTIAL_FILE}")
+    return problems
+
+
+def read_json(path: str) -> Any:
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    with os.fdopen(fd, "rb") as handle:
+        try:
+            return json.loads(handle.read(1 << 20).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return None
+
+
+def file_sha256(path: str) -> str | None:
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+# ---------------------------------------------------------------- the login
+
+
+def basic_header(cfg: dict, paths: Paths, env: dict, lstat: Callable[[str], Any] = os.lstat) -> str:
+    """The Authorization header, read afresh on every call: from the systemd credential cfg names (default "basic")
+    under $CREDENTIALS_DIRECTORY, or from the root-only file credential_file. One line, user:password. Refused with
+    no_credential (never with any of its contents) when it cannot be read."""
+    if cfg.get("credential_file"):
+        problems = path_problems(paths.credential_file, lstat, secret=True)
+        if problems:
+            raise Refused("no_credential", "The protection service's password file is not safe: " + problems[0] + ".")
+        where = paths.credential_file
+    else:
+        folder = env.get("CREDENTIALS_DIRECTORY") or ""
+        if not folder.startswith("/"):
+            raise Refused("no_credential", "The link was started without the protection service's password (its "
+                                           "systemd credential).")
+        where = os.path.join(folder, str(cfg.get("credential") or "basic"))
+    try:
+        fd = os.open(where, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, "rb") as handle:
+            raw = handle.read(4097)
+    except OSError:
+        raise Refused("no_credential", "The protection service's password cannot be read.") from None
+    try:
+        line = raw.decode("utf-8").strip("\r\n")
+    except UnicodeDecodeError:
+        raise Refused("no_credential", "The protection service's password is not text.") from None
+    if len(raw) > 4096 or "\n" in line or ":" not in line or not line.split(":", 1)[0]:
+        raise Refused("no_credential", "The protection service's password must be one line, user:password.")
+    return "Basic " + base64.b64encode(line.encode("utf-8")).decode("ascii")
+
+
+# ---------------------------------------------------------------- the daemon client
+
+
+@dataclasses.dataclass
+class Reply:
+    status: int
+    headers: dict
+    data: bytes
+
+    def json(self) -> Any:
+        try:
+            return json.loads(self.data.decode("utf-8")) if self.data else None
+        except (ValueError, UnicodeDecodeError):
+            return None
+
+
+class DaemonClient:
+    """HTTP to the daemon on loopback, one connection per request (it closes each), 2 s to connect and 15 s to read.
+    Only REQUESTS can be made; header is called for each authenticated request and its value goes into that
+    request's header only."""
+
+    def __init__(self, base: str, header: Callable[[], str], connect_timeout: float = CONNECT_TIMEOUT,
+                 read_timeout: float = READ_TIMEOUT) -> None:
+        match = DAEMON_RE.fullmatch(base)
+        if not match:
+            raise Refused("bad_config", "The daemon's address must be on this machine.")
+        self.host = "::1" if base.startswith("http://[") else "127.0.0.1"
+        self.port = int(match.group(1))
+        self.header = header
+        self.connect_timeout = connect_timeout
+        self.read_timeout = read_timeout
+        self.sent: list[tuple[str, str]] = []      # (method, path with query) of every request made
+
+    def request(self, method: str, path: str, query: dict | None = None, body: dict | None = None,
+                auth: bool = True) -> Reply:
+        allowed = REQUESTS.get((method, path))
+        if allowed is None or set(query or {}) - set(allowed):
+            raise RuntimeError("a request outside the link's table")      # the link's own bug, never sent
+        target = path
+        if query:
+            for key, value in query.items():
+                if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= MAX_DIFFS:
+                    raise RuntimeError("a query value outside the link's table")
+            target += "?" + "&".join(f"{key}={value}" for key, value in query.items())
+        headers = {"Accept": "application/json", "User-Agent": "sf-snapraidd/1"}
+        data = None
+        if method == "POST":
+            data = json.dumps(body or {}, separators=(",", ":")).encode("utf-8")
+            headers.update({"Content-Type": "application/json", "Content-Length": str(len(data))})
+        if auth and path != "/metrics":
+            headers["Authorization"] = self.header()
+        conn = http.client.HTTPConnection(self.host, self.port, timeout=self.connect_timeout)
+        try:
+            try:
+                conn.connect()
+            except OSError as exc:
+                raise Transport("never_left", f"the protection service could not be reached "
+                                              f"({type(exc).__name__})") from None
+            conn.sock.settimeout(self.read_timeout)
+            self.sent.append((method, target))
+            try:
+                conn.request(method, target, body=data, headers=headers)
+                response = conn.getresponse()
+                payload = response.read(64 << 20)
+            except (OSError, http.client.HTTPException) as exc:
+                raise Transport("unknown", f"no answer after the request was sent ({type(exc).__name__})") from None
+            return Reply(response.status, {k.lower(): v for k, v in response.getheaders()}, payload)
+        finally:
+            headers.pop("Authorization", None)
+            conn.close()
+
+    def get_json(self, path: str, query: dict | None = None, auth: bool = True) -> Any:
+        """A read: its JSON, or None for 204; Refused for any other status (reads change nothing, so a failed one
+        is simply asked again at the next read)."""
+        try:
+            reply = self.request("GET", path, query, auth=auth)
+        except Transport as exc:
+            raise Refused("not_running", "The protection service is not answering: " + exc.words + ".") from None
+        if reply.status == 204:
+            return None
+        if reply.status == 401:
+            raise Refused("login_refused", "The protection service refused the link's password.")
+        if reply.status == 429:
+            raise Refused("busy", "The protection service asked the link to wait a second.",
+                          retry_after=_retry_after(reply))
+        if reply.status != 200:
+            raise Refused("daemon_error", f"The protection service answered {reply.status} to a read.")
+        value = reply.json()
+        if value is None:
+            raise Refused("daemon_error", "The protection service's answer could not be read.")
+        return value
+
+    def metrics(self) -> dict:
+        """/metrics (no login): the uptime and the versions the link needs."""
+        try:
+            reply = self.request("GET", "/metrics", auth=False)
+        except Transport as exc:
+            raise Refused("not_running", "The protection service is not answering: " + exc.words + ".") from None
+        if reply.status != 200:
+            raise Refused("daemon_error", f"The protection service answered {reply.status} to /metrics.")
+        out: dict[str, Any] = {}
+        for line in reply.data.decode("utf-8", "replace").split("\n"):
+            match = re.fullmatch(r"snapraid_daemon_uptime_seconds ([0-9.]+)", line.strip())
+            if match:
+                out["uptime"] = float(match.group(1))
+            match = re.fullmatch(r'snapraid_build_info\{daemon_version="([^"]*)",engine_version="([^"]*)"\} 1',
+                                 line.strip())
+            if match:
+                out["daemon_version"], out["engine_version"] = match.group(1), match.group(2)
+            match = re.fullmatch(r"snapraid_config_hold_off ([01])", line.strip())
+            if match:
+                out["hold_off"] = match.group(1) == "1"
+        return out
+
+
+def _retry_after(reply: Reply) -> int:
+    with contextlib.suppress(ValueError, TypeError):
+        return max(1, min(5, int(reply.headers.get("retry-after", "1"))))
+    return 1
+
+
+def engine_ok(version: Any) -> bool:
+    """The engine is 15 or newer (an empty or missing version is too old)."""
+    match = re.match(r"^([0-9]{1,3})\.", str(version or "") + ".")
+    return bool(match) and int(match.group(1)) >= 15
+
+
+# ---------------------------------------------------------------- what is passed on (section 3.6)
+
+
+def task_view(task: dict) -> dict:
+    """A task's typed fields; its exit_msg only when it is one of the daemon's fixed messages; notify_failed when the
+    daemon's fixed fatal message says its report could not be delivered (fatal messages are listed even with
+    limit_messages=0, rest.c:2234-2245; the exit_msg is serialized only for a cancelled task)."""
+    out = {key: task.get(key) for key in TASK_FIELDS if task.get(key) is not None}
+    message = task.get("exit_msg")
+    if isinstance(message, str) and FIXED_MESSAGES.fullmatch(message):
+        out["exit_msg"] = message
+    elif message:
+        out["exit_msg_hidden"] = True
+    if any(isinstance(m, dict) and m.get("level") == "fatal" and m.get("text") == NOTIFICATION_FAILED
+           for m in task.get("messages") or []):
+        out["notify_failed"] = True
+    return out
+
+
+def tasks_view(data: dict) -> dict:
+    return {key: [task_view(task) for task in data.get(key) or [] if isinstance(task, dict)]
+            for key in ("pending", "active", "history")}
+
+
+def array_view(data: dict) -> dict:
+    return {key: data.get(key) for key in ARRAY_FIELDS if key in data}
+
+
+def disks_view(data: dict) -> list[dict]:
+    out = []
+    for group, role in (("data_disks", "data"), ("parity_disks", "parity"), ("extra_disks", "extra")):
+        for disk in data.get(group) or []:
+            if not isinstance(disk, dict):
+                continue
+            devices = [{"health": dev.get("health"), "power": dev.get("power"), "rotational": dev.get("rotational"),
+                        "smart": {key: bool((dev.get("smart") or {}).get(key)) for key in
+                                  ("failing", "prefail", "error_logged", "prefail_logged", "selftest_error_logged")}}
+                       for dev in disk.get("devices") or [] if isinstance(dev, dict)]
+            out.append({"name": disk.get("name"), "role": role, "health": disk.get("health"),
+                        "free_space_bytes": disk.get("free_space_bytes"),
+                        "total_space_bytes": disk.get("total_space_bytes"), "error_io": disk.get("error_io"),
+                        "error_data": disk.get("error_data"), "devices": devices})
+    return out
+
+
+def config_view(data: dict) -> dict:
+    out = {key: data.get(key) for key in CONFIG_FIELDS if key in data}
+    result = str(data.get("notify_result") or "")
+    out["notify_result_is_forwarder"] = result.startswith(LINK + " notify result")
+    out["notify_result_set"] = bool(result)
+    out["notify_run_as_user_blank"] = not str(data.get("notify_run_as_user") or "")
+    out["hook_script_set"] = bool(str(data.get("hook_script") or ""))
+    return out
+
+
+# ---------------------------------------------------------------- undelete patterns (section 6.10)
+
+
+def check_rel_path(value: Any) -> str:
+    """A path on one disk, relative to its root: no empty, '.' or '..' component, no NUL or newline, shorter than
+    the system's path limit."""
+    if not isinstance(value, str) or not value or len(value.encode("utf-8")) >= MAX_PATH:
+        raise Refused("bad_path", "A chosen path is empty or too long.")
+    if any(char in value for char in "\0\n\r"):
+        raise Refused("bad_path", "A chosen path holds a control character.")
+    parts = value.strip("/").split("/")
+    if not value.strip("/") or any(part in ("", ".", "..") for part in parts):
+        raise Refused("bad_path", "A chosen path has an empty, '.' or '..' part.")
+    return value.strip("/")
+
+
+def pattern_of(path: str, folder: bool = False) -> str:
+    """SnapRAID 15.1's filter for exactly this path: '/' (anchored at the disk's root), every backslash, '*', '?',
+    '[' and ']' preceded by a backslash, and a final '/' for a folder."""
+    escaped = re.sub(r"([\\*?\[\]])", r"\\\1", check_rel_path(path))
+    return "/" + escaped + ("/" if folder else "")
+
+
+# ---------------------------------------------------------------- the link
+
+
+class Link:
+    """One request. paths: where everything is; env: the process environment (CREDENTIALS_DIRECTORY,
+    STATE_DIRECTORY); peer_uid: the caller's uid from SO_PEERCRED; lstat: how ownership is read (the tests fake
+    root); uid_of: a user name's uid; sleep, clock: injectable."""
+
+    def __init__(self, paths: Paths | None = None, env: dict | None = None, peer_uid: int | None = None,
+                 lstat: Callable[[str], Any] = os.lstat, uid_of: Callable[[str], int | None] | None = None,
+                 sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.time) -> None:
+        self.paths = paths or Paths()
+        self.env = dict(os.environ if env is None else env)
+        self.peer_uid = peer_uid
+        self.lstat = lstat
+        self.uid_of = uid_of or _uid_of
+        self.sleep = sleep
+        self.clock = clock
+        self.cfg: dict = {}
+        self.client: DaemonClient | None = None
+        self.started = clock()
+
+    # -- the request -----------------------------------------------------------------------------------
+
+    def handle(self, line: bytes) -> tuple[int, dict]:
+        self.started = self.clock()
+        try:
+            self.cfg = self.setup()
+            request = self.parse_request(line)
+            return 0, self.dispatch(request)
+        except Refused as exc:
+            return 2, {"ok": False, "error": exc.code, "words": exc.words, **exc.extra}
+        except Exception as exc:  # noqa: BLE001 - its own failure: one line, exit 1, never the credential
+            return 1, {"ok": False, "error": "failed", "words": f"The link failed: {type(exc).__name__}."}
+
+    def setup(self) -> dict:
+        """Its installation (the program and its settings root-owned, writable by nobody else), its settings, and
+        the caller: the socket's peer must be the configured user."""
+        problems = path_problems(self.paths.link, self.lstat) + path_problems(self.paths.config, self.lstat)
+        if problems:
+            raise Refused("unsafe_install", problems[0][:1].upper() + problems[0][1:] + ".")
+        cfg = read_json(self.paths.config)
+        shape = check_config(cfg)
+        if shape:
+            raise Refused("unsafe_install", "Its settings cannot be used: " + "; ".join(shape))
+        expected = self.uid_of(cfg["caller"])
+        if self.peer_uid is None or expected is None or self.peer_uid != expected:
+            raise Refused("wrong_caller", "Only Seraphina's own user may use the link.")
+        return cfg
+
+    def parse_request(self, line: bytes) -> dict:
+        if len(line) > MAX_REQUEST:
+            raise Refused("bad_request", "The request is longer than 16 KiB.")
+        try:
+            text = line.decode("utf-8", "strict")
+        except UnicodeDecodeError:
+            raise Refused("bad_request", "The request is not UTF-8 text.") from None
+        if text.count("\n") > 1 or (text.count("\n") == 1 and not text.endswith("\n")):
+            raise Refused("bad_request", "The request must be one line.")
+        try:
+            request = json.loads(text, object_pairs_hook=_no_repeats)
+        except ValueError:
+            raise Refused("bad_request", "The request is not JSON.") from None
+        if not isinstance(request, dict):
+            raise Refused("bad_request", "The request must be a JSON object.")
+        version = request.get("v")
+        if not isinstance(version, int) or isinstance(version, bool) or version != VERSION:
+            raise Refused("bad_request", "The request must say \"v\": 1.")
+        op = request.get("op")
+        if op not in OPS:
+            raise Refused("unknown_op", f"{str(op)[:40]!r} is not something the link does.")
+        unknown = sorted(str(key) for key in request if key not in set(OPS[op][1]) | {"v", "op"})
+        if unknown:
+            raise Refused("unknown_field", f"{op} does not take {', '.join(unknown)[:120]}.")
+        for key in OPS[op][1]:
+            if key in request:
+                check_field(key, request[key])
+        return request
+
+    def dispatch(self, request: dict) -> dict:
+        op = request["op"]
+        if OPS[op][0] not in self.cfg["allow"]:
+            raise Refused("not_allowed")
+        if op == "journal":
+            return self.op_journal(request)
+        self.client = DaemonClient(self.cfg["daemon"], lambda: basic_header(self.cfg, self.paths, self.env,
+                                                                             self.lstat))
+        if op == "info":
+            return self.op_info()
+        self.require_login()
+        return getattr(self, "op_" + op)(request)
+
+    def require_login(self) -> None:
+        """Section 2.4: the daemon's login must be on: an unauthenticated /state must be 401 (a request without a
+        header is refused before the daemon's rate limit, so this never causes a 429)."""
+        try:
+            reply = self.client.request("GET", "/snapraid/v1/state", auth=False)
+        except Transport as exc:
+            raise Refused("not_running", "The protection service is not answering: " + exc.words + ".") from None
+        if reply.status == 200:
+            raise Refused("auth_off")
+        if reply.status != 401:
+            raise Refused("daemon_error", f"The protection service answered {reply.status} without a login.")
+
+    def get(self, path: str, query: dict | None = None) -> Any:
+        """An authenticated read, asked once more after the daemon's 429 (a read changes nothing: DESIGN §40, the
+        "SnapRAID daemon reads" row)."""
+        try:
+            return self.client.get_json(path, query)
+        except Refused as exc:
+            if exc.code != "busy":
+                raise
+            self.sleep(float(exc.extra.get("retry_after") or 1))
+            return self.client.get_json(path, query)
+
+    # -- operations ----------------------------------------------------------------------------------------
+
+    def op_info(self) -> dict:
+        auth_on = None
+        with contextlib.suppress(Transport):
+            reply = self.client.request("GET", "/snapraid/v1/state", auth=False)
+            auth_on = True if reply.status == 401 else False if reply.status == 200 else None
+        out: dict[str, Any] = {"ok": True, "op": "info", "at": now_iso(self.clock()), "phase": PHASE,
+                               "link": {"version": VERSION, "sha256": file_sha256(self.paths.link),
+                                        "allow": list(self.cfg["allow"]), "daemon": self.cfg["daemon"],
+                                        "hook": bool(self.cfg.get("hook"))},
+                               "auth_on": auth_on, "answering": auth_on is not None}
+        with contextlib.suppress(Refused):
+            metrics = self.client.metrics()
+            out.update(engine_version=metrics.get("engine_version"), daemon_version=metrics.get("daemon_version"),
+                       started_at=round(self.clock() - metrics["uptime"]) if "uptime" in metrics else None)
+        if auth_on:
+            with contextlib.suppress(Refused):
+                state = self.get("/snapraid/v1/state") or {}
+                out["state"] = {key: state.get(key) for key in STATE_FIELDS if key in state}
+                out["login_ok"] = True
+        return out
+
+    def op_read(self, request: dict) -> dict:
+        what = request.get("what") or ["state"]
+        state = self.get("/snapraid/v1/state") or {}
+        out: dict[str, Any] = {"ok": True, "op": "read", "at": now_iso(self.clock()),
+                               "pulse": state.get("pulse") or {},
+                               "state": {key: state.get(key) for key in STATE_FIELDS if key in state}}
+        if "tasks" in what:
+            out["tasks"] = tasks_view(self.get("/snapraid/v1/tasks", {"limit_history": 20, "limit_messages": 0})
+                                      or {})
+        if "activity" in what:
+            latest = self.get("/snapraid/v1/activity", {"limit_messages": 0})
+            out["activity"] = task_view(latest) if isinstance(latest, dict) else None
+        if "array" in what:
+            out["array"] = array_view(self.get("/snapraid/v1/array", {"limit_diffs": 0, "limit_fixes": 0}) or {})
+        if "disks" in what:
+            out["disks"] = disks_view(self.get("/snapraid/v2/disks") or {})
+        if "config" in what:
+            out["config"] = config_view(self.get("/snapraid/v2/config") or {})
+        return out
+
+    def op_run(self, request: dict) -> dict:
+        """One task with its first 20 messages, and stop_requested: whether the daemon's own "Stop requested" is
+        among all of its messages (True or False), read from /activity, which lists every message of the latest
+        task; None when the task is not the daemon's latest, so its whole list cannot be read (design section
+        6.7: the read-only look after a stop)."""
+        number = request["number"]
+        data = self.get("/snapraid/v1/tasks", {"limit_history": 50, "limit_messages": 20}) or {}
+        task = next((t for key in ("active", "pending", "history") for t in data.get(key) or []
+                     if isinstance(t, dict) and t.get("number") == number), None)
+        latest = self.get("/snapraid/v1/activity", {"limit_messages": MAX_MESSAGES})
+        latest = latest if isinstance(latest, dict) and latest.get("number") == number and \
+            (task is None or latest.get("scheduled_at") == task.get("scheduled_at")) else None
+        if task is None or (latest is not None and task in (data.get("active") or [])):
+            task = latest if latest is not None else task
+        if task is None:
+            raise Refused("no_record", f"The protection service no longer lists run step {number}.")
+        messages = [{"level": str(m.get("level") or "")[:10], "text": str(m.get("text") or "")[:2000]}
+                    for m in task.get("messages") or [] if isinstance(m, dict)][:20]
+        stop = None if latest is None else any(isinstance(m, dict) and m.get("text") == STOP_REQUESTED
+                                                for m in latest.get("messages") or [])
+        return {"ok": True, "op": "run", "task": task_view(task), "messages": messages, "stop_requested": stop}
+
+    def scan(self, limit_diffs: int) -> dict:
+        return self.get("/snapraid/v1/array", {"limit_diffs": limit_diffs, "limit_fixes": 0}) or {}
+
+    def op_review(self, request: dict) -> dict:
+        array = self.scan(MAX_DIFFS)
+        diffs = [d for d in array.get("diffs") or [] if isinstance(d, dict)]
+        per_disk: dict[str, dict[str, int]] = {}
+        for entry in diffs:
+            counts = per_disk.setdefault(str(entry.get("disk")), {})
+            counts[str(entry.get("change"))] = counts.get(str(entry.get("change")), 0) + 1
+        chosen = [d for d in diffs if (request.get("disk") in (None, d.get("disk")))
+                  and (request.get("change") in (None, d.get("change")))
+                  and (not request.get("q") or str(request["q"]).lower() in str(d.get("path")).lower())]
+        offset = int(request.get("offset") or 0)
+        counted = sum(int(array.get(f"diff_{change}") or 0) for change in CHANGES)
+        return {"ok": True, "op": "review", "scan": scan_identity(array), "per_disk": per_disk,
+                "total": len(chosen), "offset": offset, "cut": len(diffs) < counted,
+                "entries": [{"change": d.get("change"), "disk": d.get("disk"), "path": d.get("path")}
+                            for d in chosen[offset:offset + PAGE]]}
+
+    def op_fixes(self, request: dict) -> dict:
+        offset = int(request.get("offset") or 0)
+        array = self.get("/snapraid/v1/array", {"limit_diffs": 0, "limit_fixes": min(MAX_DIFFS, offset + PAGE)}) or {}
+        fixes = [f for f in array.get("fixes") or [] if isinstance(f, dict)]
+        return {"ok": True, "op": "fixes", "fix_recovered": array.get("fix_recovered"),
+                "fix_unrecoverable": array.get("fix_unrecoverable"), "offset": offset,
+                "entries": [{"disk": f.get("disk"), "path": f.get("path"), "result": f.get("result")}
+                            for f in fixes[offset:offset + PAGE]]}
+
+    def op_journal(self, request: dict) -> dict:
+        lines = []
+        with contextlib.suppress(OSError):
+            with open(os.path.join(self.state_dir(), "actions.jsonl"), encoding="utf-8") as handle:
+                for raw in handle:
+                    with contextlib.suppress(ValueError):
+                        lines.append(json.loads(raw))
+        limit = int(request.get("limit") or JOURNAL_KEEP)
+        return {"ok": True, "op": "journal", "lines": lines[-min(limit, JOURNAL_KEEP):]}
+
+    # -- act (sections 6.1 to 6.4) ------------------------------------------------------------------------
+
+    def facts(self, action: str, body: dict) -> dict:
+        """What the binding and the checks of section 2.4 are compared with, read just before sending."""
+        metrics = self.client.metrics()
+        tasks = self.get("/snapraid/v1/tasks", {"limit_history": 50, "limit_messages": 0}) or {}
+        array = self.scan(MAX_DIFFS if action == "undelete" else 0)
+        config = self.get("/snapraid/v2/config") or {}
+        state = self.get("/snapraid/v1/state") or {}
+        numbers = [t.get("number") for key in ("pending", "active", "history") for t in tasks.get(key) or []
+                   if isinstance(t, dict) and isinstance(t.get("number"), int)]
+        out = {"started_at": self.clock() - float(metrics.get("uptime") or 0),
+               "engine_version": metrics.get("engine_version") or array.get("engine_version") or "",
+               "hold_off": metrics.get("hold_off", bool(array.get("hold_off"))),
+               "health": state.get("health"), "active": [task_view(t) for t in tasks.get("active") or []],
+               "queued": sorted({t.get("high_command") for key in ("pending", "active")
+                                 for t in tasks.get(key) or [] if isinstance(t, dict)}),
+               "highest": max(numbers or [0]), "pulse_tasks": (tasks.get("pulse") or {}).get("tasks"),
+               "daemon_now": (tasks.get("pulse") or {}).get("current_at"),
+               "schedule": config.get("maintenance_schedule"),
+               "thresholds": {"deletes": config.get("sync_threshold_deletes"),
+                              "updates": config.get("sync_threshold_updates")},
+               "prevent_truncations": config.get("sync_prevent_truncations"),
+               "blocks_bad": array.get("blocks_bad"), "scan": scan_identity(array)}
+        if action == "undelete":
+            out["removed"] = {(d.get("disk"), d.get("path")) for d in array.get("diffs") or []
+                              if isinstance(d, dict) and d.get("change") == "removed"}
+            out["disks"] = {d["name"]: d for d in disks_view(self.get("/snapraid/v2/disks") or {})}
+        return out
+
+    def check_act(self, action: str, body: dict, expect: dict, facts: dict) -> None:
+        if not engine_ok(facts["engine_version"]):
+            raise Refused("engine_too_old", REASONS["engine_too_old"].format(
+                version=facts["engine_version"] or "of an unknown version"))
+        if action in ("maintenance", "heal", "undelete") and facts["health"] in BAD_HEALTH:
+            raise Refused("health")
+        if action == "undelete":
+            for entry in body["paths"]:
+                disk = facts["disks"].get(entry["disk"])
+                if disk is None or not disk["devices"] or disk.get("health") == "degraded":
+                    raise Refused("health", "A disk to bring files back to is missing, or its devices are not known.")
+                if not entry.get("folder") and (entry["disk"], entry["path"]) not in facts["removed"]:
+                    raise Refused("changed", "A chosen file is no longer in the protection service's list of "
+                                             "removed files. Look again.")
+                if entry.get("folder") and not any(disk_ == entry["disk"] and path.startswith(entry["path"] + "/")
+                                                   for disk_, path in facts["removed"]):
+                    raise Refused("changed", "A chosen folder holds no removed file any more. Look again.")
+        problems = binding_problems(expect, facts, action)
+        if problems:
+            raise Refused("changed", REASONS["changed"], what=problems[:5])
+
+    def op_act(self, request: dict) -> dict:
+        approval, action = request.get("approval"), request.get("action")
+        if not isinstance(approval, str) or not re.fullmatch(r"A-[0-9]{1,9}", approval):
+            raise Refused("bad_field", "approval must look like A-12.")
+        if action not in ACTIONS:
+            raise Refused("bad_field", f"action must be one of {', '.join(ACTIONS)}.")
+        body = check_body(action, request.get("body"))
+        expect = request.get("expect")
+        if not isinstance(expect, dict):
+            raise Refused("bad_field", "expect must be an object.")
+        kind = "accept" if action == "maintenance" and body.get("ignore_thresholds") else action
+        missing = [key for key in REQUIRED_BINDING[kind] if key not in expect]
+        if missing or (kind in ("maintenance", "accept") and expect.get("nothing_queued") is not True):
+            raise Refused("no_binding", REASONS["no_binding"], missing=missing or ["nothing_queued"])
+        if kind == "accept" and "accept" not in self.cfg["allow"]:
+            raise Refused("not_allowed", "Seraphina may not protect changes past the limits: the link's settings do "
+                                         "not allow it.")
+        if self.sent_before(approval):
+            raise Refused("used")
+        facts = self.facts(action, body)
+        self.check_act(action, body, expect, facts)
+        payload = daemon_body(action, body)
+        before = {"highest": facts["highest"], "pulse_tasks": facts["pulse_tasks"],
+                  "started_at": round(facts["started_at"]), "daemon_now": facts["daemon_now"],
+                  "at": now_iso(self.clock())}
+        digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+        self.in_time()
+        self.journal({"at": before["at"], "approval": approval, "action": action, "body_sha256": digest,
+                      "expect_sha256": hashlib.sha256(json.dumps(expect, sort_keys=True, default=str).encode())
+                      .hexdigest(), "paths": len(body.get("paths") or [])})
+        reply, outcome, words = self.send(action, payload)
+        if reply is not None and reply.status == 429:
+            self.sleep(float(_retry_after(reply)))
+            facts = self.facts(action, body)
+            self.check_act(action, body, expect, facts)       # nothing ran: a new call, after the binding again
+            self.in_time()
+            reply, outcome, words = self.send(action, payload)
+        # From here the POST has been answered (or not): nothing may change the outcome it gave (DESIGN §40), so
+        # the answer is built defensively and the journal line after it is best effort.
+        try:
+            answer = reply.json() if reply is not None else None
+        except Exception:  # noqa: BLE001
+            answer = None
+        answer = answer if isinstance(answer, dict) else {}
+        number, pid = answer.get("number"), answer.get("pid")
+        result = {"ok": True, "op": "act", "approval": approval, "action": action, "outcome": outcome,
+                  "status": reply.status if reply is not None else None,
+                  "message": str(answer.get("message") or "")[:200], "words": words,
+                  "number": number if isinstance(number, int) and not isinstance(number, bool) else None,
+                  "pid": pid if isinstance(pid, int) and not isinstance(pid, bool) else None,
+                  "body_sha256": hashlib.sha256(reply.data).hexdigest() if reply is not None and reply.data else None,
+                  "before": before}
+        with contextlib.suppress(Exception):
+            self.journal({"at": now_iso(self.clock()), "approval": approval, "outcome": outcome,
+                          "status": result["status"]})
+        return result
+
+    def in_time(self) -> None:
+        """No POST after SEND_DEADLINE seconds of this instance (refused, so nothing was sent)."""
+        if self.clock() - self.started > SEND_DEADLINE:
+            raise Refused("too_slow")
+
+    def sent_before(self, approval: str) -> bool:
+        """Whether actions.jsonl already holds this approval's intent line: one send per approval, whoever asks.
+        An unreadable journal refuses too (it cannot show that the approval is unused)."""
+        path = os.path.join(self.state_dir(), "actions.jsonl")
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return True
+        with os.fdopen(fd, "r", encoding="utf-8", errors="replace") as handle:
+            for raw in handle:
+                with contextlib.suppress(ValueError):
+                    line = json.loads(raw)
+                    if isinstance(line, dict) and line.get("approval") == approval and "action" in line:
+                        return True
+        return False
+
+    def send(self, action: str, payload: dict) -> tuple[Reply | None, str, str]:
+        """The one POST, and its outcome (DESIGN §40; design section 6.3): 2xx succeeded; 4xx failed (refused);
+        5xx unknown; no connection failed (never left); no answer after sending unknown."""
+        try:
+            reply = self.client.request("POST", f"/snapraid/v1/{action}", body=payload)
+        except Transport as exc:
+            if exc.kind == "never_left":
+                return None, "failed", "It never left: " + exc.words + "."
+            return None, "unknown", "Seraphina could not tell whether it happened: " + exc.words + "."
+        if 200 <= reply.status < 300:
+            return reply, "succeeded", "The protection service took it."
+        if 400 <= reply.status < 500:
+            return reply, "failed", f"The protection service refused it ({reply.status})."
+        return reply, "unknown", f"The protection service answered {reply.status}: it may or may not have acted."
+
+    def state_dir(self) -> str:
+        folder = self.env.get("STATE_DIRECTORY") or self.paths.state
+        return folder.split(":")[0]
+
+    def journal(self, line: dict) -> None:
+        """One line of actions.jsonl in the link's state folder, which the harness's user cannot write: never a
+        file name (an undelete is its count of paths), never the credential."""
+        folder = self.state_dir()
+        os.makedirs(folder, mode=0o700, exist_ok=True)
+        fd = os.open(os.path.join(folder, "actions.jsonl"), os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW,
+                     0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(line, sort_keys=True) + "\n")
+
+
+def scan_identity(array: dict) -> dict:
+    """The last scan as the approval binds it: the last command and its time, the eight diff counters."""
+    return {"last_command": array.get("last_command"), "last_command_at": array.get("last_command_at"),
+            "last_sync_at": array.get("last_sync_at"),
+            "counts": {change: int(array.get(f"diff_{change}") or 0) for change in CHANGES}}
+
+
+EXPECT_KEYS = ("started_at", "active_number", "schedule", "hold_off", "thresholds", "prevent_truncations",
+               "nothing_queued", "scan", "blocks_bad", "health")
+
+
+def binding_problems(expect: dict, facts: dict, action: str) -> list[str]:
+    """Which of the approval's bound facts no longer hold (design section 6.1's table), in plain words."""
+    out = []
+    if "started_at" in expect:
+        try:
+            if abs(float(expect["started_at"]) - facts["started_at"]) > RESTART_SLACK:
+                out.append("the protection service restarted")
+        except (TypeError, ValueError):
+            out.append("the protection service's start time is not known")
+    if "active_number" in expect:
+        active = facts["active"][0]["number"] if facts["active"] else None
+        if active != expect["active_number"]:
+            out.append("a different step is running now" if active else "nothing is running now")
+    if "schedule" in expect and expect["schedule"] != facts["schedule"]:
+        out.append("the protection service's run time changed")
+    if "hold_off" in expect and bool(expect["hold_off"]) != bool(facts["hold_off"]):
+        out.append("the skip of the next run changed")
+    if "thresholds" in expect and expect["thresholds"] != facts["thresholds"]:
+        out.append("the limits changed")
+    if "prevent_truncations" in expect and expect["prevent_truncations"] != facts["prevent_truncations"]:
+        out.append("the rule about emptied files changed")
+    if expect.get("nothing_queued") and action in facts["queued"]:
+        out.append("a run of this kind is already waiting or running")
+    if "scan" in expect and expect["scan"] != facts["scan"]:
+        out.append("the protection service has looked at the disks again since")
+    if "blocks_bad" in expect and expect["blocks_bad"] != facts["blocks_bad"]:
+        out.append("the damage found changed")
+    if "health" in expect and expect["health"] != facts["health"]:
+        out.append("the disks' health changed")
+    return out
+
+
+def check_body(action: str, body: Any) -> dict:
+    """The harness's body for each action, before the link turns it into the daemon's (daemon_body)."""
+    if not isinstance(body, dict):
+        raise Refused("bad_field", "body must be an object.")
+    allowed = {"stop": set(), "heal": set(), "hold_off": {"enabled"}, "maintenance": {"ignore_thresholds"},
+               "undelete": {"paths"}}[action]
+    if set(body) - allowed:
+        raise Refused("bad_field", f"{action} does not take {', '.join(sorted(set(body) - allowed))}.")
+    if action == "hold_off" and not isinstance(body.get("enabled"), bool):
+        raise Refused("bad_field", "hold_off needs enabled true or false.")
+    if action == "maintenance" and not isinstance(body.get("ignore_thresholds", False), bool):
+        raise Refused("bad_field", "ignore_thresholds must be true or false.")
+    if action == "undelete":
+        paths = body.get("paths")
+        if not isinstance(paths, list) or not paths or len(paths) > MAX_FILTERS:
+            raise Refused("bad_field", f"undelete needs from 1 to {MAX_FILTERS} chosen paths.")
+        clean = []
+        for entry in paths:
+            if not isinstance(entry, dict) or set(entry) - {"disk", "path", "folder"} or \
+                    not isinstance(entry.get("disk"), str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", entry["disk"]) \
+                    or not isinstance(entry.get("folder", False), bool):
+                raise Refused("bad_field", "Each chosen path is {disk, path, folder?}.")
+            clean.append({"disk": entry["disk"], "path": check_rel_path(entry.get("path")),
+                          "folder": entry.get("folder", False)})
+        if len({entry["disk"] for entry in clean}) > 1:
+            # the daemon passes -d and -f as two separate lists, so a file on any chosen disk matching any chosen
+            # path would come back (15.1 cmdline/snapraid.c:630-649): one disk per approval keeps it to the choice
+            raise Refused("one_disk")
+        body = {"paths": clean}
+    return body
+
+
+def daemon_body(action: str, body: dict) -> dict:
+    """The daemon's JSON body (design section 6's table): spindown_on_finish always false."""
+    if action == "stop":
+        return {}
+    if action == "hold_off":
+        return {"enabled": body["enabled"]}
+    if action == "maintenance":
+        return {"ignore_thresholds": bool(body.get("ignore_thresholds")), "spindown_on_finish": False}
+    if action == "heal":
+        return {"spindown_on_finish": False}
+    paths = body["paths"]
+    return {"filters": [pattern_of(entry["path"], entry["folder"]) for entry in paths],
+            "filter_disks": sorted({entry["disk"] for entry in paths}), "spindown_on_finish": False}
+
+
+def check_field(key: str, value: Any) -> None:
+    if key == "what":
+        if not isinstance(value, list) or not value or not set(value) <= set(READS):
+            raise Refused("bad_field", f"what must list some of {', '.join(READS)}.")
+    elif key in ("number", "offset", "limit"):
+        if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 10 ** 9:
+            raise Refused("bad_field", f"{key} must be a whole number from 0.")
+    elif key == "disk":
+        if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", value):
+            raise Refused("bad_field", "disk must be a disk's SnapRAID name.")
+    elif key == "change":
+        if value not in CHANGES:
+            raise Refused("bad_field", f"change must be one of {', '.join(CHANGES)}.")
+    elif key == "q":
+        if not isinstance(value, str) or len(value) > 200 or "\0" in value:
+            raise Refused("bad_field", "q must be at most 200 characters of text.")
+    elif key == "expect":
+        if not isinstance(value, dict) or set(value) - set(EXPECT_KEYS):
+            raise Refused("bad_field", f"expect may hold only {', '.join(EXPECT_KEYS)}.")
+
+
+def _no_repeats(pairs: list[tuple[str, Any]]) -> dict:
+    keys = [key for key, _ in pairs]
+    if len(keys) != len(set(keys)):
+        raise ValueError("a repeated key")
+    return dict(pairs)
+
+
+def _uid_of(name: str) -> int | None:
+    try:
+        return pwd.getpwnam(name).pw_uid
+    except KeyError:
+        return None
+
+
+def peer_uid(fd: int = 0) -> int | None:
+    """The uid of the process at the other end of the socket on fd (SO_PEERCRED), or None when fd is no socket."""
+    try:
+        sock = socket.socket(fileno=os.dup(fd))
+    except OSError:
+        return None
+    try:
+        data = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+        return struct.unpack("3i", data)[1]
+    except OSError:
+        return None
+    finally:
+        sock.close()
+
+
+# ---------------------------------------------------------------- the forwarder (section 7.1)
+
+
+def forward(argv: list[str], stdin: Any, paths: Paths, lstat: Callable[[str], Any] = os.lstat,
+            clock: Callable[[], float] = time.time, post: Callable[..., int] | None = None) -> int:
+    """`notify result [--narrow] <level> <kind> <code> <subject>` or `notify test`: one event to the harness's hook
+    API. Exit 2 (nothing sent) for arguments outside the daemon's fixed sets; 0 when the harness answered 2xx; 1
+    otherwise. The report on standard input is read to the end (at most 1 MiB) and thrown away."""
+    args = [arg for arg in argv if arg != "--narrow"]
+    if args[:1] == ["test"] and len(args) == 1:
+        event = {"kind": "parity.report", "subject": "test", "detail": "level=info code=0"}
+    elif args[:1] == ["result"] and len(args) == 5:
+        level, kind, code, subject = args[1:]
+        if level not in NOTIFY_LEVELS or kind not in NOTIFY_KINDS or not re.fullmatch(r"-?[0-9]{1,4}", code) or \
+                not NOTIFY_SUBJECT_RE.fullmatch(subject):
+            return 2
+        event = {"kind": "parity.report", "subject": kind, "detail": f"level={level} code={int(code)}"}
+    else:
+        return 2
+    with contextlib.suppress(OSError, ValueError):
+        remaining = MAX_REPORT
+        while remaining > 0:
+            chunk = stdin.read(min(65536, remaining))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+    problems = path_problems(paths.link, lstat) + path_problems(paths.config, lstat)
+    cfg = read_json(paths.config)
+    if problems or check_config(cfg) or not cfg.get("hook"):
+        return 1
+    if path_problems(paths.hook_header, lstat, secret=True):
+        return 1
+    try:
+        line = Path(paths.hook_header).read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return 1
+    match = re.fullmatch(r"Authorization: (Bearer [A-Za-z0-9_\-]{16,128})", line)
+    if not match:
+        return 1
+    minute = int(clock() // 60)
+    key = "snapraidd-" + hashlib.sha256(json.dumps([args, minute]).encode()).hexdigest()[:40]
+    status = (post or post_hook)(cfg["hook"]["url"], match.group(1), key, event)
+    return 0 if 200 <= status < 300 else 1
+
+
+def post_hook(url: str, authorization: str, key: str, event: dict) -> int:
+    """One POST to the hook URL on loopback: 1 s to connect, 3 s in all. The status, or 0 with no answer."""
+    match = HOOK_RE.fullmatch(url)
+    if not match:
+        return 0
+    host = "::1" if url.startswith("http://[") else "127.0.0.1"
+    started = time.monotonic()
+    data = json.dumps(event, separators=(",", ":")).encode("utf-8")
+    conn = http.client.HTTPConnection(host, int(match.group(1)), timeout=HOOK_CONNECT_TIMEOUT)
+    try:
+        conn.connect()
+        conn.sock.settimeout(max(0.1, HOOK_TOTAL_TIMEOUT - (time.monotonic() - started)))
+        conn.request("POST", "/api/hooks/event", body=data,
+                     headers={"Authorization": authorization, "Content-Type": "application/json",
+                              "Idempotency-Key": key, "Content-Length": str(len(data))})
+        response = conn.getresponse()
+        response.read(4096)
+        return response.status
+    except (OSError, http.client.HTTPException):
+        return 0
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------- explain
+
+
+def explain(paths: Paths, lstat: Callable[[str], Any] = os.lstat, out: Callable[[str], None] = print) -> int:
+    """`explain`: the root-owned settings.new: what it allows and every change from the installed one."""
+    new = paths.config + ".new"
+    problems = path_problems(new, lstat)
+    if problems:
+        out(f"Refused: {problems[0]}. Install it with sudo install -o root -g root -m 0644 first.")
+        return 2
+    cfg = read_json(new)
+    shape = check_config(cfg)
+    if shape:
+        out("Refused: the link's new settings cannot be used:")
+        for line in shape:
+            out(f"  - {line}")
+        return 2
+    old = read_json(paths.config) if os.path.isfile(paths.config) else None
+    old = old if isinstance(old, dict) else {}
+    words = {"read": "reading", "act": "asking for runs, stops and skips after your go-ahead",
+             "accept": "protecting changes past the limits after your go-ahead"}
+    allow = ", ".join(words[item] for item in cfg["allow"])
+    before = ", ".join(words.get(item, item) for item in old.get("allow") or [])
+    out(f"The link's new settings ({new}):")
+    out(f"  Allowed: {before} → {allow}" if before and before != allow else f"  Allowed: {allow}")
+    if "act" in cfg["allow"]:
+        out("  Allow this only while the AI agents run in Seraphina's sandbox (harness.sandbox \"bwrap\"): without it, "
+            "any agent runs as Seraphina's user and can reach this link.")
+    out(f"  Seraphina's user: {cfg['caller']}" + (f" (was {old['caller']})" if old.get("caller") not in
+                                                   (None, cfg["caller"]) else ""))
+    out(f"  The protection service: {cfg['daemon']}" + (f" (was {old['daemon']})" if old.get("daemon") not in
+                                                         (None, cfg["daemon"]) else ""))
+    out("  Reports to Seraphina: " + (cfg["hook"]["url"] if cfg.get("hook") else "not set"))
+    where = f"the file {CREDENTIAL_FILE}" if cfg.get("credential_file") else \
+        f"the systemd credential \"{cfg.get('credential') or 'basic'}\""
+    out(f"  The protection service's password is read from {where}; it is not in this file.")
+    out("It changes nothing until you move it into place.")
+    return 0
+
+
+# ---------------------------------------------------------------- main
+
+
+def main(argv: list[str] | None = None, stdin: Any = None, stdout: Any = None, paths: Paths | None = None,
+         **link: Any) -> int:
+    """serve | notify ... | explain. Anything else is refused."""
+    argv = sys.argv[1:] if argv is None else argv
+    stdin = stdin or sys.stdin.buffer
+    stdout = stdout or sys.stdout
+    paths = paths or Paths()
+    os.umask(0o077)
+    if argv[:1] == ["notify"]:
+        return forward(argv[1:], stdin, paths, **{k: v for k, v in link.items() if k in ("lstat", "clock", "post")})
+    if argv == ["explain"]:
+        return explain(paths, link.get("lstat", os.lstat), out=lambda text: print(text, file=stdout))
+    if argv != ["serve"]:
+        stdout.write(json.dumps({"ok": False, "error": "bad_arguments",
+                                 "words": "Refused: the link takes serve, notify or explain."}) + "\n")
+        return 2
+    if "peer_uid" not in link:
+        link["peer_uid"] = peer_uid(0)
+    line = stdin.readline(MAX_REQUEST + 2)
+    code, answer = Link(paths, **link).handle(line)
+    stdout.write(json.dumps(answer, ensure_ascii=True, separators=(",", ":")) + "\n")
+    stdout.flush()
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

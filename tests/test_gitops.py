@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -14,6 +15,7 @@ from unittest import mock
 
 from swfactory import gitops
 from swfactory.gitops import GitError, MergeBusy
+from swfactory.harness import sandbox
 from tests.helpers import commit_file, make_repo, run_git
 
 OLD_GIT = (2, 34, 1)
@@ -83,8 +85,12 @@ class GitCommandTests(GitTestCase):
         with mock.patch.object(gitops.subprocess, "run", wraps=subprocess.run) as spy:
             gitops.git(self.repo, "status")
         args, kwargs = spy.call_args
-        self.assertEqual(args[0], ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
-                                   "-C", str(self.repo), "status"])
+        argv = args[0]
+        if argv[0] != "git":   # started with no new privileges (DESIGN §17)
+            self.assertEqual(argv[:2], [sandbox.setpriv_path(), "--no-new-privs"])
+            argv = argv[2:]
+        self.assertEqual(argv, ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
+                                "-C", str(self.repo), "status"])
         self.assertFalse(kwargs.get("shell", False))
         self.assertEqual(kwargs["env"]["LC_ALL"], "C")
         self.assertEqual(kwargs["env"]["GIT_TERMINAL_PROMPT"], "0")
@@ -103,6 +109,11 @@ class GitCommandTests(GitTestCase):
             gitops.git(self.repo, "status", timeout=5)
         self.assertIn("timed out after 5s", str(caught.exception))
         self.assertIsNone(caught.exception.returncode)
+        self.assertTrue(caught.exception.timed_out, "what it did is unknown (DESIGN §40)")
+        with mock.patch.object(gitops.subprocess, "run", side_effect=FileNotFoundError("git")), \
+                self.assertRaises(GitError) as missing:
+            gitops.git(self.repo, "status")
+        self.assertFalse(missing.exception.timed_out, "git never ran: nothing happened")
 
     def test_missing_git_binary_becomes_git_error(self) -> None:
         with mock.patch.object(gitops.subprocess, "run", side_effect=FileNotFoundError("git")), \
@@ -1002,6 +1013,90 @@ HOOKS = ("pre-commit", "prepare-commit-msg", "commit-msg", "post-commit", "pre-m
          "post-checkout", "post-rewrite", "reference-transaction", "post-index-change", "pre-auto-gc")
 
 
+class PushTests(GitTestCase):
+    """DESIGN §40: the push's own answer per ref, and a read-only look at the remote afterwards."""
+
+    def remote(self) -> Path:
+        remote = self.tmp / "remote.git"
+        run_git(self.tmp, "init", "-q", "--bare", str(remote))
+        run_git(self.repo, "remote", "add", "origin", str(remote))
+        return remote
+
+    def test_the_remotes_answer_per_ref(self) -> None:
+        self.remote()
+        self.assertIsNone(gitops.remote_head(self.repo, "origin", "main"), "no such branch there yet")
+        head = run_git(self.repo, "rev-parse", "main").strip()
+        first = gitops.push(self.repo, "origin", "main")
+        self.assertEqual((first.returncode, gitops.push_line(first.stdout, "refs/heads/main")),
+                         (0, ("*", "[new branch]")))
+        self.assertEqual(gitops.remote_head(self.repo, "origin", "main"), head)
+        again = gitops.push(self.repo, "origin", "main")
+        self.assertEqual(gitops.push_line(again.stdout, "refs/heads/main"), ("=", "[up to date]"),
+                         "the same push again changes nothing (idempotent by construction)")
+        other = make_repo(self.tmp, "other")
+        run_git(other, "remote", "add", "origin", str(self.tmp / "remote.git"))
+        run_git(other, "fetch", "-q", "origin")
+        run_git(other, "reset", "-q", "--hard", "origin/main")
+        commit_file(other, "theirs.txt", "theirs\n", "theirs")
+        run_git(other, "push", "-q", "origin", "main")
+        commit_file(self.repo, "ours.txt", "ours\n", "ours")
+        refused = gitops.push(self.repo, "origin", "main")
+        flag, summary = gitops.push_line(refused.stdout, "refs/heads/main")
+        self.assertEqual(flag, "!")
+        self.assertIn("[rejected]", summary)
+
+    def test_a_lost_report_is_not_a_refusal(self) -> None:
+        """git prints flag '!' for "[remote failure] (remote failed to report status)" too: the pack was sent and
+        the ref may have moved (here it did), so only "[rejected]" and "[remote rejected]" are refusals."""
+        remote = self.remote()
+        relay = Path(__file__).resolve().parent / "fixtures" / "receive_pack_no_report.py"
+        run_git(self.repo, "config", "remote.origin.receivepack", f"{shlex.quote(sys.executable)} "
+                                                                  f"{shlex.quote(str(relay))}")
+        proc = gitops.push(self.repo, "origin", "main")
+        line = gitops.push_line(proc.stdout, "refs/heads/main")
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(line, ("!", "[remote failure] (remote failed to report status)"))
+        self.assertFalse(gitops.push_refused(line))
+        self.assertFalse(gitops.push_never_left(proc, "refs/heads/main"))
+        self.assertEqual(run_git(remote, "rev-parse", "main").strip(), run_git(self.repo, "rev-parse", "main").strip())
+        for summary in ("[rejected] (fetch first)", "[remote rejected] (pre-receive hook declined)"):
+            self.assertTrue(gitops.push_refused(("!", summary)), summary)
+        self.assertFalse(gitops.push_refused(None))
+        self.assertFalse(gitops.push_refused(("*", "[new branch]")))
+
+    def test_a_push_that_never_reached_a_remote_is_told_apart(self) -> None:
+        """No such remote, or a path that is no repository: git stops before anything leaves this machine."""
+        missing = gitops.push(self.repo, "origin", "main")
+        self.assertEqual(missing.returncode, 128)
+        self.assertTrue(gitops.push_never_left(missing, "refs/heads/main"))
+        self.assertEqual(gitops.complaint(missing.stderr), "fatal: 'origin' does not appear to be a git repository",
+                         "git's own reason, not the hint at the end")
+        run_git(self.repo, "remote", "add", "origin", str(self.tmp / "no-such.git"))
+        self.assertTrue(gitops.push_never_left(gitops.push(self.repo, "origin", "main"), "refs/heads/main"))
+        hung_up = subprocess.CompletedProcess(["git", "push"], 128, "", "fatal: the remote end hung up unexpectedly\n")
+        self.assertFalse(gitops.push_never_left(hung_up, "refs/heads/main"), "after the pack: it may have landed")
+        self.assertEqual(gitops.complaint("hint: one\nerror: two\nfatal: three\n"), "error: two")
+        self.assertEqual(gitops.complaint("just words\n"), "just words")
+        self.assertEqual(gitops.complaint(""), "")
+
+    def test_the_line_is_found_by_its_ref_only(self) -> None:
+        output = "To example\n!\trefs/heads/dev:refs/heads/dev\t[rejected] (fetch first)\nDone\n"
+        self.assertIsNone(gitops.push_line(output, "refs/heads/main"))
+        self.assertEqual(gitops.push_line(output, "refs/heads/dev"), ("!", "[rejected] (fetch first)"))
+
+    def test_a_remote_name_that_looks_like_an_option_is_refused(self) -> None:
+        for call in (lambda: gitops.push(self.repo, "--receive-pack=x", "main"),
+                     lambda: gitops.remote_head(self.repo, "-o", "main")):
+            with self.assertRaises(GitError):
+                call()
+
+    def test_is_ancestor_reads_only(self) -> None:
+        base = run_git(self.repo, "rev-parse", "main").strip()
+        later = commit_file(self.repo, "x.txt", "x\n")
+        self.assertTrue(gitops.is_ancestor(self.repo, base, "refs/heads/main"))
+        self.assertFalse(gitops.is_ancestor(self.repo, later, base))
+
+
 class HostSideHardeningTests(GitTestCase):
     """The factory's own git calls never run repository-controlled code: hooks or core.fsmonitor."""
 
@@ -1088,6 +1183,26 @@ class HostSideHardeningTests(GitTestCase):
         gitops.add_worktree(self.repo, self.tmp / "wt2", "factory/002-y", "main")
         self.assertTrue(gitops.is_clean(self.tmp / "wt2", self.repo))
         self.assertEqual(self.ran(), "")
+
+
+    @unittest.skipUnless(sandbox.setpriv_path(), "setpriv (util-linux) is not installed here")
+    def test_a_filter_driver_runs_with_no_new_privileges(self) -> None:
+        """DESIGN §17: filter and merge drivers from .git/config still run, and the harness keeps sudo for its root
+        helpers, so its own git starts with no new privileges: a driver an agent planted can never use sudo."""
+        if sandbox.no_new_privs_set():
+            self.skipTest("this test process already runs with no new privileges")
+        driver = self.tmp / "driver.sh"
+        driver.write_text(f"#!/bin/sh\ngrep NoNewPrivs /proc/self/status >> '{self.marker}'\ncat\n")
+        driver.chmod(0o755)
+        run_git(self.repo, "config", "filter.probe.clean", str(driver))
+        (self.repo / ".gitattributes").write_text("*.probe filter=probe\n")
+        (self.repo / "x.probe").write_text("x\n")
+        self.plain_git(self.repo, "add", "x.probe")
+        self.assertRegex(self.ran(), r"NoNewPrivs:\s+0", "control: plain git runs the driver with the flag off")
+        self.marker.unlink()
+        (self.repo / "x.probe").write_text("changed\n")
+        gitops.git(self.repo, "add", "x.probe")
+        self.assertRegex(self.ran(), r"^NoNewPrivs:\s+1\n$")
 
 
 class VerifyWorktreeTests(GitTestCase):

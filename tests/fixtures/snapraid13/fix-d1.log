@@ -1,0 +1,1538 @@
+version:13.0
+unixtime:1792928577
+time:2026-10-25 11:42:57
+command:fix
+argv:0:/usr/local/bin/snapraid
+argv:1:-c
+argv:2:/etc/snapraid.conf
+argv:3:-l
+argv:4:/var/lib/seraphina-snapraid/runs/J-1/snapraid.log
+argv:5:-d
+argv:6:d1
+argv:7:fix
+selftest:
+msg:progress: Self test...
+conf:file:/etc/snapraid.conf
+uuid:by-uuid:7:5: opendir(/dev/disk/by-uuid) failed, No such file or directory
+uuid:blkid:7:5:3868881d-8c01-4159-9261-d03217b5a6a3: found /dev/loop5
+uuid:by-uuid:7:6: opendir(/dev/disk/by-uuid) failed, No such file or directory
+uuid:blkid:7:6:570f566e-dcf4-4c4a-9b8b-f33ac5c35ecb: found /dev/loop6
+uuid:by-uuid:7:7: opendir(/dev/disk/by-uuid) failed, No such file or directory
+uuid:blkid:7:7:49978a8b-220a-4ec8-ad0e-23d57ad6b79a: found /dev/loop7
+blocksize:65536
+data:d1:/mnt/disk1/
+data:d2:/mnt/disk2/
+data:d3:/mnt/disk3/
+mode:par2
+parity:0:/mnt/parity1/snapraid.parity
+2-parity:0:/mnt/parity2/snapraid.2-parity
+autosave:1000000000
+filter:exclude /lost+found/
+filter:exclude *.unrecoverable
+filter:exclude /seraphina-restored/
+filter:exclude /.seraphina-trash/
+content:/var/snapraid/snapraid.content
+msg:progress: Loading state from /var/snapraid/snapraid.content...
+msg:verbose:       32 files
+msg:verbose:        0 hardlinks
+msg:verbose:        0 symlinks
+msg:verbose:        4 empty dirs
+msg:fatal: UUID change for disk 'd1' from '7e387000-0cc5-4f60-9c08-c27504b3227b' to '3868881d-8c01-4159-9261-d03217b5a6a3'
+uuid:by-uuid:7:8: opendir(/dev/disk/by-uuid) failed, No such file or directory
+uuid:blkid:7:8:edc3bb94-8a01-4ef1-be3a-7ede66bbdb21: found /dev/loop8
+uuid:by-uuid:7:9: opendir(/dev/disk/by-uuid) failed, No such file or directory
+uuid:blkid:7:9:7aa14332-8868-4a39-af8c-a92d415217cc: found /dev/loop9
+msg:progress: Searching disk d1...
+msg:verbose: Excluding directory '/mnt/disk1/lost+found' for rule 'exclude /lost+found/'
+msg:progress: Searching disk d2...
+msg:verbose: Excluding content '/mnt/disk2/.snapraid/snapraid.content'
+msg:verbose: Excluding directory '/mnt/disk2/lost+found' for rule 'exclude /lost+found/'
+msg:progress: Searching disk d3...
+msg:verbose: Excluding directory '/mnt/disk3/lost+found' for rule 'exclude /lost+found/'
+msg:progress: Selecting...
+msg:verbose: 	d1//
+memory:used:336669
+memory:block:17
+memory:extent:88
+memory:file:192
+memory:link:88
+memory:dir:80
+msg:progress: Using 0 MiB of memory for the file-system.
+msg:progress: Initializing...
+msg:progress: Selecting...
+msg:progress: Fixing...
+msg:error: Reading data from missing file '/mnt/disk1/media/big.bin' at offset 0.
+error:0:d1:media/big.bin: Read error at position 0
+entry:0:block:known:bad:d1:media/big.bin:0:
+fixed:0:d1:media/big.bin: Fixed data error at position 0
+msg:error: Reading data from missing file '/mnt/disk1/media/big.bin' at offset 65536.
+error:1:d1:media/big.bin: Read error at position 1
+entry:0:block:known:bad:d1:media/big.bin:1:
+fixed:1:d1:media/big.bin: Fixed data error at position 1
+msg:error: Reading data from missing file '/mnt/disk1/media/big.bin' at offset 131072.
+error:2:d1:media/big.bin: Read error at position 2
+entry:0:block:known:bad:d1:media/big.bin:2:
+fixed:2:d1:media/big.bin: Fixed data error at position 2
+msg:error: Reading data from missing file '/mnt/disk1/media/big.bin' at offset 196608.
+error:3:d1:media/big.bin: Read error at position 3
+entry:0:block:known:bad:d1:media/big.bin:3:
+fixed:3:d1:media/big.bin: Fixed data error at position 3
+msg:error: Reading data from missing file '/mnt/disk1/media/big.bin' at offset 262144.
+error:4:d1:media/big.bin: Read error at position 4
+entry:0:block:known:bad:d1:media/big.bin:4:
+fixed:4:d1:media/big.bin: Fixed data error at position 4
+msg:error: Reading data from missing file '/mnt/disk1/media/big.bin' at offset 327680.
+error:5:d1:media/big.bin: Read error at position 5
+entry:0:block:known:bad:d1:media/big.bin:5:
+fixed:5:d1:media/big.bin: Fixed data error at position 5
+msg:error: Reading data from missing file '/mnt/disk1/media/big.bin' at offset 393216.
+error:6:d1:media/big.bin: Read error at position 6
+entry:0:block:known:bad:d1:media/big.bin:6:
+fixed:6:d1:media/big.bin: Fixed data error at position 6
+msg:error: Reading data from missing file '/mnt/disk1/media/big.bin' at offset 458752.
+error:7:d1:media/big.bin: Read error at position 7
+entry:0:block:known:bad:d1:media/big.bin:7:
+fixed:7:d1:media/big.bin: Fixed data error at position 7
+msg:error: Reading data from missing file '/mnt/disk1/media/big.bin' at offset 524288.
+error:8:d1:media/big.bin: Read error at position 8
+entry:0:block:known:bad:d1:media/big.bin:8:
+fixed:8:d1:media/big.bin: Fixed data error at position 8
+msg:error: Reading data from missing file '/mnt/disk1/media/big.bin' at offset 589824.
+error:9:d1:media/big.bin: Read error at position 9
+entry:0:block:known:bad:d1:media/big.bin:9:
+fixed:9:d1:media/big.bin: Fixed data error at position 9
+msg:error: Reading data from missing file '/mnt/disk1/media/big.bin' at offset 655360.
+error:10:d1:media/big.bin: Read error at position 10
+entry:0:block:known:bad:d1:media/big.bin:10:
+fixed:10:d1:media/big.bin: Fixed data error at position 10
+msg:error: Reading data from missing file '/mnt/disk1/media/big.bin' at offset 720896.
+error:11:d1:media/big.bin: Read error at position 11
+entry:0:block:known:bad:d1:media/big.bin:11:
+fixed:11:d1:media/big.bin: Fixed data error at position 11
+msg:error: Reading data from missing file '/mnt/disk1/media/big.bin' at offset 786432.
+error:12:d1:media/big.bin: Read error at position 12
+entry:0:block:known:bad:d1:media/big.bin:12:
+fixed:12:d1:media/big.bin: Fixed data error at position 12
+msg:error: Reading data from missing file '/mnt/disk1/media/big.bin' at offset 851968.
+error:13:d1:media/big.bin: Read error at position 13
+entry:0:block:known:bad:d1:media/big.bin:13:
+fixed:13:d1:media/big.bin: Fixed data error at position 13
+msg:error: Reading data from missing file '/mnt/disk1/media/big.bin' at offset 917504.
+error:14:d1:media/big.bin: Read error at position 14
+entry:0:block:known:bad:d1:media/big.bin:14:
+fixed:14:d1:media/big.bin: Fixed data error at position 14
+msg:error: Reading data from missing file '/mnt/disk1/media/big.bin' at offset 983040.
+error:15:d1:media/big.bin: Read error at position 15
+entry:0:block:known:bad:d1:media/big.bin:15:
+fixed:15:d1:media/big.bin: Fixed data error at position 15
+msg:error: Reading data from missing file '/mnt/disk1/media/big.bin' at offset 1048576.
+error:16:d1:media/big.bin: Read error at position 16
+entry:0:block:known:bad:d1:media/big.bin:16:
+fixed:16:d1:media/big.bin: Fixed data error at position 16
+msg:error: Reading data from missing file '/mnt/disk1/media/big.bin' at offset 1114112.
+error:17:d1:media/big.bin: Read error at position 17
+entry:0:block:known:bad:d1:media/big.bin:17:
+fixed:17:d1:media/big.bin: Fixed data error at position 17
+msg:error: Reading data from missing file '/mnt/disk1/media/big.bin' at offset 1179648.
+error:18:d1:media/big.bin: Read error at position 18
+entry:0:block:known:bad:d1:media/big.bin:18:
+fixed:18:d1:media/big.bin: Fixed data error at position 18
+msg:error: Reading data from missing file '/mnt/disk1/media/big.bin' at offset 1245184.
+error:19:d1:media/big.bin: Read error at position 19
+entry:0:block:known:bad:d1:media/big.bin:19:
+fixed:19:d1:media/big.bin: Fixed data error at position 19
+msg:error: Reading data from missing file '/mnt/disk1/media/big.bin' at offset 1310720.
+error:20:d1:media/big.bin: Read error at position 20
+entry:0:block:known:bad:d1:media/big.bin:20:
+fixed:20:d1:media/big.bin: Fixed data error at position 20
+msg:error: Reading data from missing file '/mnt/disk1/media/big.bin' at offset 1376256.
+error:21:d1:media/big.bin: Read error at position 21
+error:21:d2:media/big.bin: Data error at position 0, diff bits 65/128
+entry:0:block:known:bad:d1:media/big.bin:21:
+entry:1:block:known:bad:d2:media/big.bin:0:
+fixed:21:d1:media/big.bin: Fixed data error at position 21
+msg:error: Reading data from missing file '/mnt/disk1/media/big.bin' at offset 1441792.
+error:22:d1:media/big.bin: Read error at position 22
+error:22:d2:media/big.bin: Data error at position 1, diff bits 74/128
+entry:0:block:known:bad:d1:media/big.bin:22:
+entry:1:block:known:bad:d2:media/big.bin:1:
+fixed:22:d1:media/big.bin: Fixed data error at position 22
+msg:error: Reading data from missing file '/mnt/disk1/media/big.bin' at offset 1507328.
+error:23:d1:media/big.bin: Read error at position 23
+error:23:d2:media/big.bin: Data error at position 2, diff bits 69/128
+entry:0:block:known:bad:d1:media/big.bin:23:
+entry:1:block:known:bad:d2:media/big.bin:2:
+fixed:23:d1:media/big.bin: Fixed data error at position 23
+msg:error: Reading data from missing file '/mnt/disk1/media/big.bin' at offset 1572864.
+error:24:d1:media/big.bin: Read error at position 24
+error:24:d2:media/big.bin: Data error at position 3, diff bits 70/128
+entry:0:block:known:bad:d1:media/big.bin:24:
+entry:1:block:known:bad:d2:media/big.bin:3:
+fixed:24:d1:media/big.bin: Fixed data error at position 24
+msg:error: Reading data from missing file '/mnt/disk1/media/big.bin' at offset 1638400.
+error:25:d1:media/big.bin: Read error at position 25
+error:25:d2:media/big.bin: Data error at position 4, diff bits 65/128
+entry:0:block:known:bad:d1:media/big.bin:25:
+entry:1:block:known:bad:d2:media/big.bin:4:
+fixed:25:d1:media/big.bin: Fixed data error at position 25
+msg:error: Reading data from missing file '/mnt/disk1/media/big.bin' at offset 1703936.
+error:26:d1:media/big.bin: Read error at position 26
+error:26:d2:media/big.bin: Data error at position 5, diff bits 65/128
+entry:0:block:known:bad:d1:media/big.bin:26:
+entry:1:block:known:bad:d2:media/big.bin:5:
+fixed:26:d1:media/big.bin: Fixed data error at position 26
+msg:error: Reading data from missing file '/mnt/disk1/media/big.bin' at offset 1769472.
+error:27:d1:media/big.bin: Read error at position 27
+error:27:d2:media/big.bin: Data error at position 6, diff bits 54/128
+entry:0:block:known:bad:d1:media/big.bin:27:
+entry:1:block:known:bad:d2:media/big.bin:6:
+fixed:27:d1:media/big.bin: Fixed data error at position 27
+msg:error: Reading data from missing file '/mnt/disk1/media/big.bin' at offset 1835008.
+error:28:d1:media/big.bin: Read error at position 28
+error:28:d2:media/big.bin: Data error at position 7, diff bits 61/128
+entry:0:block:known:bad:d1:media/big.bin:28:
+entry:1:block:known:bad:d2:media/big.bin:7:
+fixed:28:d1:media/big.bin: Fixed data error at position 28
+msg:error: Reading data from missing file '/mnt/disk1/media/big.bin' at offset 1900544.
+error:29:d1:media/big.bin: Read error at position 29
+error:29:d2:media/big.bin: Data error at position 8, diff bits 74/128
+entry:0:block:known:bad:d1:media/big.bin:29:
+entry:1:block:known:bad:d2:media/big.bin:8:
+fixed:29:d1:media/big.bin: Fixed data error at position 29
+msg:error: Reading data from missing file '/mnt/disk1/media/big.bin' at offset 1966080.
+error:30:d1:media/big.bin: Read error at position 30
+error:30:d2:media/big.bin: Data error at position 9, diff bits 70/128
+entry:0:block:known:bad:d1:media/big.bin:30:
+entry:1:block:known:bad:d2:media/big.bin:9:
+fixed:30:d1:media/big.bin: Fixed data error at position 30
+status:recovered:d1:media/big.bin
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 0.
+error:31:d1:media/movie3.mkv: Read error at position 0
+error:31:d2:media/big.bin: Data error at position 10, diff bits 62/128
+entry:0:block:known:bad:d1:media/movie3.mkv:0:
+entry:1:block:known:bad:d2:media/big.bin:10:
+fixed:31:d1:media/movie3.mkv: Fixed data error at position 0
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 65536.
+error:32:d1:media/movie3.mkv: Read error at position 1
+error:32:d2:media/big.bin: Data error at position 11, diff bits 58/128
+entry:0:block:known:bad:d1:media/movie3.mkv:1:
+entry:1:block:known:bad:d2:media/big.bin:11:
+fixed:32:d1:media/movie3.mkv: Fixed data error at position 1
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 131072.
+error:33:d1:media/movie3.mkv: Read error at position 2
+error:33:d2:media/big.bin: Data error at position 12, diff bits 59/128
+entry:0:block:known:bad:d1:media/movie3.mkv:2:
+entry:1:block:known:bad:d2:media/big.bin:12:
+fixed:33:d1:media/movie3.mkv: Fixed data error at position 2
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 196608.
+error:34:d1:media/movie3.mkv: Read error at position 3
+error:34:d2:media/big.bin: Data error at position 13, diff bits 64/128
+entry:0:block:known:bad:d1:media/movie3.mkv:3:
+entry:1:block:known:bad:d2:media/big.bin:13:
+fixed:34:d1:media/movie3.mkv: Fixed data error at position 3
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 262144.
+error:35:d1:media/movie3.mkv: Read error at position 4
+error:35:d2:media/big.bin: Data error at position 14, diff bits 74/128
+entry:0:block:known:bad:d1:media/movie3.mkv:4:
+entry:1:block:known:bad:d2:media/big.bin:14:
+fixed:35:d1:media/movie3.mkv: Fixed data error at position 4
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 327680.
+error:36:d1:media/movie3.mkv: Read error at position 5
+error:36:d2:media/big.bin: Data error at position 15, diff bits 57/128
+entry:0:block:known:bad:d1:media/movie3.mkv:5:
+entry:1:block:known:bad:d2:media/big.bin:15:
+fixed:36:d1:media/movie3.mkv: Fixed data error at position 5
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 393216.
+error:37:d1:media/movie3.mkv: Read error at position 6
+error:37:d2:media/big.bin: Data error at position 16, diff bits 60/128
+entry:0:block:known:bad:d1:media/movie3.mkv:6:
+entry:1:block:known:bad:d2:media/big.bin:16:
+fixed:37:d1:media/movie3.mkv: Fixed data error at position 6
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 458752.
+error:38:d1:media/movie3.mkv: Read error at position 7
+error:38:d2:media/big.bin: Data error at position 17, diff bits 63/128
+entry:0:block:known:bad:d1:media/movie3.mkv:7:
+entry:1:block:known:bad:d2:media/big.bin:17:
+fixed:38:d1:media/movie3.mkv: Fixed data error at position 7
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 524288.
+error:39:d1:media/movie3.mkv: Read error at position 8
+error:39:d2:media/big.bin: Data error at position 18, diff bits 63/128
+entry:0:block:known:bad:d1:media/movie3.mkv:8:
+entry:1:block:known:bad:d2:media/big.bin:18:
+fixed:39:d1:media/movie3.mkv: Fixed data error at position 8
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 589824.
+error:40:d1:media/movie3.mkv: Read error at position 9
+error:40:d2:media/big.bin: Data error at position 19, diff bits 73/128
+entry:0:block:known:bad:d1:media/movie3.mkv:9:
+entry:1:block:known:bad:d2:media/big.bin:19:
+fixed:40:d1:media/movie3.mkv: Fixed data error at position 9
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 655360.
+error:41:d1:media/movie3.mkv: Read error at position 10
+error:41:d2:media/big.bin: Data error at position 20, diff bits 63/128
+entry:0:block:known:bad:d1:media/movie3.mkv:10:
+entry:1:block:known:bad:d2:media/big.bin:20:
+fixed:41:d1:media/movie3.mkv: Fixed data error at position 10
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 720896.
+error:42:d1:media/movie3.mkv: Read error at position 11
+error:42:d2:media/big.bin: Data error at position 21, diff bits 57/128
+entry:0:block:known:bad:d1:media/movie3.mkv:11:
+entry:1:block:known:bad:d2:media/big.bin:21:
+fixed:42:d1:media/movie3.mkv: Fixed data error at position 11
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 786432.
+error:43:d1:media/movie3.mkv: Read error at position 12
+error:43:d2:media/big.bin: Data error at position 22, diff bits 58/128
+entry:0:block:known:bad:d1:media/movie3.mkv:12:
+entry:1:block:known:bad:d2:media/big.bin:22:
+fixed:43:d1:media/movie3.mkv: Fixed data error at position 12
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 851968.
+error:44:d1:media/movie3.mkv: Read error at position 13
+error:44:d2:media/big.bin: Data error at position 23, diff bits 65/128
+entry:0:block:known:bad:d1:media/movie3.mkv:13:
+entry:1:block:known:bad:d2:media/big.bin:23:
+fixed:44:d1:media/movie3.mkv: Fixed data error at position 13
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 917504.
+error:45:d1:media/movie3.mkv: Read error at position 14
+error:45:d2:media/big.bin: Data error at position 24, diff bits 61/128
+entry:0:block:known:bad:d1:media/movie3.mkv:14:
+entry:1:block:known:bad:d2:media/big.bin:24:
+fixed:45:d1:media/movie3.mkv: Fixed data error at position 14
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 983040.
+error:46:d1:media/movie3.mkv: Read error at position 15
+error:46:d2:media/big.bin: Data error at position 25, diff bits 66/128
+entry:0:block:known:bad:d1:media/movie3.mkv:15:
+entry:1:block:known:bad:d2:media/big.bin:25:
+fixed:46:d1:media/movie3.mkv: Fixed data error at position 15
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 1048576.
+error:47:d1:media/movie3.mkv: Read error at position 16
+error:47:d2:media/big.bin: Data error at position 26, diff bits 61/128
+entry:0:block:known:bad:d1:media/movie3.mkv:16:
+entry:1:block:known:bad:d2:media/big.bin:26:
+fixed:47:d1:media/movie3.mkv: Fixed data error at position 16
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 1114112.
+error:48:d1:media/movie3.mkv: Read error at position 17
+error:48:d2:media/big.bin: Data error at position 27, diff bits 58/128
+entry:0:block:known:bad:d1:media/movie3.mkv:17:
+entry:1:block:known:bad:d2:media/big.bin:27:
+fixed:48:d1:media/movie3.mkv: Fixed data error at position 17
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 1179648.
+error:49:d1:media/movie3.mkv: Read error at position 18
+error:49:d2:media/big.bin: Data error at position 28, diff bits 67/128
+entry:0:block:known:bad:d1:media/movie3.mkv:18:
+entry:1:block:known:bad:d2:media/big.bin:28:
+fixed:49:d1:media/movie3.mkv: Fixed data error at position 18
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 1245184.
+error:50:d1:media/movie3.mkv: Read error at position 19
+error:50:d2:media/big.bin: Data error at position 29, diff bits 73/128
+entry:0:block:known:bad:d1:media/movie3.mkv:19:
+entry:1:block:known:bad:d2:media/big.bin:29:
+fixed:50:d1:media/movie3.mkv: Fixed data error at position 19
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 1310720.
+error:51:d1:media/movie3.mkv: Read error at position 20
+error:51:d2:media/big.bin: Data error at position 30, diff bits 63/128
+entry:0:block:known:bad:d1:media/movie3.mkv:20:
+entry:1:block:known:bad:d2:media/big.bin:30:
+fixed:51:d1:media/movie3.mkv: Fixed data error at position 20
+msg:error: Reading data from missing file '/mnt/disk1/media/notes/a:b.txt' at offset 0.
+error:52:d1:media/notes/a\db.txt: Read error at position 0
+entry:0:block:known:bad:d1:media/notes/a\db.txt:0:
+fixed:52:d1:media/notes/a\db.txt: Fixed data error at position 0
+status:recovered:d1:media/notes/a\db.txt
+msg:error: Reading data from missing file '/mnt/disk1/media/notes/back\slash.txt' at offset 0.
+error:53:d1:media/notes/back\\slash.txt: Read error at position 0
+entry:0:block:known:bad:d1:media/notes/back\\slash.txt:0:
+fixed:53:d1:media/notes/back\\slash.txt: Fixed data error at position 0
+status:recovered:d1:media/notes/back\\slash.txt
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 1376256.
+error:54:d1:media/movie3.mkv: Read error at position 21
+entry:0:block:known:bad:d1:media/movie3.mkv:21:
+fixed:54:d1:media/movie3.mkv: Fixed data error at position 21
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 1441792.
+error:55:d1:media/movie3.mkv: Read error at position 22
+entry:0:block:known:bad:d1:media/movie3.mkv:22:
+fixed:55:d1:media/movie3.mkv: Fixed data error at position 22
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 1507328.
+error:56:d1:media/movie3.mkv: Read error at position 23
+entry:0:block:known:bad:d1:media/movie3.mkv:23:
+fixed:56:d1:media/movie3.mkv: Fixed data error at position 23
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 1572864.
+error:57:d1:media/movie3.mkv: Read error at position 24
+entry:0:block:known:bad:d1:media/movie3.mkv:24:
+fixed:57:d1:media/movie3.mkv: Fixed data error at position 24
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 1638400.
+error:58:d1:media/movie3.mkv: Read error at position 25
+entry:0:block:known:bad:d1:media/movie3.mkv:25:
+fixed:58:d1:media/movie3.mkv: Fixed data error at position 25
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 1703936.
+error:59:d1:media/movie3.mkv: Read error at position 26
+entry:0:block:known:bad:d1:media/movie3.mkv:26:
+fixed:59:d1:media/movie3.mkv: Fixed data error at position 26
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 1769472.
+error:60:d1:media/movie3.mkv: Read error at position 27
+entry:0:block:known:bad:d1:media/movie3.mkv:27:
+fixed:60:d1:media/movie3.mkv: Fixed data error at position 27
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 1835008.
+error:61:d1:media/movie3.mkv: Read error at position 28
+entry:0:block:known:bad:d1:media/movie3.mkv:28:
+fixed:61:d1:media/movie3.mkv: Fixed data error at position 28
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 1900544.
+error:62:d1:media/movie3.mkv: Read error at position 29
+entry:0:block:known:bad:d1:media/movie3.mkv:29:
+fixed:62:d1:media/movie3.mkv: Fixed data error at position 29
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 1966080.
+error:63:d1:media/movie3.mkv: Read error at position 30
+entry:0:block:known:bad:d1:media/movie3.mkv:30:
+fixed:63:d1:media/movie3.mkv: Fixed data error at position 30
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 2031616.
+error:64:d1:media/movie3.mkv: Read error at position 31
+entry:0:block:known:bad:d1:media/movie3.mkv:31:
+fixed:64:d1:media/movie3.mkv: Fixed data error at position 31
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 2097152.
+error:65:d1:media/movie3.mkv: Read error at position 32
+entry:0:block:known:bad:d1:media/movie3.mkv:32:
+fixed:65:d1:media/movie3.mkv: Fixed data error at position 32
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 2162688.
+error:66:d1:media/movie3.mkv: Read error at position 33
+entry:0:block:known:bad:d1:media/movie3.mkv:33:
+fixed:66:d1:media/movie3.mkv: Fixed data error at position 33
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 2228224.
+error:67:d1:media/movie3.mkv: Read error at position 34
+entry:0:block:known:bad:d1:media/movie3.mkv:34:
+fixed:67:d1:media/movie3.mkv: Fixed data error at position 34
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 2293760.
+error:68:d1:media/movie3.mkv: Read error at position 35
+entry:0:block:known:bad:d1:media/movie3.mkv:35:
+fixed:68:d1:media/movie3.mkv: Fixed data error at position 35
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 2359296.
+error:69:d1:media/movie3.mkv: Read error at position 36
+entry:0:block:known:bad:d1:media/movie3.mkv:36:
+fixed:69:d1:media/movie3.mkv: Fixed data error at position 36
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 2424832.
+error:70:d1:media/movie3.mkv: Read error at position 37
+entry:0:block:known:bad:d1:media/movie3.mkv:37:
+fixed:70:d1:media/movie3.mkv: Fixed data error at position 37
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 2490368.
+error:71:d1:media/movie3.mkv: Read error at position 38
+entry:0:block:known:bad:d1:media/movie3.mkv:38:
+fixed:71:d1:media/movie3.mkv: Fixed data error at position 38
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 2555904.
+error:72:d1:media/movie3.mkv: Read error at position 39
+entry:0:block:known:bad:d1:media/movie3.mkv:39:
+fixed:72:d1:media/movie3.mkv: Fixed data error at position 39
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 2621440.
+error:73:d1:media/movie3.mkv: Read error at position 40
+entry:0:block:known:bad:d1:media/movie3.mkv:40:
+fixed:73:d1:media/movie3.mkv: Fixed data error at position 40
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 2686976.
+error:74:d1:media/movie3.mkv: Read error at position 41
+entry:0:block:known:bad:d1:media/movie3.mkv:41:
+fixed:74:d1:media/movie3.mkv: Fixed data error at position 41
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 2752512.
+error:75:d1:media/movie3.mkv: Read error at position 42
+entry:0:block:known:bad:d1:media/movie3.mkv:42:
+fixed:75:d1:media/movie3.mkv: Fixed data error at position 42
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 2818048.
+error:76:d1:media/movie3.mkv: Read error at position 43
+entry:0:block:known:bad:d1:media/movie3.mkv:43:
+fixed:76:d1:media/movie3.mkv: Fixed data error at position 43
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 2883584.
+error:77:d1:media/movie3.mkv: Read error at position 44
+entry:0:block:known:bad:d1:media/movie3.mkv:44:
+fixed:77:d1:media/movie3.mkv: Fixed data error at position 44
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 2949120.
+error:78:d1:media/movie3.mkv: Read error at position 45
+entry:0:block:known:bad:d1:media/movie3.mkv:45:
+fixed:78:d1:media/movie3.mkv: Fixed data error at position 45
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 3014656.
+error:79:d1:media/movie3.mkv: Read error at position 46
+entry:0:block:known:bad:d1:media/movie3.mkv:46:
+fixed:79:d1:media/movie3.mkv: Fixed data error at position 46
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 3080192.
+error:80:d1:media/movie3.mkv: Read error at position 47
+entry:0:block:known:bad:d1:media/movie3.mkv:47:
+fixed:80:d1:media/movie3.mkv: Fixed data error at position 47
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 3145728.
+error:81:d1:media/movie3.mkv: Read error at position 48
+entry:0:block:known:bad:d1:media/movie3.mkv:48:
+fixed:81:d1:media/movie3.mkv: Fixed data error at position 48
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 3211264.
+error:82:d1:media/movie3.mkv: Read error at position 49
+entry:0:block:known:bad:d1:media/movie3.mkv:49:
+fixed:82:d1:media/movie3.mkv: Fixed data error at position 49
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 3276800.
+error:83:d1:media/movie3.mkv: Read error at position 50
+entry:0:block:known:bad:d1:media/movie3.mkv:50:
+fixed:83:d1:media/movie3.mkv: Fixed data error at position 50
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 3342336.
+error:84:d1:media/movie3.mkv: Read error at position 51
+entry:0:block:known:bad:d1:media/movie3.mkv:51:
+fixed:84:d1:media/movie3.mkv: Fixed data error at position 51
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 3407872.
+error:85:d1:media/movie3.mkv: Read error at position 52
+entry:0:block:known:bad:d1:media/movie3.mkv:52:
+fixed:85:d1:media/movie3.mkv: Fixed data error at position 52
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 3473408.
+error:86:d1:media/movie3.mkv: Read error at position 53
+entry:0:block:known:bad:d1:media/movie3.mkv:53:
+fixed:86:d1:media/movie3.mkv: Fixed data error at position 53
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 3538944.
+error:87:d1:media/movie3.mkv: Read error at position 54
+entry:0:block:known:bad:d1:media/movie3.mkv:54:
+fixed:87:d1:media/movie3.mkv: Fixed data error at position 54
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 3604480.
+error:88:d1:media/movie3.mkv: Read error at position 55
+entry:0:block:known:bad:d1:media/movie3.mkv:55:
+fixed:88:d1:media/movie3.mkv: Fixed data error at position 55
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 3670016.
+error:89:d1:media/movie3.mkv: Read error at position 56
+entry:0:block:known:bad:d1:media/movie3.mkv:56:
+fixed:89:d1:media/movie3.mkv: Fixed data error at position 56
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 3735552.
+error:90:d1:media/movie3.mkv: Read error at position 57
+entry:0:block:known:bad:d1:media/movie3.mkv:57:
+fixed:90:d1:media/movie3.mkv: Fixed data error at position 57
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 3801088.
+error:91:d1:media/movie3.mkv: Read error at position 58
+entry:0:block:known:bad:d1:media/movie3.mkv:58:
+fixed:91:d1:media/movie3.mkv: Fixed data error at position 58
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 3866624.
+error:92:d1:media/movie3.mkv: Read error at position 59
+entry:0:block:known:bad:d1:media/movie3.mkv:59:
+fixed:92:d1:media/movie3.mkv: Fixed data error at position 59
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 3932160.
+error:93:d1:media/movie3.mkv: Read error at position 60
+entry:0:block:known:bad:d1:media/movie3.mkv:60:
+fixed:93:d1:media/movie3.mkv: Fixed data error at position 60
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 3997696.
+error:94:d1:media/movie3.mkv: Read error at position 61
+entry:0:block:known:bad:d1:media/movie3.mkv:61:
+fixed:94:d1:media/movie3.mkv: Fixed data error at position 61
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 4063232.
+error:95:d1:media/movie3.mkv: Read error at position 62
+entry:0:block:known:bad:d1:media/movie3.mkv:62:
+fixed:95:d1:media/movie3.mkv: Fixed data error at position 62
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 4128768.
+error:96:d1:media/movie3.mkv: Read error at position 63
+entry:0:block:known:bad:d1:media/movie3.mkv:63:
+fixed:96:d1:media/movie3.mkv: Fixed data error at position 63
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 4194304.
+error:97:d1:media/movie3.mkv: Read error at position 64
+entry:0:block:known:bad:d1:media/movie3.mkv:64:
+fixed:97:d1:media/movie3.mkv: Fixed data error at position 64
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 4259840.
+error:98:d1:media/movie3.mkv: Read error at position 65
+entry:0:block:known:bad:d1:media/movie3.mkv:65:
+fixed:98:d1:media/movie3.mkv: Fixed data error at position 65
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 4325376.
+error:99:d1:media/movie3.mkv: Read error at position 66
+entry:0:block:known:bad:d1:media/movie3.mkv:66:
+fixed:99:d1:media/movie3.mkv: Fixed data error at position 66
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 4390912.
+error:100:d1:media/movie3.mkv: Read error at position 67
+entry:0:block:known:bad:d1:media/movie3.mkv:67:
+fixed:100:d1:media/movie3.mkv: Fixed data error at position 67
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 4456448.
+error:101:d1:media/movie3.mkv: Read error at position 68
+entry:0:block:known:bad:d1:media/movie3.mkv:68:
+fixed:101:d1:media/movie3.mkv: Fixed data error at position 68
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 4521984.
+error:102:d1:media/movie3.mkv: Read error at position 69
+entry:0:block:known:bad:d1:media/movie3.mkv:69:
+fixed:102:d1:media/movie3.mkv: Fixed data error at position 69
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 4587520.
+error:103:d1:media/movie3.mkv: Read error at position 70
+entry:0:block:known:bad:d1:media/movie3.mkv:70:
+fixed:103:d1:media/movie3.mkv: Fixed data error at position 70
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 4653056.
+error:104:d1:media/movie3.mkv: Read error at position 71
+entry:0:block:known:bad:d1:media/movie3.mkv:71:
+fixed:104:d1:media/movie3.mkv: Fixed data error at position 71
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 4718592.
+error:105:d1:media/movie3.mkv: Read error at position 72
+entry:0:block:known:bad:d1:media/movie3.mkv:72:
+fixed:105:d1:media/movie3.mkv: Fixed data error at position 72
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 4784128.
+error:106:d1:media/movie3.mkv: Read error at position 73
+entry:0:block:known:bad:d1:media/movie3.mkv:73:
+fixed:106:d1:media/movie3.mkv: Fixed data error at position 73
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 4849664.
+error:107:d1:media/movie3.mkv: Read error at position 74
+entry:0:block:known:bad:d1:media/movie3.mkv:74:
+fixed:107:d1:media/movie3.mkv: Fixed data error at position 74
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 4915200.
+error:108:d1:media/movie3.mkv: Read error at position 75
+entry:0:block:known:bad:d1:media/movie3.mkv:75:
+fixed:108:d1:media/movie3.mkv: Fixed data error at position 75
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 4980736.
+error:109:d1:media/movie3.mkv: Read error at position 76
+entry:0:block:known:bad:d1:media/movie3.mkv:76:
+fixed:109:d1:media/movie3.mkv: Fixed data error at position 76
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 5046272.
+error:110:d1:media/movie3.mkv: Read error at position 77
+entry:0:block:known:bad:d1:media/movie3.mkv:77:
+fixed:110:d1:media/movie3.mkv: Fixed data error at position 77
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 5111808.
+error:111:d1:media/movie3.mkv: Read error at position 78
+entry:0:block:known:bad:d1:media/movie3.mkv:78:
+fixed:111:d1:media/movie3.mkv: Fixed data error at position 78
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 5177344.
+error:112:d1:media/movie3.mkv: Read error at position 79
+entry:0:block:known:bad:d1:media/movie3.mkv:79:
+fixed:112:d1:media/movie3.mkv: Fixed data error at position 79
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 5242880.
+error:113:d1:media/movie3.mkv: Read error at position 80
+entry:0:block:known:bad:d1:media/movie3.mkv:80:
+fixed:113:d1:media/movie3.mkv: Fixed data error at position 80
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 5308416.
+error:114:d1:media/movie3.mkv: Read error at position 81
+entry:0:block:known:bad:d1:media/movie3.mkv:81:
+fixed:114:d1:media/movie3.mkv: Fixed data error at position 81
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 5373952.
+error:115:d1:media/movie3.mkv: Read error at position 82
+entry:0:block:known:bad:d1:media/movie3.mkv:82:
+fixed:115:d1:media/movie3.mkv: Fixed data error at position 82
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 5439488.
+error:116:d1:media/movie3.mkv: Read error at position 83
+entry:0:block:known:bad:d1:media/movie3.mkv:83:
+fixed:116:d1:media/movie3.mkv: Fixed data error at position 83
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 5505024.
+error:117:d1:media/movie3.mkv: Read error at position 84
+entry:0:block:known:bad:d1:media/movie3.mkv:84:
+fixed:117:d1:media/movie3.mkv: Fixed data error at position 84
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 5570560.
+error:118:d1:media/movie3.mkv: Read error at position 85
+entry:0:block:known:bad:d1:media/movie3.mkv:85:
+fixed:118:d1:media/movie3.mkv: Fixed data error at position 85
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 5636096.
+error:119:d1:media/movie3.mkv: Read error at position 86
+entry:0:block:known:bad:d1:media/movie3.mkv:86:
+fixed:119:d1:media/movie3.mkv: Fixed data error at position 86
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 5701632.
+error:120:d1:media/movie3.mkv: Read error at position 87
+entry:0:block:known:bad:d1:media/movie3.mkv:87:
+fixed:120:d1:media/movie3.mkv: Fixed data error at position 87
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 5767168.
+error:121:d1:media/movie3.mkv: Read error at position 88
+entry:0:block:known:bad:d1:media/movie3.mkv:88:
+fixed:121:d1:media/movie3.mkv: Fixed data error at position 88
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 5832704.
+error:122:d1:media/movie3.mkv: Read error at position 89
+entry:0:block:known:bad:d1:media/movie3.mkv:89:
+fixed:122:d1:media/movie3.mkv: Fixed data error at position 89
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 5898240.
+error:123:d1:media/movie3.mkv: Read error at position 90
+entry:0:block:known:bad:d1:media/movie3.mkv:90:
+fixed:123:d1:media/movie3.mkv: Fixed data error at position 90
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 5963776.
+error:124:d1:media/movie3.mkv: Read error at position 91
+entry:0:block:known:bad:d1:media/movie3.mkv:91:
+fixed:124:d1:media/movie3.mkv: Fixed data error at position 91
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 6029312.
+error:125:d1:media/movie3.mkv: Read error at position 92
+entry:0:block:known:bad:d1:media/movie3.mkv:92:
+fixed:125:d1:media/movie3.mkv: Fixed data error at position 92
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 6094848.
+error:126:d1:media/movie3.mkv: Read error at position 93
+entry:0:block:known:bad:d1:media/movie3.mkv:93:
+fixed:126:d1:media/movie3.mkv: Fixed data error at position 93
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 6160384.
+error:127:d1:media/movie3.mkv: Read error at position 94
+entry:0:block:known:bad:d1:media/movie3.mkv:94:
+fixed:127:d1:media/movie3.mkv: Fixed data error at position 94
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 6225920.
+error:128:d1:media/movie3.mkv: Read error at position 95
+entry:0:block:known:bad:d1:media/movie3.mkv:95:
+fixed:128:d1:media/movie3.mkv: Fixed data error at position 95
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 6291456.
+error:129:d1:media/movie3.mkv: Read error at position 96
+entry:0:block:known:bad:d1:media/movie3.mkv:96:
+fixed:129:d1:media/movie3.mkv: Fixed data error at position 96
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 6356992.
+error:130:d1:media/movie3.mkv: Read error at position 97
+entry:0:block:known:bad:d1:media/movie3.mkv:97:
+fixed:130:d1:media/movie3.mkv: Fixed data error at position 97
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 6422528.
+error:131:d1:media/movie3.mkv: Read error at position 98
+entry:0:block:known:bad:d1:media/movie3.mkv:98:
+fixed:131:d1:media/movie3.mkv: Fixed data error at position 98
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 6488064.
+error:132:d1:media/movie3.mkv: Read error at position 99
+entry:0:block:known:bad:d1:media/movie3.mkv:99:
+fixed:132:d1:media/movie3.mkv: Fixed data error at position 99
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 6553600.
+error:133:d1:media/movie3.mkv: Read error at position 100
+entry:0:block:known:bad:d1:media/movie3.mkv:100:
+fixed:133:d1:media/movie3.mkv: Fixed data error at position 100
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 6619136.
+error:134:d1:media/movie3.mkv: Read error at position 101
+entry:0:block:known:bad:d1:media/movie3.mkv:101:
+fixed:134:d1:media/movie3.mkv: Fixed data error at position 101
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 6684672.
+error:135:d1:media/movie3.mkv: Read error at position 102
+entry:0:block:known:bad:d1:media/movie3.mkv:102:
+fixed:135:d1:media/movie3.mkv: Fixed data error at position 102
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 6750208.
+error:136:d1:media/movie3.mkv: Read error at position 103
+entry:0:block:known:bad:d1:media/movie3.mkv:103:
+fixed:136:d1:media/movie3.mkv: Fixed data error at position 103
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 6815744.
+error:137:d1:media/movie3.mkv: Read error at position 104
+entry:0:block:known:bad:d1:media/movie3.mkv:104:
+fixed:137:d1:media/movie3.mkv: Fixed data error at position 104
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 6881280.
+error:138:d1:media/movie3.mkv: Read error at position 105
+entry:0:block:known:bad:d1:media/movie3.mkv:105:
+fixed:138:d1:media/movie3.mkv: Fixed data error at position 105
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 6946816.
+error:139:d1:media/movie3.mkv: Read error at position 106
+entry:0:block:known:bad:d1:media/movie3.mkv:106:
+fixed:139:d1:media/movie3.mkv: Fixed data error at position 106
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 7012352.
+error:140:d1:media/movie3.mkv: Read error at position 107
+entry:0:block:known:bad:d1:media/movie3.mkv:107:
+fixed:140:d1:media/movie3.mkv: Fixed data error at position 107
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 7077888.
+error:141:d1:media/movie3.mkv: Read error at position 108
+entry:0:block:known:bad:d1:media/movie3.mkv:108:
+fixed:141:d1:media/movie3.mkv: Fixed data error at position 108
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 7143424.
+error:142:d1:media/movie3.mkv: Read error at position 109
+entry:0:block:known:bad:d1:media/movie3.mkv:109:
+fixed:142:d1:media/movie3.mkv: Fixed data error at position 109
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 7208960.
+error:143:d1:media/movie3.mkv: Read error at position 110
+entry:0:block:known:bad:d1:media/movie3.mkv:110:
+fixed:143:d1:media/movie3.mkv: Fixed data error at position 110
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 7274496.
+error:144:d1:media/movie3.mkv: Read error at position 111
+entry:0:block:known:bad:d1:media/movie3.mkv:111:
+fixed:144:d1:media/movie3.mkv: Fixed data error at position 111
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 7340032.
+error:145:d1:media/movie3.mkv: Read error at position 112
+entry:0:block:known:bad:d1:media/movie3.mkv:112:
+fixed:145:d1:media/movie3.mkv: Fixed data error at position 112
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 7405568.
+error:146:d1:media/movie3.mkv: Read error at position 113
+entry:0:block:known:bad:d1:media/movie3.mkv:113:
+fixed:146:d1:media/movie3.mkv: Fixed data error at position 113
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 7471104.
+error:147:d1:media/movie3.mkv: Read error at position 114
+entry:0:block:known:bad:d1:media/movie3.mkv:114:
+fixed:147:d1:media/movie3.mkv: Fixed data error at position 114
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 7536640.
+error:148:d1:media/movie3.mkv: Read error at position 115
+entry:0:block:known:bad:d1:media/movie3.mkv:115:
+fixed:148:d1:media/movie3.mkv: Fixed data error at position 115
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 7602176.
+error:149:d1:media/movie3.mkv: Read error at position 116
+entry:0:block:known:bad:d1:media/movie3.mkv:116:
+fixed:149:d1:media/movie3.mkv: Fixed data error at position 116
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 7667712.
+error:150:d1:media/movie3.mkv: Read error at position 117
+entry:0:block:known:bad:d1:media/movie3.mkv:117:
+fixed:150:d1:media/movie3.mkv: Fixed data error at position 117
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 7733248.
+error:151:d1:media/movie3.mkv: Read error at position 118
+entry:0:block:known:bad:d1:media/movie3.mkv:118:
+fixed:151:d1:media/movie3.mkv: Fixed data error at position 118
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 7798784.
+error:152:d1:media/movie3.mkv: Read error at position 119
+entry:0:block:known:bad:d1:media/movie3.mkv:119:
+fixed:152:d1:media/movie3.mkv: Fixed data error at position 119
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 7864320.
+error:153:d1:media/movie3.mkv: Read error at position 120
+entry:0:block:known:bad:d1:media/movie3.mkv:120:
+fixed:153:d1:media/movie3.mkv: Fixed data error at position 120
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 7929856.
+error:154:d1:media/movie3.mkv: Read error at position 121
+entry:0:block:known:bad:d1:media/movie3.mkv:121:
+fixed:154:d1:media/movie3.mkv: Fixed data error at position 121
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 7995392.
+error:155:d1:media/movie3.mkv: Read error at position 122
+entry:0:block:known:bad:d1:media/movie3.mkv:122:
+fixed:155:d1:media/movie3.mkv: Fixed data error at position 122
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 8060928.
+error:156:d1:media/movie3.mkv: Read error at position 123
+entry:0:block:known:bad:d1:media/movie3.mkv:123:
+fixed:156:d1:media/movie3.mkv: Fixed data error at position 123
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 8126464.
+error:157:d1:media/movie3.mkv: Read error at position 124
+entry:0:block:known:bad:d1:media/movie3.mkv:124:
+fixed:157:d1:media/movie3.mkv: Fixed data error at position 124
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 8192000.
+error:158:d1:media/movie3.mkv: Read error at position 125
+entry:0:block:known:bad:d1:media/movie3.mkv:125:
+fixed:158:d1:media/movie3.mkv: Fixed data error at position 125
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 8257536.
+error:159:d1:media/movie3.mkv: Read error at position 126
+entry:0:block:known:bad:d1:media/movie3.mkv:126:
+fixed:159:d1:media/movie3.mkv: Fixed data error at position 126
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 8323072.
+error:160:d1:media/movie3.mkv: Read error at position 127
+entry:0:block:known:bad:d1:media/movie3.mkv:127:
+fixed:160:d1:media/movie3.mkv: Fixed data error at position 127
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 8388608.
+error:161:d1:media/movie3.mkv: Read error at position 128
+entry:0:block:known:bad:d1:media/movie3.mkv:128:
+fixed:161:d1:media/movie3.mkv: Fixed data error at position 128
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 8454144.
+error:162:d1:media/movie3.mkv: Read error at position 129
+entry:0:block:known:bad:d1:media/movie3.mkv:129:
+fixed:162:d1:media/movie3.mkv: Fixed data error at position 129
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 8519680.
+error:163:d1:media/movie3.mkv: Read error at position 130
+entry:0:block:known:bad:d1:media/movie3.mkv:130:
+fixed:163:d1:media/movie3.mkv: Fixed data error at position 130
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 8585216.
+error:164:d1:media/movie3.mkv: Read error at position 131
+entry:0:block:known:bad:d1:media/movie3.mkv:131:
+fixed:164:d1:media/movie3.mkv: Fixed data error at position 131
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 8650752.
+error:165:d1:media/movie3.mkv: Read error at position 132
+entry:0:block:known:bad:d1:media/movie3.mkv:132:
+fixed:165:d1:media/movie3.mkv: Fixed data error at position 132
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 8716288.
+error:166:d1:media/movie3.mkv: Read error at position 133
+entry:0:block:known:bad:d1:media/movie3.mkv:133:
+fixed:166:d1:media/movie3.mkv: Fixed data error at position 133
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 8781824.
+error:167:d1:media/movie3.mkv: Read error at position 134
+entry:0:block:known:bad:d1:media/movie3.mkv:134:
+fixed:167:d1:media/movie3.mkv: Fixed data error at position 134
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 8847360.
+error:168:d1:media/movie3.mkv: Read error at position 135
+entry:0:block:known:bad:d1:media/movie3.mkv:135:
+fixed:168:d1:media/movie3.mkv: Fixed data error at position 135
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 8912896.
+error:169:d1:media/movie3.mkv: Read error at position 136
+entry:0:block:known:bad:d1:media/movie3.mkv:136:
+fixed:169:d1:media/movie3.mkv: Fixed data error at position 136
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 8978432.
+error:170:d1:media/movie3.mkv: Read error at position 137
+entry:0:block:known:bad:d1:media/movie3.mkv:137:
+fixed:170:d1:media/movie3.mkv: Fixed data error at position 137
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 9043968.
+error:171:d1:media/movie3.mkv: Read error at position 138
+entry:0:block:known:bad:d1:media/movie3.mkv:138:
+fixed:171:d1:media/movie3.mkv: Fixed data error at position 138
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 9109504.
+error:172:d1:media/movie3.mkv: Read error at position 139
+entry:0:block:known:bad:d1:media/movie3.mkv:139:
+fixed:172:d1:media/movie3.mkv: Fixed data error at position 139
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 9175040.
+error:173:d1:media/movie3.mkv: Read error at position 140
+entry:0:block:known:bad:d1:media/movie3.mkv:140:
+fixed:173:d1:media/movie3.mkv: Fixed data error at position 140
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 9240576.
+error:174:d1:media/movie3.mkv: Read error at position 141
+entry:0:block:known:bad:d1:media/movie3.mkv:141:
+fixed:174:d1:media/movie3.mkv: Fixed data error at position 141
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 9306112.
+error:175:d1:media/movie3.mkv: Read error at position 142
+entry:0:block:known:bad:d1:media/movie3.mkv:142:
+fixed:175:d1:media/movie3.mkv: Fixed data error at position 142
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 9371648.
+error:176:d1:media/movie3.mkv: Read error at position 143
+entry:0:block:known:bad:d1:media/movie3.mkv:143:
+fixed:176:d1:media/movie3.mkv: Fixed data error at position 143
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 9437184.
+error:177:d1:media/movie3.mkv: Read error at position 144
+entry:0:block:known:bad:d1:media/movie3.mkv:144:
+fixed:177:d1:media/movie3.mkv: Fixed data error at position 144
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 9502720.
+error:178:d1:media/movie3.mkv: Read error at position 145
+entry:0:block:known:bad:d1:media/movie3.mkv:145:
+fixed:178:d1:media/movie3.mkv: Fixed data error at position 145
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 9568256.
+error:179:d1:media/movie3.mkv: Read error at position 146
+entry:0:block:known:bad:d1:media/movie3.mkv:146:
+fixed:179:d1:media/movie3.mkv: Fixed data error at position 146
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 9633792.
+error:180:d1:media/movie3.mkv: Read error at position 147
+entry:0:block:known:bad:d1:media/movie3.mkv:147:
+fixed:180:d1:media/movie3.mkv: Fixed data error at position 147
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 9699328.
+error:181:d1:media/movie3.mkv: Read error at position 148
+entry:0:block:known:bad:d1:media/movie3.mkv:148:
+fixed:181:d1:media/movie3.mkv: Fixed data error at position 148
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 9764864.
+error:182:d1:media/movie3.mkv: Read error at position 149
+entry:0:block:known:bad:d1:media/movie3.mkv:149:
+fixed:182:d1:media/movie3.mkv: Fixed data error at position 149
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 9830400.
+error:183:d1:media/movie3.mkv: Read error at position 150
+entry:0:block:known:bad:d1:media/movie3.mkv:150:
+fixed:183:d1:media/movie3.mkv: Fixed data error at position 150
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 9895936.
+error:184:d1:media/movie3.mkv: Read error at position 151
+entry:0:block:known:bad:d1:media/movie3.mkv:151:
+fixed:184:d1:media/movie3.mkv: Fixed data error at position 151
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 9961472.
+error:185:d1:media/movie3.mkv: Read error at position 152
+entry:0:block:known:bad:d1:media/movie3.mkv:152:
+fixed:185:d1:media/movie3.mkv: Fixed data error at position 152
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 10027008.
+error:186:d1:media/movie3.mkv: Read error at position 153
+entry:0:block:known:bad:d1:media/movie3.mkv:153:
+fixed:186:d1:media/movie3.mkv: Fixed data error at position 153
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 10092544.
+error:187:d1:media/movie3.mkv: Read error at position 154
+entry:0:block:known:bad:d1:media/movie3.mkv:154:
+fixed:187:d1:media/movie3.mkv: Fixed data error at position 154
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 10158080.
+error:188:d1:media/movie3.mkv: Read error at position 155
+entry:0:block:known:bad:d1:media/movie3.mkv:155:
+fixed:188:d1:media/movie3.mkv: Fixed data error at position 155
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 10223616.
+error:189:d1:media/movie3.mkv: Read error at position 156
+entry:0:block:known:bad:d1:media/movie3.mkv:156:
+fixed:189:d1:media/movie3.mkv: Fixed data error at position 156
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 10289152.
+error:190:d1:media/movie3.mkv: Read error at position 157
+entry:0:block:known:bad:d1:media/movie3.mkv:157:
+fixed:190:d1:media/movie3.mkv: Fixed data error at position 157
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 10354688.
+error:191:d1:media/movie3.mkv: Read error at position 158
+entry:0:block:known:bad:d1:media/movie3.mkv:158:
+fixed:191:d1:media/movie3.mkv: Fixed data error at position 158
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 10420224.
+error:192:d1:media/movie3.mkv: Read error at position 159
+entry:0:block:known:bad:d1:media/movie3.mkv:159:
+fixed:192:d1:media/movie3.mkv: Fixed data error at position 159
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 10485760.
+error:193:d1:media/movie3.mkv: Read error at position 160
+entry:0:block:known:bad:d1:media/movie3.mkv:160:
+fixed:193:d1:media/movie3.mkv: Fixed data error at position 160
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 10551296.
+error:194:d1:media/movie3.mkv: Read error at position 161
+entry:0:block:known:bad:d1:media/movie3.mkv:161:
+fixed:194:d1:media/movie3.mkv: Fixed data error at position 161
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 10616832.
+error:195:d1:media/movie3.mkv: Read error at position 162
+entry:0:block:known:bad:d1:media/movie3.mkv:162:
+fixed:195:d1:media/movie3.mkv: Fixed data error at position 162
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 10682368.
+error:196:d1:media/movie3.mkv: Read error at position 163
+entry:0:block:known:bad:d1:media/movie3.mkv:163:
+fixed:196:d1:media/movie3.mkv: Fixed data error at position 163
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 10747904.
+error:197:d1:media/movie3.mkv: Read error at position 164
+entry:0:block:known:bad:d1:media/movie3.mkv:164:
+fixed:197:d1:media/movie3.mkv: Fixed data error at position 164
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 10813440.
+error:198:d1:media/movie3.mkv: Read error at position 165
+entry:0:block:known:bad:d1:media/movie3.mkv:165:
+fixed:198:d1:media/movie3.mkv: Fixed data error at position 165
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 10878976.
+error:199:d1:media/movie3.mkv: Read error at position 166
+entry:0:block:known:bad:d1:media/movie3.mkv:166:
+fixed:199:d1:media/movie3.mkv: Fixed data error at position 166
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 10944512.
+error:200:d1:media/movie3.mkv: Read error at position 167
+entry:0:block:known:bad:d1:media/movie3.mkv:167:
+fixed:200:d1:media/movie3.mkv: Fixed data error at position 167
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 11010048.
+error:201:d1:media/movie3.mkv: Read error at position 168
+entry:0:block:known:bad:d1:media/movie3.mkv:168:
+fixed:201:d1:media/movie3.mkv: Fixed data error at position 168
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 11075584.
+error:202:d1:media/movie3.mkv: Read error at position 169
+entry:0:block:known:bad:d1:media/movie3.mkv:169:
+fixed:202:d1:media/movie3.mkv: Fixed data error at position 169
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 11141120.
+error:203:d1:media/movie3.mkv: Read error at position 170
+entry:0:block:known:bad:d1:media/movie3.mkv:170:
+fixed:203:d1:media/movie3.mkv: Fixed data error at position 170
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 11206656.
+error:204:d1:media/movie3.mkv: Read error at position 171
+entry:0:block:known:bad:d1:media/movie3.mkv:171:
+fixed:204:d1:media/movie3.mkv: Fixed data error at position 171
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 11272192.
+error:205:d1:media/movie3.mkv: Read error at position 172
+entry:0:block:known:bad:d1:media/movie3.mkv:172:
+fixed:205:d1:media/movie3.mkv: Fixed data error at position 172
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 11337728.
+error:206:d1:media/movie3.mkv: Read error at position 173
+entry:0:block:known:bad:d1:media/movie3.mkv:173:
+fixed:206:d1:media/movie3.mkv: Fixed data error at position 173
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 11403264.
+error:207:d1:media/movie3.mkv: Read error at position 174
+entry:0:block:known:bad:d1:media/movie3.mkv:174:
+fixed:207:d1:media/movie3.mkv: Fixed data error at position 174
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 11468800.
+error:208:d1:media/movie3.mkv: Read error at position 175
+entry:0:block:known:bad:d1:media/movie3.mkv:175:
+fixed:208:d1:media/movie3.mkv: Fixed data error at position 175
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 11534336.
+error:209:d1:media/movie3.mkv: Read error at position 176
+entry:0:block:known:bad:d1:media/movie3.mkv:176:
+fixed:209:d1:media/movie3.mkv: Fixed data error at position 176
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 11599872.
+error:210:d1:media/movie3.mkv: Read error at position 177
+entry:0:block:known:bad:d1:media/movie3.mkv:177:
+fixed:210:d1:media/movie3.mkv: Fixed data error at position 177
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 11665408.
+error:211:d1:media/movie3.mkv: Read error at position 178
+entry:0:block:known:bad:d1:media/movie3.mkv:178:
+fixed:211:d1:media/movie3.mkv: Fixed data error at position 178
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 11730944.
+error:212:d1:media/movie3.mkv: Read error at position 179
+entry:0:block:known:bad:d1:media/movie3.mkv:179:
+fixed:212:d1:media/movie3.mkv: Fixed data error at position 179
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 11796480.
+error:213:d1:media/movie3.mkv: Read error at position 180
+entry:0:block:known:bad:d1:media/movie3.mkv:180:
+fixed:213:d1:media/movie3.mkv: Fixed data error at position 180
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 11862016.
+error:214:d1:media/movie3.mkv: Read error at position 181
+entry:0:block:known:bad:d1:media/movie3.mkv:181:
+fixed:214:d1:media/movie3.mkv: Fixed data error at position 181
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 11927552.
+error:215:d1:media/movie3.mkv: Read error at position 182
+entry:0:block:known:bad:d1:media/movie3.mkv:182:
+fixed:215:d1:media/movie3.mkv: Fixed data error at position 182
+msg:error: Reading data from missing file '/mnt/disk1/media/movie3.mkv' at offset 11993088.
+error:216:d1:media/movie3.mkv: Read error at position 183
+entry:0:block:known:bad:d1:media/movie3.mkv:183:
+fixed:216:d1:media/movie3.mkv: Fixed data error at position 183
+status:recovered:d1:media/movie3.mkv
+msg:error: Reading data from missing file '/mnt/disk1/live/db3.dat' at offset 0.
+error:217:d1:live/db3.dat: Read error at position 0
+entry:0:block:known:bad:d1:live/db3.dat:0:
+fixed:217:d1:live/db3.dat: Fixed data error at position 0
+msg:error: Reading data from missing file '/mnt/disk1/live/db3.dat' at offset 65536.
+error:218:d1:live/db3.dat: Read error at position 1
+entry:0:block:known:bad:d1:live/db3.dat:1:
+fixed:218:d1:live/db3.dat: Fixed data error at position 1
+msg:error: Reading data from missing file '/mnt/disk1/live/db3.dat' at offset 131072.
+error:219:d1:live/db3.dat: Read error at position 2
+entry:0:block:known:bad:d1:live/db3.dat:2:
+fixed:219:d1:live/db3.dat: Fixed data error at position 2
+msg:error: Reading data from missing file '/mnt/disk1/live/db3.dat' at offset 196608.
+error:220:d1:live/db3.dat: Read error at position 3
+entry:0:block:known:bad:d1:live/db3.dat:3:
+fixed:220:d1:live/db3.dat: Fixed data error at position 3
+msg:error: Reading data from missing file '/mnt/disk1/live/db3.dat' at offset 262144.
+error:221:d1:live/db3.dat: Read error at position 4
+entry:0:block:known:bad:d1:live/db3.dat:4:
+fixed:221:d1:live/db3.dat: Fixed data error at position 4
+msg:error: Reading data from missing file '/mnt/disk1/live/db3.dat' at offset 327680.
+error:222:d1:live/db3.dat: Read error at position 5
+entry:0:block:known:bad:d1:live/db3.dat:5:
+fixed:222:d1:live/db3.dat: Fixed data error at position 5
+msg:error: Reading data from missing file '/mnt/disk1/live/db3.dat' at offset 393216.
+error:223:d1:live/db3.dat: Read error at position 6
+entry:0:block:known:bad:d1:live/db3.dat:6:
+fixed:223:d1:live/db3.dat: Fixed data error at position 6
+msg:error: Reading data from missing file '/mnt/disk1/live/db3.dat' at offset 458752.
+error:224:d1:live/db3.dat: Read error at position 7
+entry:0:block:known:bad:d1:live/db3.dat:7:
+fixed:224:d1:live/db3.dat: Fixed data error at position 7
+msg:error: Reading data from missing file '/mnt/disk1/live/db3.dat' at offset 524288.
+error:225:d1:live/db3.dat: Read error at position 8
+entry:0:block:known:bad:d1:live/db3.dat:8:
+fixed:225:d1:live/db3.dat: Fixed data error at position 8
+msg:error: Reading data from missing file '/mnt/disk1/live/db3.dat' at offset 589824.
+error:226:d1:live/db3.dat: Read error at position 9
+entry:0:block:known:bad:d1:live/db3.dat:9:
+fixed:226:d1:live/db3.dat: Fixed data error at position 9
+msg:error: Reading data from missing file '/mnt/disk1/live/db3.dat' at offset 655360.
+error:227:d1:live/db3.dat: Read error at position 10
+entry:0:block:known:bad:d1:live/db3.dat:10:
+fixed:227:d1:live/db3.dat: Fixed data error at position 10
+msg:error: Reading data from missing file '/mnt/disk1/live/db3.dat' at offset 720896.
+error:228:d1:live/db3.dat: Read error at position 11
+entry:0:block:known:bad:d1:live/db3.dat:11:
+fixed:228:d1:live/db3.dat: Fixed data error at position 11
+msg:error: Reading data from missing file '/mnt/disk1/live/db3.dat' at offset 786432.
+error:229:d1:live/db3.dat: Read error at position 12
+entry:0:block:known:bad:d1:live/db3.dat:12:
+fixed:229:d1:live/db3.dat: Fixed data error at position 12
+msg:error: Reading data from missing file '/mnt/disk1/live/db3.dat' at offset 851968.
+error:230:d1:live/db3.dat: Read error at position 13
+entry:0:block:known:bad:d1:live/db3.dat:13:
+fixed:230:d1:live/db3.dat: Fixed data error at position 13
+msg:error: Reading data from missing file '/mnt/disk1/live/db3.dat' at offset 917504.
+error:231:d1:live/db3.dat: Read error at position 14
+entry:0:block:known:bad:d1:live/db3.dat:14:
+fixed:231:d1:live/db3.dat: Fixed data error at position 14
+msg:error: Reading data from missing file '/mnt/disk1/live/db3.dat' at offset 983040.
+error:232:d1:live/db3.dat: Read error at position 15
+entry:0:block:known:bad:d1:live/db3.dat:15:
+fixed:232:d1:live/db3.dat: Fixed data error at position 15
+status:recovered:d1:live/db3.dat
+collision:d1:live/db3.dat:live/db2.dat: Not setting modification time to avoid inode collision
+msg:error: Reading data from missing file '/mnt/disk1/live/db4.dat' at offset 0.
+error:233:d1:live/db4.dat: Read error at position 0
+entry:0:block:known:bad:d1:live/db4.dat:0:
+fixed:233:d1:live/db4.dat: Fixed data error at position 0
+msg:error: Reading data from missing file '/mnt/disk1/live/db4.dat' at offset 65536.
+error:234:d1:live/db4.dat: Read error at position 1
+entry:0:block:known:bad:d1:live/db4.dat:1:
+fixed:234:d1:live/db4.dat: Fixed data error at position 1
+msg:error: Reading data from missing file '/mnt/disk1/live/db4.dat' at offset 131072.
+error:235:d1:live/db4.dat: Read error at position 2
+entry:0:block:known:bad:d1:live/db4.dat:2:
+fixed:235:d1:live/db4.dat: Fixed data error at position 2
+msg:error: Reading data from missing file '/mnt/disk1/live/db4.dat' at offset 196608.
+error:236:d1:live/db4.dat: Read error at position 3
+entry:0:block:known:bad:d1:live/db4.dat:3:
+fixed:236:d1:live/db4.dat: Fixed data error at position 3
+msg:error: Reading data from missing file '/mnt/disk1/live/db4.dat' at offset 262144.
+error:237:d1:live/db4.dat: Read error at position 4
+entry:0:block:known:bad:d1:live/db4.dat:4:
+fixed:237:d1:live/db4.dat: Fixed data error at position 4
+msg:error: Reading data from missing file '/mnt/disk1/live/db4.dat' at offset 327680.
+error:238:d1:live/db4.dat: Read error at position 5
+entry:0:block:known:bad:d1:live/db4.dat:5:
+fixed:238:d1:live/db4.dat: Fixed data error at position 5
+msg:error: Reading data from missing file '/mnt/disk1/live/db4.dat' at offset 393216.
+error:239:d1:live/db4.dat: Read error at position 6
+entry:0:block:known:bad:d1:live/db4.dat:6:
+fixed:239:d1:live/db4.dat: Fixed data error at position 6
+msg:error: Reading data from missing file '/mnt/disk1/live/db4.dat' at offset 458752.
+error:240:d1:live/db4.dat: Read error at position 7
+entry:0:block:known:bad:d1:live/db4.dat:7:
+fixed:240:d1:live/db4.dat: Fixed data error at position 7
+msg:error: Reading data from missing file '/mnt/disk1/live/db4.dat' at offset 524288.
+error:241:d1:live/db4.dat: Read error at position 8
+entry:0:block:known:bad:d1:live/db4.dat:8:
+fixed:241:d1:live/db4.dat: Fixed data error at position 8
+msg:error: Reading data from missing file '/mnt/disk1/live/db4.dat' at offset 589824.
+error:242:d1:live/db4.dat: Read error at position 9
+entry:0:block:known:bad:d1:live/db4.dat:9:
+fixed:242:d1:live/db4.dat: Fixed data error at position 9
+msg:error: Reading data from missing file '/mnt/disk1/live/db4.dat' at offset 655360.
+error:243:d1:live/db4.dat: Read error at position 10
+entry:0:block:known:bad:d1:live/db4.dat:10:
+fixed:243:d1:live/db4.dat: Fixed data error at position 10
+msg:error: Reading data from missing file '/mnt/disk1/live/db4.dat' at offset 720896.
+error:244:d1:live/db4.dat: Read error at position 11
+entry:0:block:known:bad:d1:live/db4.dat:11:
+fixed:244:d1:live/db4.dat: Fixed data error at position 11
+msg:error: Reading data from missing file '/mnt/disk1/live/db4.dat' at offset 786432.
+error:245:d1:live/db4.dat: Read error at position 12
+entry:0:block:known:bad:d1:live/db4.dat:12:
+fixed:245:d1:live/db4.dat: Fixed data error at position 12
+msg:error: Reading data from missing file '/mnt/disk1/live/db4.dat' at offset 851968.
+error:246:d1:live/db4.dat: Read error at position 13
+entry:0:block:known:bad:d1:live/db4.dat:13:
+fixed:246:d1:live/db4.dat: Fixed data error at position 13
+msg:error: Reading data from missing file '/mnt/disk1/live/db4.dat' at offset 917504.
+error:247:d1:live/db4.dat: Read error at position 14
+entry:0:block:known:bad:d1:live/db4.dat:14:
+fixed:247:d1:live/db4.dat: Fixed data error at position 14
+msg:error: Reading data from missing file '/mnt/disk1/live/db4.dat' at offset 983040.
+error:248:d1:live/db4.dat: Read error at position 15
+entry:0:block:known:bad:d1:live/db4.dat:15:
+fixed:248:d1:live/db4.dat: Fixed data error at position 15
+status:recovered:d1:live/db4.dat
+collision:d1:live/db4.dat:live/db3.dat: Not setting modification time to avoid inode collision
+msg:error: Reading data from missing file '/mnt/disk1/live/db1.dat' at offset 0.
+error:249:d1:live/db1.dat: Read error at position 0
+entry:0:block:known:bad:d1:live/db1.dat:0:
+fixed:249:d1:live/db1.dat: Fixed data error at position 0
+msg:error: Reading data from missing file '/mnt/disk1/live/db1.dat' at offset 65536.
+error:250:d1:live/db1.dat: Read error at position 1
+entry:0:block:known:bad:d1:live/db1.dat:1:
+fixed:250:d1:live/db1.dat: Fixed data error at position 1
+msg:error: Reading data from missing file '/mnt/disk1/live/db1.dat' at offset 131072.
+error:251:d1:live/db1.dat: Read error at position 2
+entry:0:block:known:bad:d1:live/db1.dat:2:
+fixed:251:d1:live/db1.dat: Fixed data error at position 2
+msg:error: Reading data from missing file '/mnt/disk1/live/db1.dat' at offset 196608.
+error:252:d1:live/db1.dat: Read error at position 3
+entry:0:block:known:bad:d1:live/db1.dat:3:
+fixed:252:d1:live/db1.dat: Fixed data error at position 3
+msg:error: Reading data from missing file '/mnt/disk1/live/db1.dat' at offset 262144.
+error:253:d1:live/db1.dat: Read error at position 4
+entry:0:block:known:bad:d1:live/db1.dat:4:
+fixed:253:d1:live/db1.dat: Fixed data error at position 4
+msg:error: Reading data from missing file '/mnt/disk1/live/db1.dat' at offset 327680.
+error:254:d1:live/db1.dat: Read error at position 5
+entry:0:block:known:bad:d1:live/db1.dat:5:
+fixed:254:d1:live/db1.dat: Fixed data error at position 5
+msg:error: Reading data from missing file '/mnt/disk1/live/db1.dat' at offset 393216.
+error:255:d1:live/db1.dat: Read error at position 6
+entry:0:block:known:bad:d1:live/db1.dat:6:
+fixed:255:d1:live/db1.dat: Fixed data error at position 6
+msg:error: Reading data from missing file '/mnt/disk1/live/db1.dat' at offset 458752.
+error:256:d1:live/db1.dat: Read error at position 7
+entry:0:block:known:bad:d1:live/db1.dat:7:
+fixed:256:d1:live/db1.dat: Fixed data error at position 7
+msg:error: Reading data from missing file '/mnt/disk1/live/db1.dat' at offset 524288.
+error:257:d1:live/db1.dat: Read error at position 8
+entry:0:block:known:bad:d1:live/db1.dat:8:
+fixed:257:d1:live/db1.dat: Fixed data error at position 8
+msg:error: Reading data from missing file '/mnt/disk1/live/db1.dat' at offset 589824.
+error:258:d1:live/db1.dat: Read error at position 9
+entry:0:block:known:bad:d1:live/db1.dat:9:
+fixed:258:d1:live/db1.dat: Fixed data error at position 9
+msg:error: Reading data from missing file '/mnt/disk1/live/db1.dat' at offset 655360.
+error:259:d1:live/db1.dat: Read error at position 10
+entry:0:block:known:bad:d1:live/db1.dat:10:
+fixed:259:d1:live/db1.dat: Fixed data error at position 10
+msg:error: Reading data from missing file '/mnt/disk1/live/db1.dat' at offset 720896.
+error:260:d1:live/db1.dat: Read error at position 11
+entry:0:block:known:bad:d1:live/db1.dat:11:
+fixed:260:d1:live/db1.dat: Fixed data error at position 11
+msg:error: Reading data from missing file '/mnt/disk1/live/db1.dat' at offset 786432.
+error:261:d1:live/db1.dat: Read error at position 12
+entry:0:block:known:bad:d1:live/db1.dat:12:
+fixed:261:d1:live/db1.dat: Fixed data error at position 12
+msg:error: Reading data from missing file '/mnt/disk1/live/db1.dat' at offset 851968.
+error:262:d1:live/db1.dat: Read error at position 13
+entry:0:block:known:bad:d1:live/db1.dat:13:
+fixed:262:d1:live/db1.dat: Fixed data error at position 13
+msg:error: Reading data from missing file '/mnt/disk1/live/db1.dat' at offset 917504.
+error:263:d1:live/db1.dat: Read error at position 14
+entry:0:block:known:bad:d1:live/db1.dat:14:
+fixed:263:d1:live/db1.dat: Fixed data error at position 14
+msg:error: Reading data from missing file '/mnt/disk1/live/db1.dat' at offset 983040.
+error:264:d1:live/db1.dat: Read error at position 15
+entry:0:block:known:bad:d1:live/db1.dat:15:
+fixed:264:d1:live/db1.dat: Fixed data error at position 15
+status:recovered:d1:live/db1.dat
+msg:error: Reading data from missing file '/mnt/disk1/live/db2.dat' at offset 0.
+error:265:d1:live/db2.dat: Read error at position 0
+entry:0:block:known:bad:d1:live/db2.dat:0:
+fixed:265:d1:live/db2.dat: Fixed data error at position 0
+msg:error: Reading data from missing file '/mnt/disk1/live/db2.dat' at offset 65536.
+error:266:d1:live/db2.dat: Read error at position 1
+entry:0:block:known:bad:d1:live/db2.dat:1:
+fixed:266:d1:live/db2.dat: Fixed data error at position 1
+msg:error: Reading data from missing file '/mnt/disk1/live/db2.dat' at offset 131072.
+error:267:d1:live/db2.dat: Read error at position 2
+entry:0:block:known:bad:d1:live/db2.dat:2:
+fixed:267:d1:live/db2.dat: Fixed data error at position 2
+msg:error: Reading data from missing file '/mnt/disk1/live/db2.dat' at offset 196608.
+error:268:d1:live/db2.dat: Read error at position 3
+entry:0:block:known:bad:d1:live/db2.dat:3:
+fixed:268:d1:live/db2.dat: Fixed data error at position 3
+msg:error: Reading data from missing file '/mnt/disk1/live/db2.dat' at offset 262144.
+error:269:d1:live/db2.dat: Read error at position 4
+entry:0:block:known:bad:d1:live/db2.dat:4:
+fixed:269:d1:live/db2.dat: Fixed data error at position 4
+msg:error: Reading data from missing file '/mnt/disk1/live/db2.dat' at offset 327680.
+error:270:d1:live/db2.dat: Read error at position 5
+entry:0:block:known:bad:d1:live/db2.dat:5:
+fixed:270:d1:live/db2.dat: Fixed data error at position 5
+msg:error: Reading data from missing file '/mnt/disk1/live/db2.dat' at offset 393216.
+error:271:d1:live/db2.dat: Read error at position 6
+entry:0:block:known:bad:d1:live/db2.dat:6:
+fixed:271:d1:live/db2.dat: Fixed data error at position 6
+msg:error: Reading data from missing file '/mnt/disk1/live/db2.dat' at offset 458752.
+error:272:d1:live/db2.dat: Read error at position 7
+entry:0:block:known:bad:d1:live/db2.dat:7:
+fixed:272:d1:live/db2.dat: Fixed data error at position 7
+msg:error: Reading data from missing file '/mnt/disk1/live/db2.dat' at offset 524288.
+error:273:d1:live/db2.dat: Read error at position 8
+entry:0:block:known:bad:d1:live/db2.dat:8:
+fixed:273:d1:live/db2.dat: Fixed data error at position 8
+msg:error: Reading data from missing file '/mnt/disk1/live/db2.dat' at offset 589824.
+error:274:d1:live/db2.dat: Read error at position 9
+entry:0:block:known:bad:d1:live/db2.dat:9:
+fixed:274:d1:live/db2.dat: Fixed data error at position 9
+msg:error: Reading data from missing file '/mnt/disk1/live/db2.dat' at offset 655360.
+error:275:d1:live/db2.dat: Read error at position 10
+entry:0:block:known:bad:d1:live/db2.dat:10:
+fixed:275:d1:live/db2.dat: Fixed data error at position 10
+msg:error: Reading data from missing file '/mnt/disk1/live/db2.dat' at offset 720896.
+error:276:d1:live/db2.dat: Read error at position 11
+entry:0:block:known:bad:d1:live/db2.dat:11:
+fixed:276:d1:live/db2.dat: Fixed data error at position 11
+msg:error: Reading data from missing file '/mnt/disk1/live/db2.dat' at offset 786432.
+error:277:d1:live/db2.dat: Read error at position 12
+entry:0:block:known:bad:d1:live/db2.dat:12:
+fixed:277:d1:live/db2.dat: Fixed data error at position 12
+msg:error: Reading data from missing file '/mnt/disk1/live/db2.dat' at offset 851968.
+error:278:d1:live/db2.dat: Read error at position 13
+entry:0:block:known:bad:d1:live/db2.dat:13:
+fixed:278:d1:live/db2.dat: Fixed data error at position 13
+msg:error: Reading data from missing file '/mnt/disk1/live/db2.dat' at offset 917504.
+error:279:d1:live/db2.dat: Read error at position 14
+entry:0:block:known:bad:d1:live/db2.dat:14:
+fixed:279:d1:live/db2.dat: Fixed data error at position 14
+msg:error: Reading data from missing file '/mnt/disk1/live/db2.dat' at offset 983040.
+error:280:d1:live/db2.dat: Read error at position 15
+entry:0:block:known:bad:d1:live/db2.dat:15:
+fixed:280:d1:live/db2.dat: Fixed data error at position 15
+status:recovered:d1:live/db2.dat
+msg:error: Reading data from missing file '/mnt/disk1/live/db5.dat' at offset 0.
+error:281:d1:live/db5.dat: Read error at position 0
+entry:0:block:known:bad:d1:live/db5.dat:0:
+fixed:281:d1:live/db5.dat: Fixed data error at position 0
+msg:error: Reading data from missing file '/mnt/disk1/live/db5.dat' at offset 65536.
+error:282:d1:live/db5.dat: Read error at position 1
+entry:0:block:known:bad:d1:live/db5.dat:1:
+fixed:282:d1:live/db5.dat: Fixed data error at position 1
+msg:error: Reading data from missing file '/mnt/disk1/live/db5.dat' at offset 131072.
+error:283:d1:live/db5.dat: Read error at position 2
+entry:0:block:known:bad:d1:live/db5.dat:2:
+fixed:283:d1:live/db5.dat: Fixed data error at position 2
+msg:error: Reading data from missing file '/mnt/disk1/live/db5.dat' at offset 196608.
+error:284:d1:live/db5.dat: Read error at position 3
+entry:0:block:known:bad:d1:live/db5.dat:3:
+fixed:284:d1:live/db5.dat: Fixed data error at position 3
+msg:error: Reading data from missing file '/mnt/disk1/live/db5.dat' at offset 262144.
+error:285:d1:live/db5.dat: Read error at position 4
+entry:0:block:known:bad:d1:live/db5.dat:4:
+fixed:285:d1:live/db5.dat: Fixed data error at position 4
+msg:error: Reading data from missing file '/mnt/disk1/live/db5.dat' at offset 327680.
+error:286:d1:live/db5.dat: Read error at position 5
+entry:0:block:known:bad:d1:live/db5.dat:5:
+fixed:286:d1:live/db5.dat: Fixed data error at position 5
+msg:error: Reading data from missing file '/mnt/disk1/live/db5.dat' at offset 393216.
+error:287:d1:live/db5.dat: Read error at position 6
+entry:0:block:known:bad:d1:live/db5.dat:6:
+fixed:287:d1:live/db5.dat: Fixed data error at position 6
+msg:error: Reading data from missing file '/mnt/disk1/live/db5.dat' at offset 458752.
+error:288:d1:live/db5.dat: Read error at position 7
+entry:0:block:known:bad:d1:live/db5.dat:7:
+fixed:288:d1:live/db5.dat: Fixed data error at position 7
+msg:error: Reading data from missing file '/mnt/disk1/live/db5.dat' at offset 524288.
+error:289:d1:live/db5.dat: Read error at position 8
+entry:0:block:known:bad:d1:live/db5.dat:8:
+fixed:289:d1:live/db5.dat: Fixed data error at position 8
+msg:error: Reading data from missing file '/mnt/disk1/live/db5.dat' at offset 589824.
+error:290:d1:live/db5.dat: Read error at position 9
+entry:0:block:known:bad:d1:live/db5.dat:9:
+fixed:290:d1:live/db5.dat: Fixed data error at position 9
+msg:error: Reading data from missing file '/mnt/disk1/live/db5.dat' at offset 655360.
+error:291:d1:live/db5.dat: Read error at position 10
+entry:0:block:known:bad:d1:live/db5.dat:10:
+fixed:291:d1:live/db5.dat: Fixed data error at position 10
+msg:error: Reading data from missing file '/mnt/disk1/live/db5.dat' at offset 720896.
+error:292:d1:live/db5.dat: Read error at position 11
+entry:0:block:known:bad:d1:live/db5.dat:11:
+fixed:292:d1:live/db5.dat: Fixed data error at position 11
+msg:error: Reading data from missing file '/mnt/disk1/live/db5.dat' at offset 786432.
+error:293:d1:live/db5.dat: Read error at position 12
+entry:0:block:known:bad:d1:live/db5.dat:12:
+fixed:293:d1:live/db5.dat: Fixed data error at position 12
+msg:error: Reading data from missing file '/mnt/disk1/live/db5.dat' at offset 851968.
+error:294:d1:live/db5.dat: Read error at position 13
+entry:0:block:known:bad:d1:live/db5.dat:13:
+fixed:294:d1:live/db5.dat: Fixed data error at position 13
+msg:error: Reading data from missing file '/mnt/disk1/live/db5.dat' at offset 917504.
+error:295:d1:live/db5.dat: Read error at position 14
+entry:0:block:known:bad:d1:live/db5.dat:14:
+fixed:295:d1:live/db5.dat: Fixed data error at position 14
+msg:error: Reading data from missing file '/mnt/disk1/live/db5.dat' at offset 983040.
+error:296:d1:live/db5.dat: Read error at position 15
+entry:0:block:known:bad:d1:live/db5.dat:15:
+fixed:296:d1:live/db5.dat: Fixed data error at position 15
+status:recovered:d1:live/db5.dat
+msg:error: Reading data from missing file '/mnt/disk1/live/db6.dat' at offset 0.
+error:297:d1:live/db6.dat: Read error at position 0
+entry:0:block:known:bad:d1:live/db6.dat:0:
+fixed:297:d1:live/db6.dat: Fixed data error at position 0
+msg:error: Reading data from missing file '/mnt/disk1/live/db6.dat' at offset 65536.
+error:298:d1:live/db6.dat: Read error at position 1
+entry:0:block:known:bad:d1:live/db6.dat:1:
+fixed:298:d1:live/db6.dat: Fixed data error at position 1
+msg:error: Reading data from missing file '/mnt/disk1/live/db6.dat' at offset 131072.
+error:299:d1:live/db6.dat: Read error at position 2
+entry:0:block:known:bad:d1:live/db6.dat:2:
+fixed:299:d1:live/db6.dat: Fixed data error at position 2
+msg:error: Reading data from missing file '/mnt/disk1/live/db6.dat' at offset 196608.
+error:300:d1:live/db6.dat: Read error at position 3
+entry:0:block:known:bad:d1:live/db6.dat:3:
+fixed:300:d1:live/db6.dat: Fixed data error at position 3
+msg:error: Reading data from missing file '/mnt/disk1/live/db6.dat' at offset 262144.
+error:301:d1:live/db6.dat: Read error at position 4
+entry:0:block:known:bad:d1:live/db6.dat:4:
+fixed:301:d1:live/db6.dat: Fixed data error at position 4
+msg:error: Reading data from missing file '/mnt/disk1/live/db6.dat' at offset 327680.
+error:302:d1:live/db6.dat: Read error at position 5
+entry:0:block:known:bad:d1:live/db6.dat:5:
+fixed:302:d1:live/db6.dat: Fixed data error at position 5
+msg:error: Reading data from missing file '/mnt/disk1/live/db6.dat' at offset 393216.
+error:303:d1:live/db6.dat: Read error at position 6
+entry:0:block:known:bad:d1:live/db6.dat:6:
+fixed:303:d1:live/db6.dat: Fixed data error at position 6
+msg:error: Reading data from missing file '/mnt/disk1/live/db6.dat' at offset 458752.
+error:304:d1:live/db6.dat: Read error at position 7
+entry:0:block:known:bad:d1:live/db6.dat:7:
+fixed:304:d1:live/db6.dat: Fixed data error at position 7
+msg:error: Reading data from missing file '/mnt/disk1/live/db6.dat' at offset 524288.
+error:305:d1:live/db6.dat: Read error at position 8
+entry:0:block:known:bad:d1:live/db6.dat:8:
+fixed:305:d1:live/db6.dat: Fixed data error at position 8
+msg:error: Reading data from missing file '/mnt/disk1/live/db6.dat' at offset 589824.
+error:306:d1:live/db6.dat: Read error at position 9
+entry:0:block:known:bad:d1:live/db6.dat:9:
+fixed:306:d1:live/db6.dat: Fixed data error at position 9
+msg:error: Reading data from missing file '/mnt/disk1/live/db6.dat' at offset 655360.
+error:307:d1:live/db6.dat: Read error at position 10
+entry:0:block:known:bad:d1:live/db6.dat:10:
+fixed:307:d1:live/db6.dat: Fixed data error at position 10
+msg:error: Reading data from missing file '/mnt/disk1/live/db6.dat' at offset 720896.
+error:308:d1:live/db6.dat: Read error at position 11
+entry:0:block:known:bad:d1:live/db6.dat:11:
+fixed:308:d1:live/db6.dat: Fixed data error at position 11
+msg:error: Reading data from missing file '/mnt/disk1/live/db6.dat' at offset 786432.
+error:309:d1:live/db6.dat: Read error at position 12
+entry:0:block:known:bad:d1:live/db6.dat:12:
+fixed:309:d1:live/db6.dat: Fixed data error at position 12
+msg:error: Reading data from missing file '/mnt/disk1/live/db6.dat' at offset 851968.
+error:310:d1:live/db6.dat: Read error at position 13
+entry:0:block:known:bad:d1:live/db6.dat:13:
+fixed:310:d1:live/db6.dat: Fixed data error at position 13
+msg:error: Reading data from missing file '/mnt/disk1/live/db6.dat' at offset 917504.
+error:311:d1:live/db6.dat: Read error at position 14
+entry:0:block:known:bad:d1:live/db6.dat:14:
+fixed:311:d1:live/db6.dat: Fixed data error at position 14
+msg:error: Reading data from missing file '/mnt/disk1/live/db6.dat' at offset 983040.
+error:312:d1:live/db6.dat: Read error at position 15
+entry:0:block:known:bad:d1:live/db6.dat:15:
+fixed:312:d1:live/db6.dat: Fixed data error at position 15
+status:recovered:d1:live/db6.dat
+msg:error: Reading data from missing file '/mnt/disk1/live/db7.dat' at offset 0.
+error:313:d1:live/db7.dat: Read error at position 0
+entry:0:block:known:bad:d1:live/db7.dat:0:
+fixed:313:d1:live/db7.dat: Fixed data error at position 0
+msg:error: Reading data from missing file '/mnt/disk1/live/db7.dat' at offset 65536.
+error:314:d1:live/db7.dat: Read error at position 1
+entry:0:block:known:bad:d1:live/db7.dat:1:
+fixed:314:d1:live/db7.dat: Fixed data error at position 1
+msg:error: Reading data from missing file '/mnt/disk1/live/db7.dat' at offset 131072.
+error:315:d1:live/db7.dat: Read error at position 2
+entry:0:block:known:bad:d1:live/db7.dat:2:
+fixed:315:d1:live/db7.dat: Fixed data error at position 2
+msg:error: Reading data from missing file '/mnt/disk1/live/db7.dat' at offset 196608.
+error:316:d1:live/db7.dat: Read error at position 3
+entry:0:block:known:bad:d1:live/db7.dat:3:
+fixed:316:d1:live/db7.dat: Fixed data error at position 3
+msg:error: Reading data from missing file '/mnt/disk1/live/db7.dat' at offset 262144.
+error:317:d1:live/db7.dat: Read error at position 4
+entry:0:block:known:bad:d1:live/db7.dat:4:
+fixed:317:d1:live/db7.dat: Fixed data error at position 4
+msg:error: Reading data from missing file '/mnt/disk1/live/db7.dat' at offset 327680.
+error:318:d1:live/db7.dat: Read error at position 5
+entry:0:block:known:bad:d1:live/db7.dat:5:
+fixed:318:d1:live/db7.dat: Fixed data error at position 5
+msg:error: Reading data from missing file '/mnt/disk1/live/db7.dat' at offset 393216.
+error:319:d1:live/db7.dat: Read error at position 6
+entry:0:block:known:bad:d1:live/db7.dat:6:
+fixed:319:d1:live/db7.dat: Fixed data error at position 6
+msg:error: Reading data from missing file '/mnt/disk1/live/db7.dat' at offset 458752.
+error:320:d1:live/db7.dat: Read error at position 7
+entry:0:block:known:bad:d1:live/db7.dat:7:
+fixed:320:d1:live/db7.dat: Fixed data error at position 7
+msg:error: Reading data from missing file '/mnt/disk1/live/db7.dat' at offset 524288.
+error:321:d1:live/db7.dat: Read error at position 8
+entry:0:block:known:bad:d1:live/db7.dat:8:
+fixed:321:d1:live/db7.dat: Fixed data error at position 8
+msg:error: Reading data from missing file '/mnt/disk1/live/db7.dat' at offset 589824.
+error:322:d1:live/db7.dat: Read error at position 9
+entry:0:block:known:bad:d1:live/db7.dat:9:
+fixed:322:d1:live/db7.dat: Fixed data error at position 9
+msg:error: Reading data from missing file '/mnt/disk1/live/db7.dat' at offset 655360.
+error:323:d1:live/db7.dat: Read error at position 10
+entry:0:block:known:bad:d1:live/db7.dat:10:
+fixed:323:d1:live/db7.dat: Fixed data error at position 10
+msg:error: Reading data from missing file '/mnt/disk1/live/db7.dat' at offset 720896.
+error:324:d1:live/db7.dat: Read error at position 11
+entry:0:block:known:bad:d1:live/db7.dat:11:
+fixed:324:d1:live/db7.dat: Fixed data error at position 11
+msg:error: Reading data from missing file '/mnt/disk1/live/db7.dat' at offset 786432.
+error:325:d1:live/db7.dat: Read error at position 12
+entry:0:block:known:bad:d1:live/db7.dat:12:
+fixed:325:d1:live/db7.dat: Fixed data error at position 12
+msg:error: Reading data from missing file '/mnt/disk1/live/db7.dat' at offset 851968.
+error:326:d1:live/db7.dat: Read error at position 13
+entry:0:block:known:bad:d1:live/db7.dat:13:
+fixed:326:d1:live/db7.dat: Fixed data error at position 13
+msg:error: Reading data from missing file '/mnt/disk1/live/db7.dat' at offset 917504.
+error:327:d1:live/db7.dat: Read error at position 14
+entry:0:block:known:bad:d1:live/db7.dat:14:
+fixed:327:d1:live/db7.dat: Fixed data error at position 14
+msg:error: Reading data from missing file '/mnt/disk1/live/db7.dat' at offset 983040.
+error:328:d1:live/db7.dat: Read error at position 15
+entry:0:block:known:bad:d1:live/db7.dat:15:
+fixed:328:d1:live/db7.dat: Fixed data error at position 15
+status:recovered:d1:live/db7.dat
+collision:d1:live/db7.dat:live/db4.dat: Not setting modification time to avoid inode collision
+msg:error: Reading data from missing file '/mnt/disk1/live/db8.dat' at offset 0.
+error:329:d1:live/db8.dat: Read error at position 0
+entry:0:block:known:bad:d1:live/db8.dat:0:
+fixed:329:d1:live/db8.dat: Fixed data error at position 0
+msg:error: Reading data from missing file '/mnt/disk1/live/db8.dat' at offset 65536.
+error:330:d1:live/db8.dat: Read error at position 1
+entry:0:block:known:bad:d1:live/db8.dat:1:
+fixed:330:d1:live/db8.dat: Fixed data error at position 1
+msg:error: Reading data from missing file '/mnt/disk1/live/db8.dat' at offset 131072.
+error:331:d1:live/db8.dat: Read error at position 2
+entry:0:block:known:bad:d1:live/db8.dat:2:
+fixed:331:d1:live/db8.dat: Fixed data error at position 2
+msg:error: Reading data from missing file '/mnt/disk1/live/db8.dat' at offset 196608.
+error:332:d1:live/db8.dat: Read error at position 3
+entry:0:block:known:bad:d1:live/db8.dat:3:
+fixed:332:d1:live/db8.dat: Fixed data error at position 3
+msg:error: Reading data from missing file '/mnt/disk1/live/db8.dat' at offset 262144.
+error:333:d1:live/db8.dat: Read error at position 4
+entry:0:block:known:bad:d1:live/db8.dat:4:
+fixed:333:d1:live/db8.dat: Fixed data error at position 4
+msg:error: Reading data from missing file '/mnt/disk1/live/db8.dat' at offset 327680.
+error:334:d1:live/db8.dat: Read error at position 5
+entry:0:block:known:bad:d1:live/db8.dat:5:
+fixed:334:d1:live/db8.dat: Fixed data error at position 5
+msg:error: Reading data from missing file '/mnt/disk1/live/db8.dat' at offset 393216.
+error:335:d1:live/db8.dat: Read error at position 6
+entry:0:block:known:bad:d1:live/db8.dat:6:
+fixed:335:d1:live/db8.dat: Fixed data error at position 6
+msg:error: Reading data from missing file '/mnt/disk1/live/db8.dat' at offset 458752.
+error:336:d1:live/db8.dat: Read error at position 7
+entry:0:block:known:bad:d1:live/db8.dat:7:
+fixed:336:d1:live/db8.dat: Fixed data error at position 7
+msg:error: Reading data from missing file '/mnt/disk1/live/db8.dat' at offset 524288.
+error:337:d1:live/db8.dat: Read error at position 8
+entry:0:block:known:bad:d1:live/db8.dat:8:
+fixed:337:d1:live/db8.dat: Fixed data error at position 8
+msg:error: Reading data from missing file '/mnt/disk1/live/db8.dat' at offset 589824.
+error:338:d1:live/db8.dat: Read error at position 9
+entry:0:block:known:bad:d1:live/db8.dat:9:
+fixed:338:d1:live/db8.dat: Fixed data error at position 9
+msg:error: Reading data from missing file '/mnt/disk1/live/db8.dat' at offset 655360.
+error:339:d1:live/db8.dat: Read error at position 10
+entry:0:block:known:bad:d1:live/db8.dat:10:
+fixed:339:d1:live/db8.dat: Fixed data error at position 10
+msg:error: Reading data from missing file '/mnt/disk1/live/db8.dat' at offset 720896.
+error:340:d1:live/db8.dat: Read error at position 11
+entry:0:block:known:bad:d1:live/db8.dat:11:
+fixed:340:d1:live/db8.dat: Fixed data error at position 11
+msg:error: Reading data from missing file '/mnt/disk1/live/db8.dat' at offset 786432.
+error:341:d1:live/db8.dat: Read error at position 12
+entry:0:block:known:bad:d1:live/db8.dat:12:
+fixed:341:d1:live/db8.dat: Fixed data error at position 12
+msg:error: Reading data from missing file '/mnt/disk1/live/db8.dat' at offset 851968.
+error:342:d1:live/db8.dat: Read error at position 13
+entry:0:block:known:bad:d1:live/db8.dat:13:
+fixed:342:d1:live/db8.dat: Fixed data error at position 13
+msg:error: Reading data from missing file '/mnt/disk1/live/db8.dat' at offset 917504.
+error:343:d1:live/db8.dat: Read error at position 14
+entry:0:block:known:bad:d1:live/db8.dat:14:
+fixed:343:d1:live/db8.dat: Fixed data error at position 14
+msg:error: Reading data from missing file '/mnt/disk1/live/db8.dat' at offset 983040.
+error:344:d1:live/db8.dat: Read error at position 15
+entry:0:block:known:bad:d1:live/db8.dat:15:
+fixed:344:d1:live/db8.dat: Fixed data error at position 15
+status:recovered:d1:live/db8.dat
+collision:d1:live/db8.dat:live/db5.dat: Not setting modification time to avoid inode collision
+msg:error: Error stating dir '/mnt/disk1/docs'. No such file or directory.
+dir_error:d1:docs: Dir stat error
+dir_fixed:d1:docs: Fixed dir error
+status:recovered:d1:docs
+msg:error: Error stating dir '/mnt/disk1/media/photos'. No such file or directory.
+dir_error:d1:media/photos: Dir stat error
+dir_fixed:d1:media/photos: Fixed dir error
+status:recovered:d1:media/photos
+msg:status: 
+msg:status:      378 errors
+msg:status:      347 recovered errors
+msg:status:        0 unrecoverable errors
+msg:status: Everything OK
+summary:error:378
+summary:error_recovered:347
+summary:error_unrecoverable:0
+summary:exit:recovered

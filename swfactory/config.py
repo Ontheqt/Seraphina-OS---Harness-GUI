@@ -7,6 +7,7 @@ default entry (e.g. ``"drivers": {"codex": null}``) removes it.
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import json
 import os
@@ -14,17 +15,27 @@ import re
 import secrets
 import tempfile
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .agentdefs import clean_value, read_small_text
+from .custody import custody_on_server
+from .custody import parse_settings as parse_custody
+from .plainhttp import CREDENTIALS_ENV, bearer_of
 
 if TYPE_CHECKING:
     from .agentdefs import AgentDef
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 USER_DIR = "~/.config/software-factory"
+# Unix sockets that make whoever may connect root on this machine: a container engine's API (Docker, containerd,
+# Podman) and LXD's or Incus's. A read-only bind of / does not stop a connect(), so under bwrap each one that exists
+# is hidden with /dev/null (DESIGN §17).
+ROOT_SOCKETS = ("/var/run/docker.sock", "/run/docker.sock", "/run/containerd/containerd.sock",
+                "/run/podman/podman.sock", "/var/snap/lxd/common/lxd/unix.socket", "/var/lib/lxd/unix.socket",
+                "/var/lib/incus/unix.socket")
 REPO_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 REVIEWER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 PROVIDER_TYPES = ("openai", "anthropic")
@@ -103,7 +114,7 @@ DEFAULTS: dict[str, Any] = {
     "limits": {"max_turns": 150, "max_wall_seconds": 5400, "bash_timeout": 600,
                "tool_output_chars": 30000, "max_context_chars": 1500000},
     "harness": {"sandbox": "none", "sandbox_network": True, "extra_read_roots": [],
-                "skills_dirs": []},
+                "skills_dirs": [], "instance_name": "Seraphina OS Harness"},
     "mcp_servers": {},
     "escalate_paths": [".github/**", ".gitlab-ci.yml", ".circleci/**", "Jenkinsfile",
                        ".claude/**", ".qwen/**", ".codex/**", ".agents/**", "AGENTS.md", "CLAUDE.md", "QWEN.md",
@@ -113,6 +124,7 @@ DEFAULTS: dict[str, Any] = {
                        "go.mod", "go.sum", "Cargo.toml", "Cargo.lock", "Gemfile", "Gemfile.lock",
                        "**/.env*", "**/*.pem", "**/*.key"],
     "merge": {"push": False, "remote": "origin", "delivery": "merge", "output_dir": None},
+    "drift_sources": {},      # outside read-only drift checks the tracker reads (DESIGN §38): {name: {url, ...}}
     "profiles": {},           # routing profiles chosen per job (DESIGN §23): {name: {description, agents}}
     "default_profile": None,  # the profile a job gets when it names none
     "housekeeping": {"enabled": True, "reinject_every_tool_turns": 3, "reinject_every_tool_turns_api": 6,
@@ -120,6 +132,95 @@ DEFAULTS: dict[str, Any] = {
                      "followup_due_days": 14, "sweep": "regex", "max_proposals_per_run": 10,
                      "max_proposals_per_scope": 300, "sweeper_model": None, "cli_hooks": False,
                      "mirror_cli_todos": False},
+    # Wake & Messages (DESIGN §34; docs/seraphina/WAKE_AND_MESSAGES.md §5.4). Step W1 uses the time zone, the
+    # power schedule, time sync, retention and the event sources (hooks: only each token's sha256 is kept).
+    # Step W2 adds personas, their wakes and turns; W3 chat check-ins and the spool (every persona's own settings
+    # default to wakes.PERSONA_DEFAULTS; wakes.enabled and each persona's enabled stay false until persona setup).
+    "wakes": {
+        "enabled": False,
+        "timezone": None,
+        "power": {"off": "23:00", "wake": "07:00", "quiet_before_off_minutes": 30, "quiet_after_boot_minutes": 45},
+        "turn": {"max_prompt_chars": 24000, "max_tokens": 600, "wall_seconds": 120, "repairs": 1,
+                 "max_wait_minutes": 30, "memory_chars": 3000, "max_yields": 3, "max_tool_calls": 8},
+        "global": {"max_model_wakes_per_hour": 20, "max_owner_turns_per_hour": 60, "pause_after_failures": 5},
+        "event_min_seconds": 30,
+        "flood": {"starts": 5, "seconds": 60, "hold_minutes": 15},
+        "self_wake": {"min_minutes": 10, "max_days": 30, "max_pending": 3, "max_chain": 4},
+        "chat_wakes": {"enabled": False, "min_minutes": 10, "max_days": 7, "max_pending": 3, "max_per_day": 3,
+                       "max_per_day_all": 12, "max_turns": 30, "max_wall_seconds": 900, "max_output_tokens": 20000,
+                       "max_cost": None,
+                       "commands": [["gh", "run", "view"], ["gh", "run", "list"], ["gh", "pr", "checks"],
+                                    ["git", "status"], ["git", "log"]]},
+        "busy": {"samples": 2, "sample_seconds": 30, "gpu_util_max": None, "gpus": []},
+        "servers": {},
+        "time_sync": {"require": True, "fallback_minutes": 10},
+        "retention": {"run_log_days": 30, "text_days": 90},
+        "spool": {"poll_seconds": 5, "max_pending": 100, "max_bytes": 2048, "per_minute": 10, "per_day": 200},
+        "hooks": {},
+        "personas": {},
+        "external_memory_roots": [],
+        "consolidation": {"every_days": 7},
+        "drift_check_hours": 24,
+    },
+    # Operator personas (DESIGN §36): the owner marks one persona agents.<name>.role "operator" (several only when
+    # operator.several lists every one). receipts_dir: where the operator writes one JSON change receipt per change
+    # (read-only to the harness; null: none). The harness's own index of what it read lives in <data_dir>/operator.
+    "operator": {"several": [], "receipts_dir": None, "max_receipt_bytes": 262144, "max_receipts": 5000,
+                 "scan_seconds": 60},
+    # Disk protection with SnapRAID (DESIGN §41; docs/seraphina/BACKUPS_SNAPRAID.md §12.2). Off until the owner
+    # turns it on. The daemon section is how the harness reads the SnapRAID Daemon (its /metrics on loopback, and
+    # Seraphina's link's socket); the daemon's URL for the link, the link's allow classes and the daemon's login
+    # live in the link's root-owned files, never here. quiet_units: units (the owner's backup job) the reader's
+    # SnapRAID reads wait for; not_schedulers: places the owner marked "does not start runs" ({place, sha256}).
+    # Seraphina never schedules SnapRAID: the P1 schedule, restore and live_folders keys are gone (still accepted,
+    # and ignored, in an older config).
+    "snapraid": {
+        "enabled": False,
+        "helper": "/usr/local/libexec/seraphina/sf-snapraid",
+        "refresh": {"status_minutes": 60, "health_hours": 24},
+        "stale_minutes": 180,
+        "light": {"amber_after_hours": 36, "red_after_days": 7, "fp_amber_percent": 20, "smart_unreadable_ok": [],
+                  "scrub_target_days": 30},
+        "daemon": {"metrics_url": "http://127.0.0.1:7627/metrics", "link": "/run/seraphina-snapraidd/link.sock",
+                   "metrics_seconds": 60, "active_seconds": 10, "reads_min_seconds": 60, "full_read_minutes": 30,
+                   "down_minutes": 30, "approval_minutes": 15},
+        "quiet_units": [],
+        "quiet_margin_minutes": 30,
+        "not_schedulers": [],
+    },
+    # Maintenance jobs (v2 §6.2; the first revision of BACKUPS_SNAPRAID.md, §5.2): one mode for every job, and a
+    # pause. Nothing reads them; the design's revision 2 drops them with Seraphina's own scheduler (its §2.3).
+    "maintenance": {"mode": "scheduled", "paused": False},
+    "notify": {
+        "enabled": True,
+        "default_persona": "seraphina",
+        "cockpit_url": None,
+        "channels": {},
+        "routes": {"needs_you": ["*"], "persona": ["private_first"], "digest": ["private_first"],
+                   "reply": ["origin"], "default": []},
+        "quiet_hours": "auto",
+        "quiet_breakthrough": ["backup.failed", "service.down", "disk.failing"],
+        "digests": {"evening": True, "morning": True, "midday": None},
+        "model_max_priority": "default",
+        "rule_priority": {"job.needs_human": "default", "job.failed": "default", "plan.attention": "default",
+                          "backup.failed": "high", "backup.ok": "low", "service.down": "high", "service.up": "low",
+                          "wakes.breaker": "default", "channel.down": "default", "server.unclean": "default",
+                          "wakes.tamper": "default", "inbound.forged": "default", "parity.held": "high",
+                          "parity.failed": "high", "parity.ok": "low", "disk.failing": "high",
+                          "parity.released_outside": "high", "parity.down": "high", "parity.lapsed": "default"},
+        "rules_off": [],
+        "max_priority_rules": [],
+        "per_persona": {"min_minutes": 30, "max_per_day": 4},
+        "personas_max_per_day": 8,
+        "phone_max_per_day": 12,
+        "dedupe_hours": 24,
+        "incident": {"repeat_hours": 6, "max_reminders": 3},
+        "inbound": {"stale_minutes": 30, "max_commands_per_minute": 10, "hold_minutes": 15,
+                    "text_per_minute": 6, "text_per_day": 40, "capability_hours": 24,
+                    "pairing_minutes": 10, "phone_silent_days": 7, "forged_alert_minutes": 60},
+        "safe_repos": [],
+        "sensitive_terms_file": "~/.config/software-factory/sensitive-terms.txt",
+    },
 }
 
 
@@ -185,6 +286,15 @@ class ProviderConfig:
     overflow: str | None = None
     overflow_after_seconds: float | None = None
     tokens_per_second: float | None = None
+    # Query parameters appended to the completions URL; set only on a wake turn's copy of the provider (a
+    # llama.cpp router's {"autoload": "false"}, Wake & Messages §5.11), never read from config.json.
+    url_query: dict = field(default_factory=dict)
+    # GPU custody (DESIGN §37): a server that loads its model on the first request, the operator's custody
+    # register (custody.CustodySettings; None: custody off), and the request lease one placed run holds
+    # (custody.Lease or custody.Refusal; set only on a run's copy of the provider, never read from config.json).
+    lazy_load: bool = False
+    custody: Any = None
+    lease: Any = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         if not self.auth:
@@ -216,6 +326,8 @@ class ModelConfig:
     price_in: float | None = None
     price_out: float | None = None
     price_cached_in: float | None = None
+    # the model family label (DESIGN §23, the independence guard); None: read from the model id
+    family: str | None = None
 
     def __post_init__(self) -> None:
         if self.allow_history_edits is None:
@@ -304,6 +416,117 @@ class McpServerConfig:
     # tool -> names of its arguments that give a file the tool writes; the builtin harness checks each
     # against the agent's write policy (like Write) before the call reaches the server
     write_args: dict[str, list[str]] = field(default_factory=dict)
+
+
+def sensitive_terms_path(config: "Config") -> Path:
+    """The owner's sensitive-terms file (Wake & Messages S28): notify.sensitive_terms_file, "~" expanded,
+    relative to the config file's directory."""
+    notify = config.raw.get("notify") if isinstance(config.raw.get("notify"), dict) else {}
+    value = notify.get("sensitive_terms_file") or DEFAULTS["notify"]["sensitive_terms_file"]
+    path = Path(os.path.expanduser(str(value)))
+    return path if path.is_absolute() else config.path.parent / path
+
+
+def sandbox_masks(config: "Config", *, receipts: bool = True) -> dict[str, list[Path]]:
+    """What an agent's Bash under bwrap must never read (H1, DESIGN §34): the config directory (config.json
+    with the master token, the env file with every key, personas, profile cards, the sensitive-terms
+    default) and ~/.config/software-factory, the wake and notify data, the system scope's tracker
+    (<data_dir>/housekeeping: personas' items and the checks an operator reports as not done, all private),
+    an operator's receipts and the harness's index of them (§36), the custody journal (lease purposes name wakes
+    and personas, §37), the disk protection panel's facts and staged setup files (§41), the Bearer tokens of
+    custody registers and drift sources (token_masks: this process's systemd credentials, and each token_file),
+    a sensitive-terms file kept elsewhere, and the sockets that make whoever reaches them root (ROOT_SOCKETS).
+    {dirs, files, fallback, rebind}: fallback is what is hidden file by file when a directory cannot be hidden
+    whole because the run needs a path inside it; rebind is bound back read-only (skills that ship scripts).
+    receipts False leaves operator.receipts_dir out (and nothing else): the operator's own wake reads her receipts
+    with Read, Glob and Grep (her ruling, DESIGN §36); every sandbox, and every other reader, keeps the default."""
+    config_dir = config.path.parent
+    user_dir = Path(os.path.expanduser(USER_DIR))
+    fallback: list[Path] = []
+    for directory in dict.fromkeys((config_dir, user_dir)):
+        fallback += [directory / "config.json", directory / "env", directory / "personas", directory / "profiles",
+                     directory / "sensitive-terms.txt"]
+    socket_dirs, socket_files = agent_socket_paths()
+    operator = config.raw.get("operator") if isinstance(config.raw.get("operator"), dict) else {}
+    receipts_dirs = [expand_path(operator["receipts_dir"], config.path.parent)] \
+        if receipts and isinstance(operator.get("receipts_dir"), str) and operator["receipts_dir"].strip() else []
+    token_dirs, token_files = token_masks(config)
+    return {"dirs": list(dict.fromkeys([config_dir, user_dir, config.data_dir / "wakes", config.data_dir / "notify",
+                                        config.data_dir / "housekeeping", config.data_dir / "operator",
+                                        config.data_dir / "custody", config.data_dir / "snapraid", *receipts_dirs,
+                                        *socket_dirs, *token_dirs])),
+            "files": [sensitive_terms_path(config), config.path, *socket_files, *token_files, *root_sockets(),
+                      *snapraid_link_socket(config)],
+            "fallback": [config.path, *fallback],
+            # skills that ship scripts, and the notice rulebook (read-only to agents: an outside notifier and the
+            # agents may read quiet hours and limits, never change them; Wake & Messages decision g)
+            "rebind": [user_dir / "skills", config_dir / "skills", config_dir / "notice-rules.json"]}
+
+
+def snapraid_link_socket(config: "Config") -> list[Path]:
+    """The socket of Seraphina's link to the SnapRAID Daemon (BACKUPS_SNAPRAID.md §3.2, D17): a sandboxed agent
+    must not reach it, as the harness can."""
+    section = config.raw.get("snapraid") if isinstance(config.raw.get("snapraid"), dict) else {}
+    daemon = section.get("daemon") if isinstance(section.get("daemon"), dict) else {}
+    link = daemon.get("link") or DEFAULTS["snapraid"]["daemon"]["link"]
+    return [Path(link)] if isinstance(link, str) and link.startswith("/") else []
+
+
+def token_masks(config: "Config", environ: Mapping[str, str] | None = None) -> tuple[list[Path], list[Path]]:
+    """(directories, files) that hold the Bearer tokens of custody registers and drift sources (§37, §38), which
+    an agent's Bash must never read: this process's systemd credentials ($CREDENTIALS_DIRECTORY, hidden whole:
+    the harness's own LoadCredential= copies, whatever their names) and each configured token_file ("~"
+    expanded; hidden with /dev/null like a sensitive-terms file kept elsewhere)."""
+    environ = os.environ if environ is None else environ
+    dirs = []
+    credentials = str(environ.get(CREDENTIALS_ENV) or "")
+    if os.path.isabs(credentials) and Path(credentials).resolve() != Path("/"):
+        dirs.append(Path(credentials))
+    entries = [entry.get("custody") for entry in _dict_entries(config.raw, "providers")]
+    entries += _dict_entries(config.raw, "drift_sources")
+    files = [Path(os.path.expanduser(entry["token_file"])) for entry in entries
+             if isinstance(entry, dict) and isinstance(entry.get("token_file"), str) and entry["token_file"].strip()]
+    return dirs, list(dict.fromkeys(files))
+
+
+def root_sockets(candidates: tuple[str, ...] | None = None) -> list[Path]:
+    """The ROOT_SOCKETS that exist here, each once (/var/run is usually a link to /run)."""
+    found: dict[Path, None] = {}
+    for name in ROOT_SOCKETS if candidates is None else candidates:
+        path = Path(name)
+        with contextlib.suppress(OSError):
+            if path.exists() and not path.is_dir():
+                found.setdefault(path.resolve(), None)
+    return list(found)
+
+
+def agent_socket_paths(environ: Mapping[str, str] | None = None) -> tuple[list[Path], list[Path]]:
+    """(directories, files) where an SSH or GPG agent of the server's user listens (H2): removing
+    SSH_AUTH_SOCK from the environment does not stop a Bash from connecting to a socket at its usual place.
+    The runtime dir's gnupg/, keyring/ and gcr/ (gpg-agent, gnome-keyring, gcr-ssh-agent), its ssh-agent
+    sockets, the gpg-agent sockets in ~/.gnupg, and wherever SSH_AUTH_SOCK points (not below /tmp, which is
+    private inside the sandbox already)."""
+    environ = os.environ if environ is None else environ
+    runtime = Path(environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
+    dirs = [runtime / "gnupg", runtime / "keyring", runtime / "gcr"]
+    files = [runtime / "ssh-agent.socket", runtime / "openssh_agent"]
+    gnupg = Path(environ.get("GNUPGHOME") or Path(os.path.expanduser("~")) / ".gnupg")
+    with contextlib.suppress(OSError):
+        files += sorted(gnupg.glob("S.*"))
+    for name in ("SSH_AUTH_SOCK",):
+        value = environ.get(name)
+        if value and os.path.isabs(value):
+            files.append(Path(value))
+    files = [path for path in files if not _within_tmp(path)]
+    return dirs, files
+
+
+def _within_tmp(path: Path) -> bool:
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return False
+    return resolved == Path("/tmp") or Path("/tmp") in resolved.parents
 
 
 def default_config_path() -> Path:
@@ -453,6 +676,9 @@ class Config:
             self.merge()
             self.housekeeping()
             self.mcp_servers()
+            from .driftsources import parse_sources   # the drift sources the tracker reads (DESIGN §38)
+
+            parse_sources(self.raw)
             default = self.raw.get("default_profile")
             if default is not None and not isinstance(self._section("profiles").get(default), dict):
                 raise ValueError(f"default_profile {default!r} is not a key of profiles")
@@ -537,6 +763,13 @@ class Config:
         if kind is not None and kind not in PROVIDER_KINDS:
             raise ValueError(f"providers.{name}.kind must be one of {', '.join(PROVIDER_KINDS)} or null")
         wait, speed = entry.get("overflow_after_seconds"), entry.get("tokens_per_second")
+        lazy_load = _as_bool(entry.get("lazy_load"), f"providers.{name}.lazy_load", False)
+        custody = parse_custody(entry.get("custody"), f"providers.{name}.custody")
+        if custody is None:   # custody follows the server: another entry on it that names a register (DESIGN §37)
+            found = custody_on_server(self._section("providers"), entry["base_url"], skip=name)
+            if found is not None:
+                _, custody, loads = found
+                lazy_load = lazy_load or loads
         return ProviderConfig(
             name=name,
             type=str(entry["type"]),
@@ -555,6 +788,8 @@ class Config:
             overflow=str(entry["overflow"]) if entry.get("overflow") else None,
             overflow_after_seconds=float(wait) if wait is not None else None,
             tokens_per_second=float(speed) if speed is not None else None,
+            lazy_load=lazy_load,
+            custody=custody,
         )
 
     def model(self, ref: str) -> ModelConfig:
@@ -568,7 +803,7 @@ class Config:
         base = models.get("opus")
         if not isinstance(base, dict):
             raise KeyError(f"model {ref!r} is not a key of models and there is no 'opus' entry to run it on")
-        return self._model_from(ref, base, ref)
+        return self._model_from(ref, {key: value for key, value in base.items() if key != "family"}, ref)
 
     def driver(self, name: str) -> DriverConfig:
         """The driver called name (KeyError if unknown or set to null)."""
@@ -702,8 +937,9 @@ class Config:
 
     def secret_values(self) -> list[str]:
         """Values to redact: provider keys (env or api_key_file), the values public_view masks
-        (secret-named headers without a "Bearer " prefix, secret-named driver/MCP env) and the
-        server token.
+        (secret-named headers without a "Bearer " prefix, secret-named driver/MCP env), the
+        server token, and the Bearer tokens of custody registers and drift sources (§37, §38), read now from
+        their token_file, token_env or token_credential (a systemd credential).
 
         Values shorter than MIN_SECRET_CHARS (dummy keys like "x") are left out so
         redaction does not mangle ordinary text.
@@ -711,6 +947,8 @@ class Config:
         candidates: list[Any] = []
         for entry in _dict_entries(self.raw, "providers"):
             candidates += provider_secret_values(entry)
+        for entry in _dict_entries(self.raw, "drift_sources"):   # each drift source's Bearer token (DESIGN §38)
+            candidates.append(bearer_of(entry))
         for section in ("drivers", "mcp_servers"):
             for entry in _dict_entries(self.raw, section):
                 candidates += _secret_named_values(entry.get("env"))
@@ -791,6 +1029,8 @@ class Config:
             eager_tools=_as_bool(entry.get("eager_tools"), f"models.{key}.eager_tools", False),
             price_in=_price(entry, "price_in", key), price_out=_price(entry, "price_out", key),
             price_cached_in=_price(entry, "price_cached_in", key),
+            family=str(entry["family"]).strip().lower() if isinstance(entry.get("family"), str)
+            and entry["family"].strip() else None,
         )
 
     def check_placement(self, label: str, entry: dict) -> None:
@@ -919,12 +1159,13 @@ def _same_json(a: Any, b: Any) -> bool:
 
 def provider_secret_values(entry: dict) -> list[str]:
     """The secrets of one provider entry (a config entry or a routing snapshot's provider_entry): its
-    key, read now from api_key_env or api_key_file, and its secret-named header values (without an
-    auth scheme prefix). Short values are not filtered here."""
+    key, read now from api_key_env or api_key_file, its custody register's Bearer token, and its
+    secret-named header values (without an auth scheme prefix). Short values are not filtered here."""
     if not isinstance(entry, dict):
         return []
     key = resolve_api_key(entry.get("api_key_env") or None, entry.get("api_key_file") or None)
-    return ([key] if key else []) + _secret_named_values(entry.get("headers"))
+    token = bearer_of(entry.get("custody"))   # the GPU custody register's Bearer token (DESIGN §37)
+    return ([key] if key else []) + ([token] if token else []) + _secret_named_values(entry.get("headers"))
 
 
 def _secret_named_values(values: Any) -> list[str]:

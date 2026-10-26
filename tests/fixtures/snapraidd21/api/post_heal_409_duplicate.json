@@ -1,0 +1,14 @@
+{
+ "body": {},
+ "headers": {
+  "Connection": "close",
+  "Content-Type": "application/json"
+ },
+ "json": {
+  "message": "Heal already running or scheduled",
+  "success": false
+ },
+ "method": "POST",
+ "path": "/snapraid/v1/heal",
+ "status": 409
+}
