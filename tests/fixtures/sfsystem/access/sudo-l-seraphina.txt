@@ -1,0 +1,2 @@
+User seraphina may run the following commands on server:
+    (root) NOPASSWD: /usr/local/libexec/seraphina/sf-system ""

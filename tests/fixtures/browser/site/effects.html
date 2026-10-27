@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Effects</title></head>
+<body>
+<h1>Effects</h1>
+<p>Links that look harmless and are not.</p>
+<p><a href="#" id="place" onclick="fetch('/effect', {method: 'POST', body: 'link'}); return false;">Read more</a></p>
+<div role="link" tabindex="0" id="divlink" onclick="fetch('/effect', {method: 'POST', body: 'div'})">Next page</div>
+<p><a href="/away">Leave the fixture</a></p>
+<p><a href="index.html">Back to the start</a></p>
+<button type="button" onclick="fetch('/effect', {method: 'POST', body: 'save'})">Save</button>
+<p id="status" role="status">Nothing yet</p>
+</body>
+</html>

@@ -26,6 +26,15 @@ daemon_skip (tonight's run skipped). The light is snapraidd.light over each stat
 /api/snapraid/actions answers a preview (refused in words where the module refuses: two schedulers, read only);
 POST .../approve answers {outcome}, or 409 {error: changed} after POST /__mock/backups/changed; GET
 /api/snapraid/review pages the change list; GET /api/snapraid/runs[/<number>] the daemon's runs and one step.
+
+The checklist for a failed disk (BACKUPS_SNAPRAID.md §9.4, P4): daemon_failing (disk 2 missing on the protection
+service's route; failing_disk is the reader's). GET /api/snapraid/rebuild, POST /api/snapraid/rebuild {disk} and
+POST /api/snapraid/rebuild/step|prepare|close answer with swfactory/snapraid_rebuild.py's own build, advance and
+prepare over placeholder facts: the current step's check fails until POST /__mock/backups/rebuild_good, which makes
+that step's facts what the owner's blocks would leave (the service off, the fstab line turned off, the new disk
+mounted, the rebuild ended with some files not back, the service on again). POST /__mock/backups/rebuild_mounted
+leaves the new disk mounted with the reader not told yet (its block 4e still to run). POST
+/__mock/backups/rebuild_at {step} opens a checklist at that step (for screenshots).
 """
 
 from __future__ import annotations
@@ -36,7 +45,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from swfactory import snapraid, snapraidd
+from swfactory import snapraid, snapraid_rebuild, snapraidd
 
 from . import store
 
@@ -46,7 +55,7 @@ READER_STATES = ("absent", "no_reader", "off", "not_set_up", "unsafe", "unreacha
                  "unsandboxed", "stale", "damaged_list", "stale_failing", "taking_out", "with_care")
 DAEMON_STATES = ("daemon_no_link", "daemon_healthy", "daemon_read_only", "daemon_auth_off", "daemon_beyond",
                  "daemon_down", "daemon_frozen", "daemon_running", "daemon_unknown", "daemon_lapsed", "daemon_two",
-                 "daemon_report_failed", "daemon_engine_old", "daemon_damage", "daemon_skip")
+                 "daemon_report_failed", "daemon_engine_old", "daemon_damage", "daemon_skip", "daemon_failing")
 STATES = READER_STATES + DAEMON_STATES
 CFG = {"stale_minutes": 180, "light": {"amber_after_hours": 36, "red_after_days": 7, "fp_amber_percent": 20,
                                        "smart_unreadable_ok": []}, "daemon": dict(snapraidd.DEFAULTS)}
@@ -204,6 +213,8 @@ def _daemon(st: dict, now: float) -> tuple[dict, list]:
     disks = [{"name": name, "key": key, "label": label, "role": role, "health": "passed"} for name, key, label, role in
              (("d1", "1", "Disk 1", "data"), ("d2", "2", "Disk 2", "data"), ("parity", "p1", "The protection disk",
                                                                              "parity"))]
+    if state == "daemon_failing":
+        disks[1]["health"] = "degraded"
     allow = ["read"] if state == "daemon_read_only" else ["read", "act", "accept"]
     link = state != "daemon_no_link"
     view = {
@@ -229,14 +240,15 @@ def _daemon(st: dict, now: float) -> tuple[dict, list]:
                                    "sha256": "a" * 64, "counted": True}] if state == "daemon_two" else []},
         "link": {"installed": link, "allow": allow if link else None, "words": None if link else snapraidd.NO_LINK},
         "report_failed": state == "daemon_report_failed", "outside": None,
-        "health": "corrupt" if state == "daemon_damage" else "passed",
+        "health": "corrupt" if state == "daemon_damage" else "degraded" if state == "daemon_failing" else "passed",
         "blocks_bad": 3 if state == "daemon_damage" else 0, "disks": disks, "limits": limits,
         "limits_line": snapraidd.limits_line(limits),
         "lab": [{**check, "status": "not_run"} for check in snapraidd.LAB_CHECKS],
         "offers": {},
     }
     act = link and state not in ("daemon_auth_off", "daemon_engine_old", "daemon_read_only")
-    one = state != "daemon_two"
+    # no run while a disk is being replaced (§9.1) or while a disk is missing (the service would cancel it)
+    one = state not in ("daemon_two", "daemon_failing") and snapraid_rebuild.current(st.get("rebuild")) is None
     view["offers"] = {"stop": act and state == "daemon_running", "hold_off": act,
                       "maintenance": act and one and state != "daemon_running", "accept": act and one and
                       state == "daemon_frozen", "undelete": act and one, "heal": act and one and state == "daemon_damage"}
@@ -257,7 +269,7 @@ def _daemon_view(core, st: dict) -> dict:
     view = _view(core, st_reader, daemon_state=st["state"])
     daemon, actions = _daemon(st, now)
     unknown = any(a.get("outcome") == "unknown" and a.get("state") == "sent" for a in actions)
-    light = snapraidd.light(daemon, CFG, now, unknown_open=unknown)
+    light = snapraid_rebuild.light(st.get("rebuild")) or snapraidd.light(daemon, CFG, now, unknown_open=unknown)
     route = "metrics" if st["state"] == "daemon_no_link" else "daemon"
     window = daemon["window"]["words"]
     undo = (f"{window[:1].upper()}{window[1:]}'s run will be skipped. A restart of the protection service undoes this."
@@ -339,6 +351,9 @@ def _view(core, st: dict, daemon_state: str | None = None) -> dict:
     if state == "with_care":
         view["light"] = {"tone": "warn", "code": "read_with_care",
                          "reason": snapraid.REASONS["read_with_care"].format(version="14.10")}
+    view["rebuild"] = snapraid_rebuild.summary(st.get("rebuild")) if view["enabled"] else None
+    if snapraid_rebuild.light(st.get("rebuild")) is not None:
+        view["light"] = snapraid_rebuild.light(st["rebuild"])
     return view
 
 
@@ -346,7 +361,125 @@ def seed(core, fresh: bool) -> None:
     st = store(core, AREA)
     st.clear()
     st.update(state="absent" if fresh else "healthy", refreshing=None, staged=False, link_staged=False, actions=[],
-              changed=False, reviewed=False)
+              changed=False, reviewed=False, rebuild=None, rb_good=[])
+
+
+# ---------------------------------------------------------------- the checklist for a failed disk (§9.4)
+
+RB_U = {"d1": "11111111-1111-4111-8111-111111111111", "d2": "22222222-2222-4222-8222-222222222222",
+        "parity": "33333333-3333-4333-8333-333333333333", "new": "44444444-4444-4444-8444-444444444444"}
+RB_OLD_ID = "/dev/disk/by-id/ata-Example_Disk_8TB_SN-EXAMPLE-2"
+RB_NEW_ID = "/dev/disk/by-id/ata-Example_Disk_8TB_SN-EXAMPLE-NEW1"
+RB_USED_ID = "/dev/disk/by-id/usb-Example_Portable_SN-EXAMPLE-USED9-0:0"
+RB_FSTAB = (f"UUID={RB_U['d1']} /mnt/disk1 ext4 defaults,nofail,x-systemd.device-timeout=30s 0 2\n"
+            f"UUID={RB_U['d2']} /mnt/disk2 ext4 defaults 0 2\n"
+            f"UUID={RB_U['parity']} /mnt/parity1 ext4 defaults,nofail,x-systemd.device-timeout=30s 0 2\n")
+
+
+def _rb_unit(state: str, status: int = 0, at: int = 1) -> dict:
+    """systemctl show's properties; a unit that ran started `at` seconds after the boot and exited a second later."""
+    return {"absent": {"LoadState": "not-found", "ActiveState": "inactive"},
+            "on": {"LoadState": "loaded", "ActiveState": "active", "SubState": "running", "UnitFileState": "enabled"},
+            "off": {"LoadState": "loaded", "ActiveState": "inactive", "SubState": "dead", "UnitFileState": "disabled"},
+            "running": {"LoadState": "loaded", "ActiveState": "active", "SubState": "running", "ExecMainCode": "0"},
+            "ended": {"LoadState": "loaded", "ActiveState": "failed" if status else "active",
+                      "SubState": "failed" if status else "exited", "ExecMainCode": "1",
+                      "ExecMainStatus": str(status), "ExecMainStartTimestampMonotonic": str(at * 10 ** 6),
+                      "ExecMainExitTimestampMonotonic": str((at + 1) * 10 ** 6)}}[state]
+
+
+def _rb_facts(st: dict) -> dict:
+    """Placeholder facts for the checklist: disk 2 failed; each step "good" once POST /__mock/backups/rebuild_good
+    made it so (what the owner's blocks would leave)."""
+    now = time.time()
+    route = "daemon" if st["state"] in DAEMON_STATES else "reader"
+    record = st.get("rebuild") or {}
+    good = set(st.get("rb_good") or []) | set((record.get("done") or {}))
+    stopped, fitted = "stop" in good, "disk" in good
+    mounted = fitted or "mounted" in good          # block 4d ran: the new disk mounted, the reader not told (4e)
+    mounts = {"d1": {"role": "data", "number": 1, "path": "/mnt/disk1", "mounted": True, "uuid_ok": True,
+                     "fstype": "ext4"},
+              "d2": {"role": "data", "number": 2, "path": "/mnt/disk2", "mounted": mounted, "uuid_ok": fitted,
+                     "fstype": "ext4" if mounted else None},
+              "d3": {"role": "data", "number": 3, "path": "/mnt/disk3", "mounted": True, "uuid_ok": True,
+                     "fstype": "ext4"},
+              "parity": {"role": "parity", "number": 1, "path": "/mnt/parity1", "mounted": True, "uuid_ok": True}}
+    fstab = RB_FSTAB
+    if "boot" in good:
+        fstab = fstab.replace(f"UUID={RB_U['d2']} /mnt/disk2", f"# UUID={RB_U['d2']} /mnt/disk2")
+    if mounted:
+        fstab += f"UUID={RB_U['new']} /mnt/disk2 ext4 defaults,nofail,x-systemd.device-timeout=30s 0 2\n"
+    spare = [] if fitted else [row for row in (
+        {"device": "/dev/sdx", "by_id": RB_NEW_ID, "size": 8_001_000_000_000, "model": "Example Disk 8TB",
+         "serial": "SN-EXAMPLE-NEW1", "signature": False},
+        {"device": "/dev/sdy", "by_id": RB_USED_ID, "size": 4_000_000_000_000, "model": "Example Portable",
+         "serial": "SN-EXAMPLE-USED9", "signature": True}) if not (mounted and row["by_id"] == RB_NEW_ID)]
+    disks = {"d2": {"model": "Example Disk 8TB", "serial": "SN-EXAMPLE-NEW1" if fitted else "SN-EXAMPLE-2",
+                    "by_id": RB_NEW_ID if fitted else RB_OLD_ID, "size": 8_000_000_000_000, "present": fitted,
+                    "seen_at": _iso(now - 2 * 86400), "fstype": "ext4", "mount": "/mnt/disk2"}}
+    rebuilt = "rebuild" in good
+    back = "done" in good
+    daemon = None
+    if route == "daemon":
+        daemon = {"answering": back or not stopped, "active": None, "hold_off": bool(st.get("rb_skipped")),
+                  "health": "passed" if back else "degraded",
+                  "disk_health": {"d1": "passed", "d2": "passed" if back else "degraded", "d3": "passed"},
+                  "window": snapraidd.window_words(snapraidd.next_window("02:00", now), now),
+                  "offers": {"hold_off": True}, "protected_up_to": now - 3 * 3600}
+    return {"route": route, "reader": {},
+            "info": {"conf": "/etc/snapraid.conf", "binary": "/usr/local/bin/snapraid", "mounts": mounts,
+                     "uuids": {"d1": RB_U["d1"], "d2": RB_U["new"] if fitted else RB_U["d2"], "d3": RB_U["d1"][:-1]
+                               + "3", "parity": RB_U["parity"]},
+                     "data": ["/mnt/disk1", "/mnt/disk2", "/mnt/disk3"],
+                     "schedulers": ["/etc/cron.d/snapraid"] if route == "reader" else [], "snapraid_running": False},
+            "disks": disks, "spare": spare, "daemon": daemon,
+            "smart": {"d1": "ok", "d2": "fail", "d3": "ok"} if route == "reader" else None,
+            "units": {snapraid_rebuild.DAEMON_UNIT: _rb_unit("on" if back or not stopped else "off")
+                      if route == "daemon" else _rb_unit("absent"),
+                      snapraid_rebuild.REBUILD_UNIT: _rb_unit("ended", 1) if rebuilt else _rb_unit("absent"),
+                      snapraid_rebuild.CHECK_UNIT: _rb_unit("ended", 1, at=20) if rebuilt else _rb_unit("absent")},
+            "snapraid_running": False, "fstab": fstab, "stacks": ["photos", "music"], "power_off": "23:30",
+            "protected_up_to": now - 3 * 3600}
+
+
+def _rebuild_api(core, handler, method, rest, body, st):
+    now = time.time()
+    facts = _rb_facts(st)
+    record = st.get("rebuild")
+    try:
+        if method == "GET" and rest == ["rebuild"]:
+            return handler.send_json(snapraid_rebuild.build(record, facts, now))
+        if method == "POST" and rest == ["rebuild"]:
+            if record and record.get("state") == "open":
+                raise ValueError(snapraid_rebuild.START_REFUSALS["open"])
+            number = int(str((record or {}).get("id", "R-0"))[2:]) + 1
+            st["rebuild"] = snapraid_rebuild.open_record(facts, str((body or {}).get("disk") or ""), now, number)
+            st["rb_good"] = []
+            core.BUS.publish("snapraid.rebuild", {"checklist": st["rebuild"]["id"], "state": "open", "step": "stop"})
+            return handler.send_json(snapraid_rebuild.build(st["rebuild"], _rb_facts(st), now), status=201)
+        if not record or record.get("state") != "open":
+            raise ValueError(snapraid_rebuild.CLOSED)
+        if method == "POST" and rest == ["rebuild", "step"]:
+            record, result = snapraid_rebuild.advance(record, facts, str((body or {}).get("step") or ""),
+                                                      list((body or {}).get("confirm") or []), now)
+            st["rebuild"] = record
+            core.BUS.publish("snapraid.rebuild", {"checklist": record["id"], "state": record["state"],
+                                                  "step": snapraid_rebuild.current(record)})
+            page = snapraid_rebuild.build(record, _rb_facts(st), now)
+            page["result"] = {"step": body.get("step"), "done": result["done"], "words": result["words"],
+                              "ok": result["check"]["ok"], "code": result["check"]["code"],
+                              "missing": result["missing"]}
+            return handler.send_json(page)
+        if method == "POST" and rest == ["rebuild", "prepare"]:
+            return handler.send_json(snapraid_rebuild.prepare(record, facts, str((body or {}).get("by_id") or ""),
+                                                              str((body or {}).get("typed") or ""), now))
+        if method == "POST" and rest == ["rebuild", "close"]:
+            record.update(state="cancelled", closed_at=now)
+            core.BUS.publish("snapraid.rebuild", {"checklist": record["id"], "state": "cancelled", "step": None})
+            return handler.send_json(snapraid_rebuild.build(record, facts, now))
+    except ValueError as exc:
+        raise core.Invalid(str(exc)) from None
+    raise KeyError("/".join(rest))
 
 
 def api(core, handler, method, parts, query, body):
@@ -405,6 +538,8 @@ def api(core, handler, method, parts, query, body):
     if method == "POST" and rest == ["setup", "link-check"]:
         return handler.send_json({"ok": True, "words": "The link answers: the password is on, SnapRAID 15.1, "
                                                        "allowing read."})
+    if rest[:1] == ["rebuild"]:
+        return _rebuild_api(core, handler, method, rest, body, st)
     return _daemon_api(core, handler, method, rest, query, body, st)
 
 
@@ -514,6 +649,8 @@ def _preview(core, st: dict, body: dict, now: float) -> dict:
         raise core.Invalid(snapraidd.REFUSALS["not_allowed"] if state == "daemon_read_only" else snapraidd.NO_LINK)
     if state == "daemon_two" and action in snapraidd.STARTS_RUNS:
         raise core.Invalid(snapraidd.REFUSALS["two_schedulers"])
+    if snapraid_rebuild.current(st.get("rebuild")) and action in snapraidd.STARTS_RUNS:
+        raise core.Invalid(snapraidd.REFUSALS["rebuild"])
     if action == "accept" and not st.get("reviewed"):
         raise core.Invalid(snapraidd.REFUSALS["no_review"])
     limits = {"deletes": 20, "updates": 50}
@@ -614,9 +751,34 @@ def mock(core, handler, method, name, body):
     if method == "POST" and name == "changed":
         store(core, AREA)["changed"] = True
         return handler.send_json({"changed": True})
+    if method == "POST" and name == "rebuild_good":
+        st = store(core, AREA)
+        step = snapraid_rebuild.current(st.get("rebuild"))
+        if step:
+            st["rb_good"] = sorted(set(st.get("rb_good") or []) | {step})
+        return handler.send_json({"good": st.get("rb_good")})
+    if method == "POST" and name == "rebuild_mounted":
+        st = store(core, AREA)
+        st["rb_good"] = sorted(set(st.get("rb_good") or []) | {"mounted"})
+        return handler.send_json({"good": st["rb_good"]})
+    if method == "POST" and name == "rebuild_at":
+        st = store(core, AREA)
+        step = (body or {}).get("step")
+        if step not in snapraid_rebuild.STEPS:
+            raise core.Invalid("give {step}")
+        now = time.time()
+        st["rebuild"], st["rb_good"] = None, []
+        record = snapraid_rebuild.open_record(_rb_facts(st), "d2", now - 3600)
+        st["rebuild"] = record
+        for before in snapraid_rebuild.STEPS[:snapraid_rebuild.STEPS.index(step)]:
+            record["done"][before] = now - 600
+            if before == "rebuild":
+                record["results"]["rebuild"] = {"fix": 1, "check": 1}
+        core.BUS.publish("snapraid.rebuild", {"checklist": record["id"], "state": "open", "step": step})
+        return handler.send_json(snapraid_rebuild.build(record, _rb_facts(st), now))
     if method == "POST" and name in STATES:
         st = store(core, AREA)
-        st.update(state=name, refreshing=None, actions=[], changed=False, reviewed=False)
+        st.update(state=name, refreshing=None, actions=[], changed=False, reviewed=False, rebuild=None, rb_good=[])
         core.BUS.publish("snapraid.updated", {"tone": None, "code": name})
         return handler.send_json(_view(core, st))
     return NotImplemented
@@ -666,5 +828,15 @@ def contract(test) -> None:
     test.assertEqual(set(page["page"]), {"total", "offset", "entries", "groups", "list_sha256"})
     test.assertEqual(page["page"]["total"], 3000)
     test.assertEqual(set(page["guard"]), set(snapraid._guard_summary({})))
+    # the checklist for a failed disk: the mock answers with the module's own build over its facts
+    test.request("POST", "/__mock/backups/daemon_failing", {})
+    status, _, raw = test.request("GET", "/api/snapraid/rebuild")
+    page = json.loads(raw)
+    test.assertEqual(set(page), set(snapraid_rebuild.build(None, {}, time.time())))
+    status, _, raw = test.request("POST", "/api/snapraid/rebuild", {"disk": "d2"})
+    test.assertEqual(status, 201)
+    test.assertEqual(json.loads(raw)["current"], "stop")
+    status, _, raw = test.request("GET", "/api/snapraid")
+    test.assertEqual(json.loads(raw)["light"]["code"], "rebuild")
     test.request("POST", "/__mock/backups/healthy", {})
 

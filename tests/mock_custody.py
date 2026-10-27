@@ -13,7 +13,10 @@ Routes: ``GET /residency``, ``POST /leases {provider, model, purpose, holder}``,
 read and then left unanswered (the connection is closed: outcome unknown). ``stale`` makes the next that many
 lease answers carry a generation older than the register's. ``token`` (when set) is the Bearer token required.
 ``epoch`` (when set) is sent with every answer; ``restart(epoch)`` starts the register over (generation 1, no
-leases; models stay resident), as a register that keeps nothing across restarts would.
+leases; models stay resident), as a register that keeps nothing across restarts would. With an epoch, a renew or
+a release whose body's epoch is not the register's (a missing one too) is refused: 409 EPOCH_MISMATCH, as the
+contract says (lease ids are unique across epochs, and renew and release carry the epoch). ``ids`` lists the
+lease ids the next grants use, in order (a test can make a register reuse one); else a fresh uuid each.
 """
 
 from __future__ import annotations
@@ -46,6 +49,7 @@ class MockRegister:
         self.held: dict[str, str] = {}
         self.full: set[tuple[str, str]] = set()
         self.epoch: str | None = None
+        self.ids: list[str] = []
         self.lock = threading.RLock()
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -139,13 +143,15 @@ class MockRegister:
                 other = next((lease for lease in self.leases.values() if lease["provider"] == provider), None)
                 if other is not None:
                     return 409, {**self._answer(False, None, "LEASED"), "holder": other["holder"]}
-                lease = {"id": uuid.uuid4().hex, "provider": provider, "model": model, "holder": body.get("holder"),
+                lease = {"id": self.ids.pop(0) if self.ids else uuid.uuid4().hex, "provider": provider, "model": model, "holder": body.get("holder"),
                          "purpose": body.get("purpose"), "until": self.now + self.ttl}
                 self.leases[lease["id"]] = lease
                 self.generation += 1
                 return 200, self._answer(True, lease, "OK")
             if method == "POST" and path.startswith("/leases/"):
                 _, _, lease_id, action = path.split("/", 3)
+                if self.epoch is not None and body.get("epoch") != self.epoch:   # of another instance, or none
+                    return 409, {**self._answer(False, None, "EPOCH_MISMATCH"), "lease_id": lease_id}
                 lease = self.leases.get(lease_id)
                 if action == "renew":
                     if lease is None:

@@ -1,0 +1,16 @@
+#!/bin/sh
+# sf-browser: the harness-owned browser MCP server (DESIGN.md §43; docs/seraphina/BROWSER_AND_CODEX.md §2).
+# `sf-browser mcp <grant path>` takes the grant's session lock, then replaces itself with a bubblewrap namespace
+# (no network, minimal binds, its own PID namespace, gone with its parent) that runs the shim, Playwright MCP,
+# Chrome and the fixture site. Works through symlinks; FACTORY_PYTHON picks the interpreter (python3, >= 3.10).
+# The checkout goes on sys.path inside Python, never into PYTHONPATH (see bin/factory).
+set -eu
+self=$(readlink -f "$0")
+root=$(dirname "$(dirname "$self")")
+exec "${FACTORY_PYTHON:-python3}" -I -c '
+import sys
+root = sys.argv.pop(1)
+sys.path.insert(0, root)
+from swfactory.browser.namespace import main
+sys.exit(main())
+' "$root" "$@"

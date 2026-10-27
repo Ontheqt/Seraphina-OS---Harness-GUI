@@ -34,7 +34,6 @@ import re
 import stat
 import threading
 import time
-import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -47,6 +46,7 @@ from typing import Any
 from . import personas as P
 from . import rules as R
 from .clock import LocalClock, PowerSchedule, TimeSync, iso, parse_iso
+from .framing import LOOKALIKES, clean_text, escape_markers, frame, inline  # noqa: F401  (S38, shared)
 from .events import env_secret_values, redact
 from .operator import is_operator
 from .operator import role as operator_role
@@ -273,74 +273,8 @@ def validate_decision(obj: object, *, source: str, via_third_party: bool, refs: 
 
 # ---------------------------------------------------------------- cleaning and framing (S38)
 
-_SPECIAL_TOKENS = ("<|im_start|>", "<|im_end|>", "<|endoftext|>", "<|eot_id|>", "<|start_header_id|>",
-                   "<|end_header_id|>", "<|begin_of_text|>", "<|system|>", "<|user|>", "<|assistant|>",
-                   "<|channel|>", "<|message|>", "<|start|>", "<|end|>", "<|return|>", "<｜User｜>",
-                   "<｜Assistant｜>", "<｜end▁of▁sentence｜>", "[INST]", "[/INST]", "<<SYS>>", "<</SYS>>",
-                   "[SYSTEM_PROMPT]", "[/SYSTEM_PROMPT]", "[TOOL_CALLS]", "[AVAILABLE_TOOLS]", "[/AVAILABLE_TOOLS]",
-                   "[TOOL_RESULTS]", "[/TOOL_RESULTS]", "<start_of_turn>", "<end_of_turn>", "<tool_call>",
-                   "</tool_call>", "<tool_response>", "</tool_response>", "<think>", "</think>",
-                   # SentencePiece and Llama 2 / Mistral / Gemma control tokens that have no bars
-                   "<s>", "</s>", "<bos>", "<eos>", "<pad>", "<unk>", "<mask>", "<EOT>", "<start_of_image>",
-                   "<end_of_image>", "<image_soft_token>", "<start_of_audio>", "<end_of_audio>",
-                   "<audio_soft_token>")
-
-
-def _variants(token: str) -> set[str]:
-    out = {token}
-    for old, new in (("|", "｜"), ("｜", "|"), ("_", "▁"), ("▁", "_")):
-        out |= {variant.replace(old, new) for variant in list(out)}
-    return out
-
-
-_TOKEN_RE = re.compile("|".join(sorted((re.escape(v) for t in _SPECIAL_TOKENS for v in _variants(t)), key=len,
-                                       reverse=True)), re.IGNORECASE)
-_ANY_BAR_TOKEN_RE = re.compile(r"<[|｜][^<>\n]{0,32}?[|｜]>")
-
-
-def clean_text(text: str) -> str:
-    """Text the code did not write, made safe for a self-hosted model (S38): Unicode format characters (Cf:
-    zero-width and direction marks) and the tag block U+E0000-U+E007F removed, then every known chat-template
-    control token (ChatML, Llama 3, DeepSeek's fullwidth forms, Mistral, Gemma, Qwen tool tags, think tags; with
-    "|" or "｜" and "_" or "▁") and any <|...|> or <｜...｜> token of up to 32 characters, until none is left."""
-    cleaned = "".join(ch for ch in str(text or "") if unicodedata.category(ch) != "Cf"
-                      and not 0xE0000 <= ord(ch) <= 0xE007F)
-    while True:
-        stripped = _ANY_BAR_TOKEN_RE.sub("", _TOKEN_RE.sub("", cleaned))
-        if stripped == cleaned:
-            return cleaned
-        cleaned = stripped
-
-
-_FRAME_OPEN_RE = re.compile(r"<(/?)(factory-data|wake|consolidation)(?![\w-])", re.IGNORECASE)
-LOOKALIKES = str.maketrans({"<": "‹", ">": "›", "[": "⁅", "]": "⁆", "|": "¦"})
-
-
-def escape_markers(text: str) -> str:
-    """The context's own markers in text it did not write (<factory-data, <wake, <consolidation and their closing
-    forms) escaped to <...-quoted, so no text can end or open a block."""
-    return _FRAME_OPEN_RE.sub(lambda m: f"<{m.group(1)}{m.group(2)}-quoted", str(text))
-
-
-def inline(text: str) -> str:
-    """Text shown outside a block (the owner's own summary, a clean note, a clean reply): cleaned and escaped."""
-    return escape_markers(clean_text(text))
-
-
-def frame(source: str, text: str, cap: int, taint: Iterable[str] = ("untrusted",), *, lookalike: bool = False) -> str:
-    """Outside text as data (S38): cleaned, cut to cap, its own <factory-data, <wake and <consolidation markers
-    (and their closing forms) escaped to <...-quoted, inside a block that names its source and taint. lookalike:
-    the re-render used when the tokenizer still finds a control token (<, >, [, ] and | replaced by look-alike
-    characters)."""
-    body = clean_text(text)
-    if len(body) > cap:
-        body = body[:max(0, cap - 1)] + "…"
-    body = escape_markers(body)
-    if lookalike:
-        body = body.translate(LOOKALIKES)
-    labels = " ".join(sorted(set(taint))) or "clean"
-    safe_source = re.sub(r"[^a-z0-9._-]", "-", str(source).lower())[:40]
-    return f'<factory-data source="{safe_source}" taint="{labels}">\n{body}\n</factory-data>'
+# clean_text, escape_markers, inline and frame live in swfactory/framing.py, shared with the browser adapter
+# (BROWSER_AND_CODEX.md §2.3); they are imported above under the names this module always used.
 
 
 def tokenizer_check(server: Mapping[str, Any], text: str, *, post: Callable[..., tuple[int | None, Any]] | None = None,
@@ -767,16 +701,19 @@ def _call(target: Any, name: str, *args: Any, default: Any = None, **kwargs: Any
 
 def operator_words(row: dict, name: str) -> bool:
     """Whether an item's title is the operator's own words or a person's (DESIGN §36): one of her receipts
-    attributed to her (owner and source persona:<name>), an item she wrote herself (a persona source of
-    persona:<name>), or one a person added. Anything else (an outside agent's item a person assigned to her, a
-    factory or review item, another persona's words) is outside text in her turn."""
+    attributed to her (owner and source persona:<name>) and not tainted untrusted (receipts._receipt_taint: its
+    actor names her, and the harness's user could not have written it), an item she wrote herself (a persona
+    source of persona:<name>), or one a person added. Anything else (another agent's receipt in the shared
+    folder, an outside agent's item a person assigned to her, a factory or review item, another persona's words)
+    is outside text in her turn."""
     from .items import HUMAN
 
     source = row.get("source") or {}
     mine = f"persona:{name}" if name else None
     kind = source.get("type")
     if mine and kind == "receipt":
-        return row.get("owner") == mine and source.get("agent") == mine
+        return row.get("owner") == mine and source.get("agent") == mine and \
+            "untrusted" not in (row.get("taint") or [])
     if mine and kind == "persona":
         return source.get("agent") == mine
     return kind == "added" and source.get("by") == HUMAN
@@ -2149,10 +2086,12 @@ class WakeManager:
                         "actions": outcome["actions"], "taint": outcome["taint"], "seconds": outcome["seconds"],
                         "slot_seconds": outcome["slot_seconds"], "outcome": outcome["state"],
                         "error": outcome["detail"] if outcome["state"] == "failed" else None})
+            # a version the owner erased (before the turn or while it ran) leaves its prompt here too, under the
+            # lock PersonaStore.external_erase holds (PersonaStore.write_run_log)
             with contextlib.suppress(OSError):
-                with open(log_path, "a", encoding="utf-8") as handle:
-                    for line in log:
-                        handle.write(json.dumps(redact(line, self._secrets()), ensure_ascii=False) + "\n")
+                secrets = self._secrets()
+                self.store.write_run_log(name, log_path, log,
+                                         lambda line: json.dumps(redact(line, secrets), ensure_ascii=False))
             try:
                 self._finish(entry, turn, model, outcome, run)
             finally:
@@ -2256,8 +2195,10 @@ class WakeManager:
             provider = self.provider_factory(provider_cfg)
             messages = [provider.user_message(ctx["user"])]
             toolset = self._wake_toolset(ctx) if tools_mode == "read_only" else None
+            # blocks: each file the prompt holds is in a block named by its version (P.erase_from_run_log)
             log.append({"type": "request", "system": ctx["system"], "user": ctx["user"], "structured": structured,
-                        "tools": [t["name"] for t in toolset.schemas()] if toolset else []})
+                        "tools": [t["name"] for t in toolset.schemas()] if toolset else [],
+                        "blocks": P.VERSIONED_BLOCKS})
             repairs = int(settings["repairs"])
             calls = 0
             while True:
@@ -2636,7 +2577,8 @@ class WakeManager:
             if isinstance(external, dict) and external:
                 roots, denied = self._external_bounds()
                 # the read ledger (opt-in): every read recorded as it happens, or the turn does not run
-                record = self.store.external_read(name, wake=entry["id"]) if external.get("ledger") is True else None
+                record = self.store.external_read(name, wake=entry["id"], spec=external) \
+                    if external.get("ledger") is True else None
                 problems: list[str] = []
                 try:
                     rows = P.read_external_memory(external, int(settings["memory_chars"]), roots=roots,
@@ -2654,8 +2596,10 @@ class WakeManager:
                 if rows:
                     taint.update(labels)   # external memory is never clean (decision b)
                     lines += ["", "Your memory (read from your own store, newest first):"]
-                    for row in rows:
-                        lines.append(data(f"memory-{row['source']}", row["text"], int(settings["memory_chars"]), labels))
+                    for row in rows:   # a file's block names its version, so an erase finds it (P.memory_source)
+                        block_source = P.memory_source(row["source"], row["sha256"]) if row.get("sha256") \
+                            else f"memory-{row['source']}"
+                        lines.append(data(block_source, row["text"], int(settings["memory_chars"]), labels))
                 if problems:   # written by code: an aborted read is never an empty memory
                     lines += ["", *problems]
             else:
@@ -2834,7 +2778,8 @@ class WakeManager:
             def record(path: Path, data: bytes, size: int, mtime: float) -> None:
                 shown = path.relative_to(folder).as_posix() if folder and path != folder and folder in path.parents \
                     else path.name
-                read = self.store.external_read(str(name), wake=wake_id, via="Read")
+                read = self.store.external_read(str(name), wake=wake_id, via="Read",
+                                                spec=(cfg.get("memory") or {}).get("external"))
                 read.file(shown, data, size, mtime)
                 read.commit()
         policy = ToolPolicy(cwd=cwd, read_roots=read_paths, write_paths=[], bash_timeout=60.0, output_chars=20000,
@@ -3719,12 +3664,14 @@ class WakeManager:
 
     def external_ledger(self, name: str) -> dict:
         """What the read ledger kept of a persona's external memory: {persona, ledger (on now), files: [{name,
-        versions}], sqlite, reads, kept_bytes, cap_bytes, recent: [the newest manifests], label: "private"}. It
-        lists what is there also after the owner turned the ledger off."""
+        versions}], sqlite, reads, kept_bytes, kept_copies, cap_bytes, cap_copies, max_files, read_bytes (her
+        memory.external's caps as set now), recent: [the newest manifests], label: "private"}. It lists what is
+        there also after the owner turned the ledger off."""
         self._require_persona(name)
         external = (persona_settings(self.config, name).get("memory") or {}).get("external")
         on = isinstance(external, dict) and external.get("ledger") is True
-        return {"persona": name, "ledger": on, **self.store.external_versions(name),
+        return {"persona": name, "ledger": on,
+                **self.store.external_versions(name, external if isinstance(external, dict) else None),
                 "recent": self.store.external_reads(name, 20)}
 
     def external_version(self, name: str, digest: str) -> dict:
@@ -3746,8 +3693,9 @@ class WakeManager:
         return {"restore": prepared}
 
     def external_erase(self, name: str, digest: str) -> dict:
-        """The owner erases one version from the read ledger (PersonaStore.external_erase): its copy goes and its
-        manifest entries keep only the sha256. The audit records the sha256 only."""
+        """The owner erases one version from the read ledger (PersonaStore.external_erase): its copy file is deleted,
+        its manifest entries keep only the sha256 and the run logs of the wakes that read it lose its text. The audit
+        records the sha256 only."""
         self._require_persona(name)
         erased = self.store.external_erase(name, digest)
         self.audit.write("external.erased", persona=name, agent=self._display(name), sha256=digest)

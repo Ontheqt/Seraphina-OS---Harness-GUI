@@ -1,0 +1,8 @@
+User backupsvc may run the following commands on server:
+
+Sudoers entry: /etc/sudoers.d/90-backup
+    RunAsUsers: root
+    Options: !authenticate
+    Commands:
+	/usr/bin/rsync
+	/usr/bin/tar

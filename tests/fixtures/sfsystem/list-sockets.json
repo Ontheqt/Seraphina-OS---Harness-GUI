@@ -1,0 +1,1 @@
+[{"listen":"[::]:9090","type":"Stream","unit":"cockpit.socket","activates":"cockpit.service"},{"listen":"0.0.0.0:22","type":"Stream","unit":"ssh.socket","activates":"ssh.service"},{"listen":"/run/dbus/system_bus_socket","type":"Stream","unit":"dbus.socket","activates":"dbus.service"}]

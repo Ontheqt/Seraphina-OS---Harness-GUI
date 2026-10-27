@@ -895,6 +895,8 @@ class BuiltinRunner(Runner):
         else:
             try:
                 result = self._run_session(ctx, text, Path(session_path), resume_from is not None)
+            except RequiredServerError as exc:   # the browser (or another required server) did not start
+                result = AgentRun(ok=False, error=str(exc))
             except Exception as exc:   # a bad setting or a harness bug ends this run, not the worker
                 result = AgentRun(ok=False, error=f"builtin runner failed: {type(exc).__name__}: {exc}")
         # error and final_text land in job.json and on the card, which bus redaction never sees.
@@ -1223,27 +1225,57 @@ def _put_back(path: Path, before: tuple[int, int, bytes] | None) -> None:
         os.fchmod(handle.fileno(), mode)
 
 
+class RequiredServerError(RuntimeError):
+    """A required MCP server (mcp_servers.<name>.required) could not start: the run fails with the reason instead
+    of running without its tools (BROWSER_AND_CODEX.md §2.11)."""
+
+
 def start_mcp_clients(ctx: RunContext, secret_names: list[str],
                       sandbox: Sandbox | None = None) -> dict[str, McpClient]:
     """Start the agent's MCP servers (inside the run's sandbox, when given); one that is not configured or
-    fails to start is reported and skipped."""
+    fails to start is reported and skipped, unless it is required (RequiredServerError, after the ones already
+    started are closed). A server with sandbox "self" (the browser, DESIGN §43) starts unwrapped as
+    `sf-browser mcp <the run's grant>`, and only in a run that has a grant."""
+    from ..browser import runs as browser_runs
+
     def log(line: str) -> None:
         ctx.emit("agent.output", {"line": line})
 
     clients: dict[str, McpClient] = {}
+
+    def fail(name: str, why: str) -> None:
+        for started in clients.values():
+            started.close()
+        raise RequiredServerError(f"the required MCP server {name} did not start: {why}")
+
     for name in ctx.agent.mcp:
         cfg = (ctx.mcp_servers or {}).get(name)
         if cfg is None:
             log(f"mcp {name}: not configured in mcp_servers; skipped")
             continue
-        client = McpClient(cfg, Path(ctx.cwd), log=log, secret_names=secret_names, sandbox=sandbox)
+        run_sandbox = sandbox
+        if browser_runs.is_browser_server(cfg):
+            grant = getattr(ctx, "browser_grant", None)
+            if grant is None:
+                log(f"mcp {name}: the browser runs only in a browsing chat, under a grant; skipped")
+                if getattr(cfg, "required", False):
+                    fail(name, "this run has no browser grant")
+                continue
+            cfg = browser_runs.server_args(cfg, Path(grant))
+            run_sandbox = None   # sf-browser builds its own, tighter namespace (§2.9)
+        client = McpClient(cfg, Path(ctx.cwd), log=log, secret_names=secret_names, sandbox=run_sandbox)
         try:
             client.start()
         except Exception as exc:   # McpError, or a bad setting such as a NUL byte in an argument
             client.close()
+            if getattr(cfg, "required", False):
+                fail(name, str(exc))
             log(f"mcp {name}: {exc}; skipped")
             continue
         clients[name] = client
+        if run_sandbox is None and getattr(ctx, "browser_grant", None) is not None and \
+                browser_runs.is_browser_server(cfg):
+            browser_runs.register(Path(ctx.browser_grant).stem, client)
     return clients
 
 

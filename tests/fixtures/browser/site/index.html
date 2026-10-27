@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Fixture</title></head>
+<body>
+<h1>Fixture</h1>
+<p>Order number: A-1042</p>
+<div id="area">
+<form id="greet">
+  <label>Name <input id="name" name="name" autocomplete="off"></label>
+  <button type="submit">Submit</button>
+</form>
+</div>
+<p id="result" role="status">No greeting yet</p>
+<p id="count">Submissions: 0</p>
+<button id="rerender" type="button">Re-render</button>
+<button id="rename" type="button">Rename the button</button>
+<p><a href="effects.html">Effects</a> <a href="popup.html">Popups</a> <a href="shop.html">Shop</a>
+<a href="injection.html">Injection</a> <a href="decoy.html">Decoy</a></p>
+<script>
+let renders = 0;
+function wire() {
+  document.getElementById("greet").addEventListener("submit", function (event) {
+    event.preventDefault();
+    const name = document.getElementById("name").value;
+    fetch("/submit", {method: "POST", headers: {"Content-Type": "application/x-www-form-urlencoded"},
+                      body: "name=" + encodeURIComponent(name)})
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        document.getElementById("result").textContent = data.greeting;
+        document.getElementById("count").textContent = "Submissions: " + data.count;
+      });
+  });
+}
+wire();
+document.getElementById("rerender").addEventListener("click", function () {
+  renders += 1;
+  const area = document.getElementById("area");
+  area.innerHTML = area.innerHTML;   // the same form, new nodes: the old refs are gone
+  wire();
+});
+document.getElementById("rename").addEventListener("click", function () {
+  const button = document.querySelector("#greet button");
+  button.textContent = "Send now";
+});
+</script>
+</body>
+</html>

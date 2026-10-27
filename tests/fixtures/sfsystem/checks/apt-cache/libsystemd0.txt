@@ -1,0 +1,4 @@
+Package: libsystemd0
+Version: 259.1-1ubuntu2
+Pre-Depends: libc6 (>= 2.38), libcap2 (>= 1:2.10)
+Breaks: systemd (<< 259.1-1ubuntu2)

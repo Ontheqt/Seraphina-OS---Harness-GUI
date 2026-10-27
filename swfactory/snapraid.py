@@ -45,7 +45,7 @@ from typing import Any, Callable
 from . import items as tracker
 from .config import PROJECT_DIR
 
-PHASE = "P3"
+PHASE = "P4"
 DIR = "snapraid"
 HELPER = "/usr/local/libexec/seraphina/sf-snapraid"
 HELPER_CONFIG = "/etc/seraphina/snapraid-helper.json"
@@ -89,6 +89,8 @@ LAB_CHECKS = (
     {"id": "L13", "short": "starting up with a failed disk", "what": "the server still starts when a disk has failed"},
     {"id": "L19", "short": "the reading program on every kind of server set-up",
      "what": "the reading program works with each kind of sudo this server may have, and from a hardened service"},
+    {"id": "L20", "short": "replacing a failed disk",
+     "what": "the checklist for a failed disk works end to end on test disks, and the next run takes the new disk in"},
 )
 LAB_LINE = ("Not checked on this server yet: " + ", ".join(c["short"] for c in LAB_CHECKS[:-1]) + " and " +
             LAB_CHECKS[-1]["short"] + ". Until they are, Seraphina only reads.")
@@ -660,6 +662,9 @@ class SnapraidPanel:
 
         self.daemon = DaemonRoute(self, metrics=metrics, link=link, proc_root=proc_root)
         self._quiet = quiet
+        from .snapraid_rebuild import Checklist
+
+        self.rebuild = Checklist(self)        # the owner's checklist for a whole failed disk (P4, design section 9.4)
 
     # -- lifecycle ------------------------------------------------------------------------------------
 
@@ -926,7 +931,7 @@ class SnapraidPanel:
                     if item is not None:
                         ledger.change(tracker.FACTORY, item["id"], "verified",
                                       note=f"a fresh health check reads {_lower_first(label)} healthy",
-                                      evidence=[{"kind": "receipt", "ref": f"snapraid:{smart.get('job')}",
+                                      evidence=[{"kind": "receipt", "ref": f"snapraid:{smart.get('job')}", "check": "ok",
                                                  "detail": "a fresh, readable SMART observation"}])
                         closed.append(ledger.scope.item_ref(item["id"]))
                     if self.notifier is not None:
@@ -1019,6 +1024,9 @@ class SnapraidPanel:
     # -- the view (GET /api/snapraid) ----------------------------------------------------------------------------
 
     def view_light(self) -> dict:
+        rebuild = self.rebuild.light() if self.settings().get("enabled") else None
+        if rebuild is not None:             # a disk is being replaced: the checklist's light, on either route
+            return rebuild
         if self.route() in ("daemon", "metrics") and self.settings().get("enabled"):
             from . import snapraidd
 
@@ -1095,6 +1103,7 @@ class SnapraidPanel:
             "lab_line": LAB_LINE, "lab_words": LAB_WORDS,
             "versioned": {"set_up": False, "words": NO_VERSIONED},
             "refreshing": self.refreshing, "errors": facts.get("errors") or {},
+            "rebuild": self.rebuild.summary() if cfg.get("enabled") else None,
         }
 
     def _undo_line(self, route: str, daemon_view: dict | None, now: float) -> str:
@@ -1563,7 +1572,7 @@ def doctor_checks(config: Any, *, client: HelperClient | None = None, local: dic
                   check: Callable[..., dict] | None = None, daemon: dict | None = None) -> list[dict]:
     """The doctor's SnapRAID checks, read-only: through the helper's info, and on the daemon route through /metrics
     and Seraphina's link (snapraidd.doctor_checks). daemon: injectables for that part (tests)."""
-    from . import snapraidd
+    from . import snapraid_rebuild, snapraidd
     from .doctor import check as make_check
     from .notify import sandbox_mode, uses_cli_driver
 
@@ -1579,9 +1588,10 @@ def doctor_checks(config: Any, *, client: HelperClient | None = None, local: dic
                                            **daemon_kw) if cfg.get("enabled") else []
     daemon_found = any(line.get("name") == "snapraid daemon" and "answers, running" in line.get("detail", "")
                        for line in daemon_lines)
+    rebuild_lines = snapraid_rebuild.doctor_lines(config, make) if cfg.get("enabled") else []
     if not facts.get("binary"):
         if daemon_found:
-            return daemon_lines + [make("snapraid lab checks", False, "warn", DAEMON_LAB_WORDS)]
+            return daemon_lines + rebuild_lines + [make("snapraid lab checks", False, "warn", DAEMON_LAB_WORDS)]
         return [make("snapraid", True, "info", "SnapRAID is not installed (optional: it rebuilds a dead data disk "
                                                "from the others)")]
     out.append(version_check(facts, make, daemon_found))
@@ -1669,7 +1679,7 @@ def doctor_checks(config: Any, *, client: HelperClient | None = None, local: dic
         places = ", ".join(entry.get("place", "?") for entry in found[:5])
         out.append(make("snapraid schedulers", True, "info", f"{plural(len(found), 'other scheduler')} of SnapRAID: "
                                                              f"{places}"))
-    out += daemon_lines
+    out += daemon_lines + rebuild_lines
     out.append(make("snapraid lab checks", False, "warn", DAEMON_LAB_WORDS if daemon_found else LAB_WORDS))
     return out
 
@@ -1723,8 +1733,10 @@ def _fstab_checks(parsed: dict, mounts: dict, path: str, make: Callable[..., dic
 
 
 def novice_strings() -> list[str]:
-    """Every novice sentence of this module (U7's word check)."""
-    return [*SENTENCES, WATCHING, SANDBOX_LINE, NO_VERSIONED, *NOT_COVERED, TAKING_OUT_COVERED, LAB_LINE, LAB_WORDS, *REASONS.values(),
+    """Every novice sentence of this module and of the disk checklist (U7's word check)."""
+    from .snapraid_rebuild import novice_strings as rebuild_strings
+
+    return [*rebuild_strings(), *SENTENCES, WATCHING, SANDBOX_LINE, NO_VERSIONED, *NOT_COVERED, TAKING_OUT_COVERED, LAB_LINE, LAB_WORDS, *REASONS.values(),
             *QUIET_WORDS.values(), DAEMON_LAB_WORDS,
             *HEALTH_TITLES.values(), *(check["what"] for check in LAB_CHECKS), LAB_WHY]
 
@@ -1744,6 +1756,10 @@ def card_lines(view: dict) -> list[str]:
         if lit.get(key):
             lines.append(f"  {lit[key]}")
     lines.append(f"  {view.get('undo_line')}")
+    rebuild = view.get("rebuild") or {}
+    if rebuild.get("state") == "open":
+        lines.append(f"  A disk is being replaced: {rebuild.get('label')}, step {rebuild.get('n')} of "
+                     f"{rebuild.get('of')} ({rebuild.get('title')}): factory snapraid rebuild")
     daemon = view.get("daemon")
     if daemon:
         lines.append(f"  The protection service: {'answering' if daemon.get('answering') else 'NOT ANSWERING'}, "

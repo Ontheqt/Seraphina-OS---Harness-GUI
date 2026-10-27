@@ -1,0 +1,2 @@
+User kate may run the following commands on server:
+    (root) NOPASSWD: /usr/bin/systemctl restart example-notes.service

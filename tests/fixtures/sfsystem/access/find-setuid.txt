@@ -1,0 +1,4 @@
+/usr/bin/su
+/usr/bin/passwd
+/usr/bin/sudo
+/usr/local/bin/helper-suid

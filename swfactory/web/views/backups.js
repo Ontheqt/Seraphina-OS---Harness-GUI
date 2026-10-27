@@ -9,7 +9,9 @@
  * Routes: #/backups (the disk protection card, the disks, who runs it, versioned backups, not covered, details),
  * #/backups/changes/<G-n> (a guard report and its change list, a page at a time, with links to its runs),
  * #/backups/run/<J-n> (one run of the reader and its output, reached from Details' recent runs or a guard report),
- * #/backups/setup (the copy blocks that install or remove the reader, each move a step of its own). Rail: "Backups",
+ * #/backups/setup (the copy blocks that install or remove the reader, each move a step of its own),
+ * #/backups/rebuild (§9.4: the owner's checklist for a whole failed disk, seven steps, each with what it does, the
+ * blocks he pastes himself, a read-only check and what he ticks; Seraphina runs none of the blocks). Rail: "Backups",
  * order 45. Home: its card, amber until a versioned copy exists, err when the light is red.
  * Buttons that would protect, check for damage or bring files back are not drawn: their verbs are not allowed in
  * this phase. File names (a change list, a run's output) are shown as text, never markup, and the page keeps no copy.
@@ -167,6 +169,27 @@
     linkStage: 'Prepare the link’s files',
     linkCheck: 'Check the link',
     serviceLines: 'The lines the protection service’s settings need:',
+    // the checklist for a failed disk (§9.4): the steps' own words come from the server (snapraid_rebuild.py)
+    rbTitle: 'Replace a failed disk',
+    rbOpen: 'Open the checklist',
+    rbBeing: 'is being replaced: step',
+    rbStart: 'Start the checklist',
+    rbFinished: 'The checklist is finished.',
+    rbCancelled: 'The checklist was closed before the end.',
+    rbStepWord: 'Step',
+    rbNow: 'Now', rbDone: 'Done', rbLater: 'Later',
+    rbGoOn: 'Check and go on',
+    rbCheckAgain: 'Check again',
+    rbCannotUndo: 'Cannot be undone',
+    rbClose: 'Close the checklist',
+    rbSkipped: 'The next protection run is skipped.',
+    rbNewDisk: 'Choose the new disk',
+    rbShow: 'Show the commands',
+    rbSmaller: 'smaller than the old disk',
+    rbNoName: 'no name in /dev/disk/by-id: Seraphina will not build commands for it',
+    rbCommands: 'The commands for the new disk',
+    rbMoved: 'Done: the next step is open.',
+    rbLink: 'A disk has failed? Replace it step by step.',
   };
   const ERR_CODES = new Set(['disk_missing', 'protection_missing', 'disk_uuid_changed', 'smart_fail', 'bad_blocks', 'content_problem', 'not_protected_days']);
   const WARN_CODES = new Set(['never_protected', 'old', 'check_overdue', 'outside', 'stale', 'unreachable', 'unsafe', 'interrupted',
@@ -174,7 +197,9 @@
     'not_set_up', 'taking_out', 'read_with_care', 'frozen', 'partial', 'unknown_outcome', 'lapsed', 'two_schedulers', 'no_scheduler',
     'beyond_loopback', 'down', 'report_failed']);
   // The protection service's red codes (snapraidd.REASONS): Home shows them as problems
-  ['auth_off', 'open_beyond', 'failing', 'degraded', 'engine_old', 'frozen_long'].forEach((c) => ERR_CODES.add(c));
+  ['auth_off', 'open_beyond', 'failing', 'degraded', 'engine_old', 'frozen_long', 'rebuild'].forEach((c) => ERR_CODES.add(c));
+  // The light's codes of a failed disk: the card offers the checklist (§9.4)
+  const FAILED_CODES = new Set(['disk_missing', 'disk_uuid_changed', 'smart_fail', 'failing', 'degraded']);
   // A reason that starts with a name keeps its capital after "Disk protection: " on Home.
   const lowerFirst = (text) => (/^(Seraphina|SnapRAID)\b/.test(text) ? text : text.charAt(0).toLowerCase() + text.slice(1));
   // draft: the search words typed and not yet applied, kept across a redraw (an event can redraw the page while typing)
@@ -182,7 +207,8 @@
     run: null, runKey: '', runText: '', runOffset: 0, runMore: false, setup: null, setupError: null, checkWords: '',
     detailsOpen: false, jobs: null, jobsError: null, jobsLoading: false,
     review: null, reviewKey: '', reviewError: null, rquery: { disk: '', change: '', q: '', offset: 0 }, rdraft: null, picked: new Map(),
-    druns: null, druns_error: null, step: null, stepKey: '' };
+    druns: null, druns_error: null, step: null, stepKey: '',
+    rb: null, rbError: null, rbPick: '', rbTicks: new Map(), rbWords: '', rbNew: '', rbTyped: '', rbPrepared: null, rbPrepError: '' };
 
   // ---------------------------------------------------------------- data
   // A load asked for while one is on its way runs once more after it: the first may have left before the change.
@@ -324,6 +350,7 @@
       view.state === 'absent' ? SF.h('p', { class: 'muted' }, WORDS.learnMoreText) : null,
       view.state === 'no_reader' ? readerFacts(view) : null,
       warnings,
+      rebuildLine(view),
       buttons(view, handle),
       view.state === 'ready' && view.lab_line ? SF.h('p', { class: 'muted bk-lab', style: { 'font-size': 'var(--fs-sm)' } }, String(view.lab_line)) : null,
     ];
@@ -510,6 +537,7 @@
         a.outcome ? SF.h('span', { class: 'pill no-dot tone-' + (SF.words.outcomeTone[a.outcome] || 'warn') }, SF.words.outcome[a.outcome] || String(a.outcome)) : null,
         String(a.outcome ? ' ' + outcomeWords(a.outcome, true) : (WORDS.stateWords[a.state] || a.state)) + (a.words && a.outcome !== 'succeeded' ? ' ' + String(a.words) : ''))))) : null,
       notes,
+      rebuildLine(v),
       SF.h('div', { class: 'actions', style: { 'flex-wrap': 'wrap', gap: '8px' } }, buttonsRow));
   }
   function daemonDisks(v) {
@@ -636,6 +664,163 @@
       SF.h('dl', { class: 'kv' }, [['Step', t.command], ['Of', t.high_command], ['Status', t.status], ['Exit', t.exit_code], ['Message', t.exit_msg]]
         .filter(([, val]) => val !== undefined && val !== null).map(([k, val]) => [SF.h('dt', null, k), SF.h('dd', { class: 'mono' }, String(val))])),
       section('messages', WORDS.messages, null, (r.messages || []).length ? SF.h('pre', { class: 'code-block bk-messages', style: { 'max-height': '60vh' } }, (r.messages || []).map((m) => String(m.level || '') + ': ' + String(m.text || '')).join('\n')) : SF.h('p', { class: 'muted' }, WORDS.noMessages)),
+    ]);
+  }
+
+  // ---------------------------------------------------------------- the checklist for a failed disk (§9.4)
+  /** The card's line: an open checklist and its step, or, while the light says a disk failed, the way in. */
+  function rebuildLine(v) {
+    const r = v.rebuild;
+    if (r && r.state === 'open') {
+      return SF.h('div', { class: 'callout callout-err bk-rebuild-line', dataset: { part: 'rebuild' } }, SF.icon('tool', 'icon-sm'),
+        SF.h('div', null, String(r.label || '') + ' ' + WORDS.rbBeing + ' ' + r.n + ' of ' + r.of + ', ' + String(r.title || '').toLowerCase() + '. ',
+          SF.h('a', { href: '#/backups/rebuild', dataset: { action: 'open-rebuild' } }, WORDS.rbOpen)));
+    }
+    if (v.light && FAILED_CODES.has(v.light.code)) {
+      return SF.h('div', { class: 'actions bk-rebuild-line', dataset: { part: 'rebuild' } },
+        SF.h('a', { class: 'btn btn-sm btn-primary', href: '#/backups/rebuild', dataset: { action: 'open-rebuild' } }, SF.icon('tool', 'icon-sm'), WORDS.rbTitle));
+    }
+    if (v.state === 'ready' || isDaemon(v)) return SF.h('p', { class: 'muted bk-rebuild-line', dataset: { part: 'rebuild' } }, SF.h('a', { href: '#/backups/rebuild', dataset: { action: 'open-rebuild' } }, WORDS.rbLink));
+    return null;
+  }
+  async function loadRebuild(handle) {
+    try { B.rb = await SF.api('/api/snapraid/rebuild'); B.rbError = null; } catch (e) { B.rbError = e; }
+    handle.refresh();
+  }
+  async function rebuildPost(path, body, button, handle) {
+    SF.setBusy(button, true);
+    try {
+      const r = await SF.api('/api/snapraid/rebuild' + path, { method: 'POST', body });
+      B.rb = r;
+      B.rbWords = r.result ? String(r.result.words || '') : '';
+      if (r.result && r.result.done) { B.rbWords = ''; SF.toast(WORDS.rbMoved); }
+      handle.refresh();
+      return r;
+    } catch (e) { SF.toastError(null, e); return null; } finally { SF.setBusy(button, false); }
+  }
+  const CHECK_TONE = (ok) => (ok === true ? ['info', 'check'] : ok === false ? ['err', 'x'] : ['warn', 'help']);
+  function rebuildStart(root, page, handle, back) {
+    const choices = page.choices || [];
+    if (!B.rbPick) { const s = choices.find((c) => c.suggested); B.rbPick = s ? s.name : ''; }
+    const list = SF.h('ul', { class: 'check-list bk-rb-choices' }, choices.map((c) => {
+      const radio = SF.h('input', { type: 'radio', name: 'bk-rb-disk', value: c.name, checked: B.rbPick === c.name, 'aria-label': String(c.label), dataset: { pickDisk: c.name } });
+      radio.addEventListener('change', () => { B.rbPick = c.name; handle.refresh(); });
+      return SF.h('li', { class: 'check-row', dataset: { disk: c.name } }, radio,
+        SF.h('div', { class: 'check-main' }, SF.h('div', { class: 'check-name' }, String(c.label), ' ', tag(c.name, 'tag-mono tag-outline'), c.suggested ? [' ', tag(page.suggested, 'tag-err')] : null),
+          SF.h('div', { class: 'muted' }, String(c.mount || '') + ' · ' + String(c.health_words || ''))));
+    }));
+    const start = SF.btn(WORDS.rbStart, { icon: 'play', cls: 'btn-sm btn-primary', disabled: !B.rbPick || !!page.start_problem, dataset: { action: 'rb-start' } });
+    start.addEventListener('click', () => rebuildPost('', { disk: B.rbPick }, start, handle));
+    const record = page.record;
+    SF.rebuild(root, [
+      SF.viewHead(WORDS.rbTitle, String(page.sub || ''), back),
+      record && record.state === 'finished' ? SF.callout('info', 'check', null, WORDS.rbFinished) : null,
+      record && record.state === 'cancelled' ? SF.callout('info', 'info', null, WORDS.rbCancelled) : null,
+      // closed after step 1 but before a new disk went in: how to undo what the first steps turned off
+      page.way_back ? SF.h('div', { class: 'bk-rb-way-back', style: { display: 'grid', gap: '8px', 'margin-top': '10px', 'min-width': '0' } },
+        (page.way_back.words || []).map((t) => SF.h('p', { style: { margin: '0' } }, String(t))),
+        (page.way_back.blocks || []).length ? SF.h('ol', { class: 'check-list bk-rb-blocks' }, page.way_back.blocks.map(block)) : null) : null,
+      page.start_problem ? SF.callout('warn', 'alert', null, SF.h('span', null, String(page.start_problem), ' ', SF.h('a', { href: '#/backups/setup' }, WORDS.setUp))) : null,
+      section('rb-choose', String(page.choose || ''), String(page.no_protection || ''), [choices.length ? list : SF.h('p', { class: 'muted' }, WORDS.disksEmpty),
+        SF.h('div', { class: 'actions', style: { 'margin-top': '10px' } }, start)]),
+      SF.h('p', { class: 'muted bk-rb-lab', style: { 'margin-top': '12px', 'font-size': 'var(--fs-sm)' } }, String(page.lab_line || '')),
+    ]);
+  }
+  function spareChooser(step, handle) {
+    const rows = step.spare || [];
+    if (!rows.length) return SF.h('p', { class: 'muted bk-rb-spare' }, String((B.rb.spare_words || {}).none || ''));
+    const words = B.rb.spare_words || {};
+    const pick = rows.find((r) => r.by_id === B.rbNew);
+    const group = (signed) => rows.filter((r) => r.signed === signed).map((r) => {
+      const radio = SF.h('input', { type: 'radio', name: 'bk-rb-new', value: r.by_id || '', checked: !!r.by_id && B.rbNew === r.by_id, disabled: !r.usable, 'aria-label': String(r.model || r.by_id || ''), dataset: { pickNew: r.by_id || '' } });
+      radio.addEventListener('change', () => { B.rbNew = r.by_id; B.rbTyped = ''; B.rbPrepared = null; B.rbPrepError = ''; handle.refresh(); });
+      return SF.h('li', { class: 'check-row', dataset: { spare: r.by_id || r.device || '' } }, radio,
+        SF.h('div', { class: 'check-main' }, SF.h('div', { class: 'check-name' }, String(r.model || '?') + ' · ' + String(r.size_words || ''), r.smaller ? [' ', tag(WORDS.rbSmaller, 'tag-warn')] : null),
+          SF.h('div', { class: 'check-detail', style: { 'word-break': 'break-all' } }, r.by_id ? String(r.by_id) + (r.serial ? '  ' + r.serial : '') : WORDS.rbNoName)));
+    });
+    const blank = group(false);
+    const signed = group(true);
+    const typed = SF.h('input', { class: 'input input-sm', type: 'text', value: B.rbTyped, autocomplete: 'off', spellcheck: false, 'aria-label': pick ? pick.ask : '', dataset: { focus: 'rb-typed' } });
+    typed.addEventListener('input', () => { B.rbTyped = typed.value; });
+    const show = SF.btn(WORDS.rbShow, { icon: 'tool', cls: 'btn-sm', disabled: !pick, dataset: { action: 'rb-prepare' } });
+    show.addEventListener('click', async () => {
+      SF.setBusy(show, true);
+      try { B.rbPrepared = await SF.api('/api/snapraid/rebuild/prepare', { method: 'POST', body: { by_id: B.rbNew, typed: typed.value } }); B.rbPrepError = ''; } catch (e) { B.rbPrepared = null; B.rbPrepError = e.message || String(e); }
+      SF.setBusy(show, false);
+      handle.refresh();
+    });
+    return SF.h('div', { class: 'bk-rb-spare', style: { display: 'grid', gap: '8px', 'min-width': '0' } },
+      SF.h('h3', { class: 'home-card-title' }, WORDS.rbNewDisk),
+      blank.length ? [SF.h('p', { class: 'muted' }, String(words.blank || '')), SF.h('ul', { class: 'check-list' }, blank)] : null,
+      signed.length ? [SF.h('p', { class: 'muted' }, String(words.signed || '')), SF.h('ul', { class: 'check-list' }, signed)] : null,
+      pick ? SF.h('label', { class: 'field' }, SF.h('span', null, String(pick.ask || '')), typed) : null,
+      SF.h('div', { class: 'actions' }, show),
+      B.rbPrepError ? SF.callout('err', 'x', null, B.rbPrepError) : null,
+      B.rbPrepared && B.rbPrepared.by_id === B.rbNew ? [SF.h('h3', { class: 'home-card-title' }, WORDS.rbCommands),
+        SF.h('ol', { class: 'check-list bk-rb-blocks bk-rb-prepared' }, (B.rbPrepared.blocks || []).map(block))] : null);
+  }
+  function rebuildStep(step, page, handle) {
+    const stateTag = { done: tag(WORDS.rbDone, 'tag-ok'), current: tag(WORDS.rbNow, 'tag-warn'), later: tag(WORDS.rbLater, 'tag-outline') }[step.state];
+    const head = SF.h('div', { class: 'bk-rb-head', style: { display: 'flex', gap: '8px', 'align-items': 'baseline', 'flex-wrap': 'wrap' } },
+      SF.h('span', { class: 'check-icon ' + (step.state === 'done' ? 'ok' : step.state === 'current' ? 'warn' : 'info') }, step.state === 'done' ? SF.icon('check') : String(step.n)),
+      SF.h('h2', { class: 'home-card-title', style: { margin: '0' } }, WORDS.rbStepWord + ' ' + step.n + ': ' + String(step.title || '')), stateTag,
+      step.cannot_undo ? tag(WORDS.rbCannotUndo, 'tag-err') : null,
+      step.state === 'done' && step.done_at ? SF.timeEl(new Date(step.done_at * 1000).toISOString()) : null);
+    const what = (step.what || []).map((t) => SF.h('p', null, String(t)));
+    const cls = 'home-card bk-rb-step' + (step.state === 'current' ? ' has-warn' : '');
+    if (step.state === 'later') return SF.h('section', { class: cls, dataset: { step: step.id, state: step.state }, style: { 'margin-top': '10px' } }, head, what.length ? SF.h('p', { class: 'muted' }, String(step.what[0])) : null);
+    const facts = (step.facts || []).length ? SF.h('ul', { class: 'bk-rb-facts', style: { margin: '0', 'padding-left': '18px', 'word-break': 'break-word' } }, step.facts.map((t) => SF.h('li', null, String(t)))) : null;
+    if (step.state === 'done') {
+      return SF.h('section', { class: cls, dataset: { step: step.id, state: step.state }, style: { 'margin-top': '10px' } }, head,
+        SF.h('details', null, SF.h('summary', null, WORDS.details), what, facts));
+    }
+    const check = step.check;
+    const [tone, icon] = CHECK_TONE(check ? check.ok : null);
+    const ticks = B.rbTicks.get(step.id) || new Set();
+    const confirms = (step.confirms || []).map((c) => {
+      const box = SF.h('input', { type: 'checkbox', checked: c.given || ticks.has(c.item), disabled: c.given, dataset: { confirm: c.item } });
+      box.addEventListener('change', () => { if (box.checked) ticks.add(c.item); else ticks.delete(c.item); B.rbTicks.set(step.id, ticks); });
+      return SF.h('label', { class: 'bk-rb-confirm', style: { display: 'flex', gap: '8px', 'align-items': 'flex-start' } }, box, SF.h('span', null, String(c.words)));
+    });
+    const go = SF.btn(WORDS.rbGoOn, { icon: 'check', cls: 'btn-sm btn-primary', dataset: { action: 'rb-step', step: step.id } });
+    go.addEventListener('click', () => rebuildPost('/step', { step: step.id, confirm: Array.from(ticks) }, go, handle));
+    const again = SF.btn(WORDS.rbCheckAgain, { icon: 'refresh', cls: 'btn-sm', dataset: { action: 'rb-check' } });
+    again.addEventListener('click', async () => { SF.setBusy(again, true); B.rbWords = ''; await loadRebuild(handle); SF.setBusy(again, false); });
+    let skip = null;
+    if (step.skip) {
+      skip = SF.btn(WORDS.skipNext, { icon: 'clock', cls: 'btn-sm', dataset: { action: 'act-hold_off' } });
+      skip.addEventListener('click', () => act('hold_off', { enabled: true }, skip, { refresh: () => loadRebuild(handle) }));
+    }
+    return SF.h('section', { class: cls, dataset: { step: step.id, state: step.state }, style: { 'margin-top': '10px', display: 'grid', gap: '10px', 'min-width': '0' } }, head,
+      SF.h('div', { class: 'bk-rb-what', style: { display: 'grid', gap: '6px' } }, what), facts,
+      skip ? SF.h('div', { class: 'actions' }, skip) : null,
+      step.skipped ? SF.h('p', { class: 'muted' }, WORDS.rbSkipped) : null,
+      (step.blocks || []).length ? SF.h('ol', { class: 'check-list bk-rb-blocks' }, step.blocks.map(block)) : null,
+      // spare is null once a new disk is mounted at the folder: no free disk, and the block still to run is the step's
+      step.id === 'disk' && step.spare ? spareChooser(step, handle) : null,
+      check ? SF.h('div', { class: 'callout callout-' + tone + ' bk-rb-check', dataset: { ok: String(check.ok), code: check.code || '' } }, SF.icon(icon, 'icon-sm'), SF.h('div', null, String(check.words || ''))) : null,
+      B.rbWords && B.rbWords !== (check || {}).words ? SF.callout('warn', 'alert', null, B.rbWords) : null,
+      confirms.length ? SF.h('div', { class: 'bk-rb-confirms', style: { display: 'grid', gap: '6px' } }, confirms) : null,
+      SF.h('div', { class: 'actions', style: { gap: '8px', 'flex-wrap': 'wrap' } }, go, again));
+  }
+  function rebuildPage(root, handle) {
+    if (!B.rb && !B.rbError) loadRebuild(handle);
+    const back = SF.h('a', { class: 'btn btn-sm', href: '#/backups', dataset: { action: 'back' } }, SF.icon('chevron-left', 'icon-sm'), WORDS.back);
+    if (B.rbError) { SF.rebuild(root, [SF.viewHead(WORDS.rbTitle, null, back), SF.unavailable(B.rbError, WORDS.rbTitle)]); return; }
+    if (!B.rb) { SF.rebuild(root, [SF.viewHead(WORDS.rbTitle, null, back), SF.skeleton(5)]); return; }
+    const page = B.rb;
+    if (!page.open) { rebuildStart(root, page, handle, back); return; }
+    const record = page.record || {};
+    const close = SF.btn(WORDS.rbClose, { icon: 'x', cls: 'btn-sm', dataset: { action: 'rb-close' } });
+    close.addEventListener('click', async () => {
+      if ((await SF.confirmModal({ title: WORDS.rbClose, description: String(page.close_words || ''), confirm: WORDS.rbClose, cls: 'btn-danger' })) !== 'ok') return;
+      await rebuildPost('/close', {}, close, handle);
+    });
+    SF.rebuild(root, [
+      SF.viewHead(WORDS.rbTitle + ': ' + String(record.label || ''), String(page.sub || ''), back),
+      SF.h('p', { class: 'muted bk-rb-lab', style: { 'font-size': 'var(--fs-sm)' } }, String(page.lab_line || '')),
+      SF.h('div', { class: 'bk-rb-steps' }, (page.steps || []).map((step) => rebuildStep(step, page, handle))),
+      SF.h('div', { class: 'actions', style: { 'margin-top': '14px' } }, close),
     ]);
   }
 
@@ -792,7 +977,7 @@
     const l = v.light || { tone: 'muted', reason: '' };
     const needs = [];
     const lead = String(l.reason || '');
-    if (ERR_CODES.has(l.code)) needs.push({ key: 'backups:' + l.code, tone: 'err', icon: 'alert', href: '#/backups', text: lead, sub: WORDS.card });
+    if (ERR_CODES.has(l.code)) needs.push({ key: 'backups:' + l.code, tone: 'err', icon: 'alert', href: l.code === 'rebuild' ? '#/backups/rebuild' : '#/backups', text: lead, sub: WORDS.card });
     else if (WARN_CODES.has(l.code)) needs.push({ key: 'backups:' + l.code, tone: 'warn', icon: 'alert', href: '#/backups', text: lead, sub: WORDS.card });
     for (const w of v.warnings || []) needs.push({ key: 'backups:' + w.code, tone: 'warn', icon: 'shield', href: '#/backups', text: String(w.words || ''), sub: WORDS.card });
     return { tone: l.tone === 'err' ? 'err' : 'warn', text: WORDS.card + ': ' + lowerFirst(lead).replace(/\.$/, ''), detail: WORDS.homeNoVersioned, needs };
@@ -806,7 +991,7 @@
     home: {
       title: 'Backups', icon: 'layers', order: 45, href: '#/backups', text: WORDS.homeText,
       routes: [{ to: 'tracker', label: 'disk health findings' }],
-      events: ['snapraid.updated', 'snapraid.guard', 'snapraid.action', 'snapraid.run', 'snapraid.daemon'],
+      events: ['snapraid.updated', 'snapraid.guard', 'snapraid.action', 'snapraid.run', 'snapraid.daemon', 'snapraid.rebuild'],
       async load() {
         const v = await SF.api('/api/snapraid');
         return homeStatus(SF.isObj(v) ? v : {});
@@ -821,6 +1006,7 @@
       if (!sub) { B.druns = null; B.druns_error = null; }
       if (!sub) { B.jobs = null; B.jobsError = null; if (B.detailsOpen) loadJobs(handle); }
       if (sub === 'setup') { B.setup = null; B.setupError = null; B.checkWords = ''; }
+      if (sub === 'rebuild') { B.rb = null; B.rbError = null; B.rbWords = ''; B.rbPrepared = null; B.rbPrepError = ''; B.rbTicks = new Map(); if (!B.view) load(null); }
     },
     render(root, route, handle) {
       const sub = route.parts[0] || '';
@@ -830,6 +1016,7 @@
       if (sub === 'run' && route.parts[1]) return runPage(root, route, handle);
       if (sub === 'review') return reviewPage(root, handle);
       if (sub === 'setup') return setupPage(root, handle);
+      if (sub === 'rebuild') return rebuildPage(root, handle);
       SF.rebuild(root, [SF.viewHead(WORDS.title, WORDS.sub), SF.emptyState('layers', WORDS.unknownPage, null, [SF.h('a', { class: 'btn btn-sm', href: '#/backups' }, WORDS.back)])]);
       return undefined;
     },
@@ -839,6 +1026,7 @@
       'snapraid.action': (ev, handle) => { if (handle.isShown()) load(handle); },
       'snapraid.run': (ev, handle) => { B.druns = null; if (handle.isShown()) load(handle); },
       'snapraid.daemon': (ev, handle) => { if (handle.isShown()) load(handle); },
+      'snapraid.rebuild': (ev, handle) => { if (handle.isShown()) load(handle); },
     },
   });
 })(window.SF);

@@ -1,0 +1,5 @@
+Matching Defaults entries for backupsvc on server:
+    env_reset, mail_badpass
+
+User backupsvc may run the following commands on server:
+    (root) NOPASSWD: /usr/bin/rsync, /usr/bin/tar

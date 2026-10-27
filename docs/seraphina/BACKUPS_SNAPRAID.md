@@ -12,10 +12,13 @@ everything after P1 around that daemon, and keeps P1 as a read-only fallback
 DESIGN.md §41): P2a (the reader's fixes), P2b (reading the daemon: the link,
 `/metrics`, the forwarder, the mock daemon, the recorded 2.1 fixtures) and P3
 (the five actions with their approvals), each tested against a mock daemon
-built from the recorded exchanges; P4 is not built. Nothing is installed, and
-nothing was run against a real daemon or the owner's server: the labs L14 to
-L17 and L19 have not run, and the link ships allowing reading only, so P3's
-actions stay off until the owner widens it after L15 (§10.4). Every daemon
+built from the recorded exchanges; and since 2026-10-26 P4 (the owner's
+checklist for a whole failed disk, §9.4: seven steps with the blocks he
+pastes and a read-only check between them), tested against placeholder facts,
+the mock daemon and the GUI mock. Nothing is installed, and nothing was run
+against a real daemon or the owner's server: the labs L13 to L17, L19 and L20
+have not run, and the link ships allowing reading only, so P3's actions stay
+off until the owner widens it after L15 (§10.4). Every daemon
 behaviour marked verified was observed in three scratch labs against
 SnapRAID Daemon 2.1 and SnapRAID 15.1 (Appendix C). The owner decides the
 choices in §13.1; until he answers, the defaults named there apply and this
@@ -198,7 +201,8 @@ default (§11.3).
 12. **Phases.** P1 is built. P2a fixes the reader for the owner's current
     host. P2b reads the daemon (developed against a mock daemon until the host
     upgrade is done). P3 adds the five actions, after the lab with a real
-    daemon passes. P4 is the disk checklist (§12.9).
+    daemon passes. P4 is the disk checklist (§12.9; built, its labs L13 and
+    L20 not run).
 
 ---
 
@@ -1777,6 +1781,28 @@ safety steps (its §6.3, verified end to end on a lab disk image there):
 7. **Done**: start the daemon again, start the apps; the next window's sync
    records the new disk.
 
+**Built (P4, 2026-10-26; DESIGN §41 says how).** The seven steps above, in
+order, on the daemon's route and on the reader's, each with its plain words,
+its blocks, its check and what the owner ticks; Seraphina sends nothing but
+the skip of step 1, through its usual go-ahead, and runs none of the blocks.
+Where the build goes beyond this text, on purpose (judgement): the disk is
+chosen when the checklist is opened, and step 2 shows it; step 1 uses
+`systemctl disable --now`, not `stop`, because step 4's restart would start the
+daemon again; step 4's commands appear only after the serial number is typed,
+mount the new disk where the old one was (SnapRAID's settings never change),
+add its line with `nofail`, and give the reader its new filesystem UUID
+through the install-explain-move block; step 5 runs in transient units
+(`seraphina-disk-rebuild`, `seraphina-disk-check`, `RemainAfterExit=yes`,
+`SendSIGKILL=no`) so it outlives the owner's terminal and its exit codes can be
+read with `systemctl show`, with its output in the reader's root-only state
+folder; "the card shows the reader's facts only" becomes the units' states,
+because with the daemon's unit installed the reader runs only `info` and
+`disks` (§8.1). While a checklist is open the card is red, no run is offered
+or sent (§9.1), and the stopped daemon raises no `parity.down`. Not built: a
+failed protection disk, a new disk at another folder, owners and permissions
+put back (D19: a `chown` example only), and following the rebuild's progress
+from the page.
+
 ### 9.5 What cannot be restored here, and where to go instead
 
 | Cannot be restored by disk protection | Go instead to |
@@ -2053,7 +2079,8 @@ reports an error when the harness's user is in one of those groups (D17).
 | `tests/fixtures/snapraidd21/` | new | P2b | daemon lab C's exchanges and daemon lab B's reports, with every path replaced by a placeholder |
 | `tests/fixtures/snapraid15/` and a 13.0 `v0` fixture | new | P2a | 15.1 runs for the reader; a package build that prints `v0`, with the package database's answers |
 | `tests/test_snapraidd.py`, `tests/test_snapraidd_link.py`, `tests/test_snapraidd_lab.py` | new | P2b, P3 | §13.2 |
-| `tests/gui_mock/backups.py`, `tests/gui/backups.mjs` | changed | P2b, P3 | the new states and flows |
+| `tests/gui_mock/backups.py`, `tests/gui/backups.mjs` | changed | P2b, P3, P4 | the new states and flows |
+| `swfactory/snapraid_rebuild.py`, `tests/test_snapraid_rebuild.py` | new | P4 | the disk checklist of §9.4: its steps, blocks and read-only checks, the record, the light while it is open (built) |
 
 ### 12.2 Settings
 
@@ -2099,11 +2126,14 @@ with the same shapes:
 | `GET /api/snapraid/runs`, `GET /api/snapraid/runs/<number>` | the daemon's recent runs, and one task with its messages as text, live |
 | `GET /api/snapraid/setup` | P1's blocks, plus the link's and the daemon's lines (§10.4) |
 | `POST /api/hooks/event` with kind `parity.report` | the forwarder's event (§7.1), under its hook token, never the master token (DESIGN §34) |
+| `GET /api/snapraid/rebuild`, `POST /api/snapraid/rebuild {disk}`, `POST /api/snapraid/rebuild/step {step, confirm?}`, `…/prepare {by_id, typed}`, `…/close` | P4 (built): the disk checklist of §9.4, its read-only checks, the new disk's blocks after its serial number is typed (never stored), closing it |
 
 ### 12.4 CLI
 
 `factory snapraid` prints the card, with the daemon's facts. `factory snapraid
-link install|check|remove` prints the link's copy blocks. There is no action
+link install|check|remove` prints the link's copy blocks. `factory snapraid
+rebuild` (P4, built) prints the disk checklist's steps and the current step's
+blocks. There is no action
 command: an approval must follow seeing what the cockpit shows (the first
 revision's rule for a release, kept).
 
@@ -2126,7 +2156,11 @@ The Backups area keeps P1's layout (DESIGN §41) and adds, on the daemon route
 - **Who runs it**: the window, other schedulers found, and "does not start
   runs" for each place (§1.4);
 - **Home** and **Needs you**: a freeze, an unknown outcome, a lapsed skip, two
-  schedulers, no login and a failing disk.
+  schedulers, no login and a failing disk;
+- **#/backups/rebuild** (P4, built): the checklist of §9.4, its steps as cards,
+  the current one with its blocks, check and ticks; **Replace a failed disk**
+  on the card while a disk is missing or failing, and the open checklist's
+  step on the card and in Needs you.
 
 Novice words: the right-hand column of the words table. U7's list of terms
 that never reach a novice screen gains `daemon`, `threshold`, `hold off`,
@@ -2170,13 +2204,15 @@ P1's checks stay (DESIGN §41), with the version rows following §8.2. Added
 | the harness's user in `docker`, `lxd` or `sudo` | error |
 | the harness unit's hardening hides the array from the reader (§8.4) | warn |
 | the lab checks not run here (§13.2), always | warn |
+| a disk checklist open (P4, built), with its step | warn |
 
 ### 12.8 Events
 
 On the EventBus (DESIGN §10), with ids, counts and codes only:
 `snapraid.updated` (P1's), `snapraid.daemon {answering, restarted, active}`,
 `snapraid.action {approval, action, state, outcome}` and
-`snapraid.run {approval?, high_command, verdict}`. `snapraid.guard` stays for
+`snapraid.run {approval?, high_command, verdict}`, and (P4)
+`snapraid.rebuild {checklist, state, step, disk}`. `snapraid.guard` stays for
 the reader's reports.
 
 ### 12.9 Phases
@@ -2187,7 +2223,7 @@ the reader's reports.
 | **P2a: the reader on the owner's current host** | §8: the version policy with the `v0` package rule and the two-binary refusal; the layout fixes; the quiet rules; running through PID 1; the container and daemon detection by `/metrics`; the advice wording; the doctor and setup version lines; L9 and L10 out of the card's lab list | T50, T51, T52; L18; L19 |
 | **P2b: reading the daemon** | the link with `read`; `/metrics`; the counters and restarts; the card and light; the freeze shown; the review page; the forwarder and the hook kind; notices and tracker items from reports; the run pages; the doctor's daemon checks; the mock daemon and the GUI states | T27 to T33, T36, T40, T44 to T49, T53; U9, U11 to U13; L14, L16 |
 | **P3: the five actions** | approvals and their binding; `act`; outcomes, matching, verdicts; stop, skip, maintenance, accept, undelete, heal; the link's `act` and `accept` classes | L15 first (no action ships before it passes); then T34, T35, T37 to T39, T41 to T43; U10; L17 |
-| **P4: the disk checklist** | §9.4's steps and blocks | L13; L20 |
+| **P4: the disk checklist** (built, 2026-10-26) | §9.4's steps and blocks | T54, U14 (built); L13; L20 (not run: a server started by systemd and a real protection service) |
 
 The order follows the stages (§1.4): P2a matters now, while the host runs 13.0;
 P2b can be built and tested against the mock daemon before the host upgrade,
@@ -2288,11 +2324,13 @@ L2, L4, L5, L6, L7, L9, L10, L11 and L12.
 | T51 | unit | layout: content copies in `/var/lib/snapraid/` and at a disk's root pass, two copies on one disk fail; a declared empty root-owned placeholder passes and reads amber, the same placeholder not empty fails; sibling mounts of one filesystem pass in both orders for a data and a parity disk; a bind of a subfolder fails |
 | T52 | unit | quiet rules: no SnapRAID read while a `snapraid` process runs, a listed unit is active or its timer starts within the margin, or inside the power schedule's quiet periods; `diff` never starts from a timer |
 | T53 | unit | the hook: `parity.report` is accepted only from a source whose scope names it, under its own token; a second post with the same `Idempotency-Key` changes nothing |
+| T54 | unit | the disk checklist (P4): every step's check and its ways to fail, the ticks, the order; the fstab block changes only that folder's line (real `sed`); the new disk's blocks only for a free disk by its `/dev/disk/by-id` name after the typed serial number; the units' states; the record holds no model, serial or by-id name; red while open, no run offered or sent, the skip allowed, no `parity.down` once the owner turned the service off; the harness runs only `systemctl show` and asks the reader only `info` and `disks` |
 | U9 | GUI | each daemon state of §12.6 draws the card with the right tone, reason and buttons; actions not allowed by the link are absent |
 | U10 | GUI | every approval dialog shows what it will do and what was shown before its button; the accept dialog shows the unbounded-accept sentence and asks for the typed count when needed; Stop names the task; no Kill control exists |
 | U11 | GUI | the review page pages through 3,000 entries, filters by disk and kind, shows hostile names as text, and shows the per-disk counts and the cut-list note |
 | U12 | GUI | Home and Needs you show a freeze, an unknown outcome, a lapsed skip, two schedulers, no login and a failing disk |
 | U13 | GUI | every new page works at phone width with no horizontal scroll |
+| U14 | GUI | the disk checklist: opened from the card with the failed disk chosen, seven steps in order, each check holding its step until the mock's facts change, the new disk's commands only after the right serial number, the end; the card's and Home's lines; closing; the reader's route; 1440 and 390 px, light and dark |
 | L13 | lab (systemd-booted) | kept for P4: a boot with the failed disk's fstab line commented out, and one with a `nofail` line for an absent disk, both reach `multi-user.target` with the network up |
 | L14 | lab (systemd-booted) | the link's units: the socket's owner, group and mode; `DynamicUser` with `LoadCredential` lets the instance read its credential and nothing else can (the harness's user, an agent in its sandbox); a connection from another uid is refused; the harness under `NoNewPrivileges=yes` and `ProtectSystem=strict` connects; a sandboxed agent cannot reach the socket; nothing but systemd's start and stop lines reaches the journal |
 | L15 | lab | against a real SnapRAID 15.1 and Daemon 2.1 on loop disks, through the link and the harness: reads leave every counter unchanged; a freeze, its review and an accept; an undelete and its verdict; a heal; a stop during a sync; a skip used by a window; a restart during a queued run. Must pass before P3 ships |
@@ -2530,6 +2568,17 @@ during the pre-hash phase (L12, dropped; Q12 asks the same of 15.1).
 ---
 
 ## Review log
+
+### Build of P4 (2026-10-26)
+
+Built as §9.4 says (its "Built" paragraph and DESIGN.md §41 list the choices
+made on purpose), with T54 and U14. L13 and L20 were not run: both need a
+server started by systemd and L20 a real SnapRAID 15.1 and daemon on test
+disks; the card, the checklist page and the doctor list them as not checked
+yet. Found while building: §9.1's "no run while a restore is open" applies to
+the checklist too, so the daemon route refuses run-starting actions while one
+is open (`rebuild`), and the "not answering" alarm is held back once the
+owner turned the service off for it.
 
 ### Review of the build (2026-10-25)
 

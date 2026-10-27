@@ -1,0 +1,4 @@
+Package: systemd
+Version: 259.1-1ubuntu2
+Depends: libacl1 (>= 2.2.23), libsystemd-shared (= 259.1-1ubuntu2), libsystemd0 (= 259.1-1ubuntu2), mount
+Pre-Depends: libc6 (>= 2.38)

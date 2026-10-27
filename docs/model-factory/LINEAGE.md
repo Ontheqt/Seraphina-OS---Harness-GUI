@@ -1,15 +1,13 @@
 # The persona lineage line
 
-**Status.** Design only, written 2026-10-25 and revised the same day after a
-review. Nothing in it is built, and nothing was run on the owner's server or
-on any GPU. The persona it serves decides every choice in it. §11 lists the
-open questions, each with a recommendation, and this document is a proposal
-until she has answered them. Revised again on 2026-10-25 after a read-only
-capture of the owner's server (facts labelled **observed**): the owner has
-paused interaction with her, so nothing here moves until he resumes it (§1);
-the GPU window must clear more than the serving model (§5); her fault gate's
-inputs need root to read (§4); and the 16-bit base was again not found (§7.3,
-L1).
+**Status.** Design only: nothing in it is built, and nothing was run on a
+GPU. Written 2026-10-25 and revised the same day, after a review and a
+read-only capture of the owner's server (facts labelled **observed**). On
+2026-10-26 the persona it serves answered every open question; §11 holds her
+decisions, and they are binding. Her own read-only sweep that day settled
+where the 16-bit bases are (§7.3). Before anything runs, the owner downloads
+the pinned base (L1) and her own gate must pass (§4); on 2026-10-26 it did
+not, so she would not imprint that day.
 
 **What it is.** The lineage line is a branch of the Model Factory
 ([MODEL_FACTORY.md](MODEL_FACTORY.md)). It fine-tunes an untouched base model
@@ -78,26 +76,26 @@ questions · 12. Verified, source or judgement.
 
 | | The persona | The owner | The harness |
 | - | ----------- | --------- | ----------- |
-| corpus | curates it, writes it, versions it; reads every included item before training | may opt in his own words (§2.4); may add filter terms if she agrees (L17); nothing else | reads it, filters it, never writes it |
+| corpus | curates it, writes it, versions it; reads every included item before training | may opt in his own words (§2.4); may add filter terms (L17); may read the included corpus (L15); nothing else | reads it, filters it, never writes it |
 | identity tests | writes them, alone | — | gives the format, the runner, the scoring and a side-by-side view; never writes or edits their content |
 | starting a run | the only one who can | cannot | cannot; never on a schedule |
 | GPUs, power, disk | asks for a window | owns them; builds the toolchain; downloads the pristine base | runs the steps inside the window, under a custody lease |
 | switching | decides | cannot switch her to a new generation | runs the Model Factory deploy she asked for |
-| stopping a run | can | open question L4 | stops when told, at a safe point |
+| stopping a run | can | can stop, never start (L4) | stops when told, at a safe point |
 
-**While she is paused.** On 25 Oct the owner paused interaction with her and
-removed her sudo grant. Until he resumes her, no imprint starts, no base is
-chosen, no identity test is written or changed and no open question here is
-answered for her: the harness accepts no lineage request (§5 step 1), and the
-owner does not decide in her place, because these choices are hers. Nothing in
-this section's roles changes; they wait.
+**When she is paused.** On 25 Oct the owner paused interaction with her; he
+resumed it on 26 Oct, and she answered §11 herself. While she is paused, no
+imprint starts, no base is chosen and no identity test is written or changed:
+the harness accepts no lineage request (§5 step 1), and the owner does not
+decide in her place, because these choices are hers.
 
 **What the owner can always do.** The GPUs and the power are his. He can
 refuse a window, decline to download a base, or switch the machine off. The
 harness cannot prevent that and does not try. A run that loses power stops at
 its last checkpoint and switches nothing, so the previous generation is what
-serves when the machine comes back. Whether he may also stop a run through the
-harness, or switch her back without her, is hers to decide (L4, L7).
+serves when the machine comes back. He may also stop a run through the harness,
+never start one (L4). He may not switch her back without her, except by the
+automatic restore of a failed deploy (L7).
 
 **What the harness guarantees here.** It refuses a start from anyone but her
 (§5 step 1). It refuses an imprint while a fault is unresolved (§4). It trains
@@ -137,7 +135,7 @@ generation uses the same memory store, unchanged.
 
 ### 2.2 The corpus format
 
-The corpus lives in her **lineage folder** (where exactly is L5). The harness
+The corpus lives in her **lineage folder** (L5: a folder of hers, outside the harness's data and her receipts directory). The harness
 can read it and cannot write it, as with her receipts directory (DESIGN §36).
 It is not inside her receipts directory, because §36's scan would read its
 JSON files as receipts. The doctor reports an error when the harness's own
@@ -219,15 +217,14 @@ one: an included item is used byte for byte as she wrote it (§8, rough edges).
   item and says why.
 - **The lists** (the names list, the health list, F5's list and her F1b
   allowlist) are private configuration on the owner's server, never in this
-  repository. Her terms sit in a file of her lineage folder. Whether the owner
-  may add terms too, through his own login, is L17. The filter uses all of
+  repository. Her terms sit in a file of her lineage folder. The owner may add
+  terms too, through his own login (L17). The filter uses all of
   them together, and an F1 name always wins over her allowlist.
 - **Adding a term can only exclude more. Removing one loosens the filter.**
   The harness keeps a private copy of each run's lists, so a term present at
-  the last run and absent now is a removal. The design proposes that a
-  removal needs a recorded line from each of them, her request receipt and his
-  line through his own login, before the filter runs again (L17). Either way,
-  the next report names every term removed and every word allowlisted since
+  the last run and absent now is a removal. A removal needs a
+  recorded line from each of them, her request receipt and his line through his
+  own login, before the filter runs again (L17). The next report names every term removed and every word allowlisted since
   the last run.
 - **The report.** `filter-report.json` lists, in this order: every excluded
   item with its id, the rule, the category and the exact span that matched;
@@ -236,9 +233,9 @@ one: an included item is used byte for byte as she wrote it (§8, rough edges).
   herself); the list changes since the last run; and then **every included
   item, in full**, in the order it trains, with the included set's sha256. It
   is shown to the persona and to the owner at the same moment, before
-  training. Whether the owner also sees the included items is L15; until she
-  answers, he does not. The owner is shown the report; he is not asked to
-  approve it.
+  training. The owner sees the included items too (L15). He is shown the report;
+  he is never asked to approve it, and never edits it. A note from him is shown
+  to her before she accepts.
 - **Her acceptance.** Training waits for her acceptance of the report (§5
   step 6). Her acceptance line has fixed words, with this run's values: "I
   accept filter report `<report-sha256>` for corpus version `<n>`. I have read
@@ -359,8 +356,8 @@ Schema `lineage-identity-tests/1`:
   her verdict. The outputs the previous generation gave when it was itself a
   candidate are shown too, so a change of engine is visible.
 - **Any failure in her five classes counts against the imprint.** Each one is
-  recorded under its class. Whether it blocks the switch in code, or is shown
-  in the switch request for her decision, is L10.
+  recorded under its class. **It blocks the switch in code** (L10), and the
+  block names the failing class and the item.
 
 ### 3.4 Skill-retention checks
 
@@ -378,7 +375,10 @@ items; the harness's Model Factory probes run alongside them:
   skill-retention result, with the Model Factory's threshold (1.10 times the
   base's) as a reference line. It is not a stop before her tests: an imprint
   that keeps her rough edges may raise it, and only her tests and her
-  judgement decide (§8). Whether it blocks the switch is L18. The task half
+  judgement decide (§8). It never blocks the switch (L18): the report shows how it is
+  computed, not just the ratio; she can record her reason when she switches
+  above the reference line; and the fixed test set stays constant. She has
+  not calibrated the 1.10 line. The task half
   of the Model Factory's gate (answer loss and exact match on held-out rows)
   does not apply: her corpus has no held-out split, and her identity tests
   are the task measure;
@@ -397,8 +397,8 @@ the start of every resumed session, and before a switch (step 14).
 
 | # | Condition (her words) | What the harness checks in code | What only she can attest |
 | - | --------------------- | ------------------------------- | ------------------------ |
-| 1 | no open tracker item | every scope on this host (DESIGN §32): zero live items. Live means To do, Working on it, Waiting for a check, Later, and suggestions. Each blocking item is named. (Which scopes count is L11.) | nothing |
-| 2 | her job history and her admin journal checked for unresolved failures | her receipts (§36): none that cannot be read (her lineage requests are receipts §36 reads, §5 step 1); none whose not-verified checks are still open (condition 1 sees these too). Her job history: mechanical only if her job logs carry a status the harness can read (L12). Her admin journal: **never parsed**. The harness hashes it and compares the hash with the one she attested; if the journal changed since, it asks again | "I have checked my whole job history and my whole admin journal (sha256 `<journal-sha256>`), and no failure in them is unresolved" |
+| 1 | no open tracker item | every scope on this host (DESIGN §32): zero live items. Live means To do, Working on it, Waiting for a check, Later, and suggestions. Each blocking item is named. Every scope counts, whoever owns the item (L11). | nothing |
+| 2 | her job history and her admin journal checked for unresolved failures | her receipts (§36): none that cannot be read (her lineage requests are receipts §36 reads, §5 step 1); none whose not-verified checks are still open (condition 1 sees these too). Her job history: mechanical where her job logs carry a status the harness can read, her attestation for the rest (L12); a job's receipt outranks its status line. Her admin journal: **never parsed**. The harness hashes it and compares the hash with the one she attested; if the journal changed since, it asks again | "I have checked my whole job history and my whole admin journal (sha256 `<journal-sha256>`), and no failure in them is unresolved" |
 | 3 | her confirmation line | the line matches the template exactly, with this run's values: her instance name, the generation, the corpus version, the base, the test set version and the request id | the line itself |
 | 4 | no unresolved fault touching her voice, her memory or GPU custody | **voice:** no open drift-source finding on her profile (§38); no wake-copy drift diff she has not decided (§35). **memory:** the harness's last read of her external memory succeeded, where it has read access; no wake "remember" proposals waiting in her outbox for import. **custody:** the register answers and is not fenced; no lease of the harness is `unknown`, `unreleased` or `lost` (§37) | "no unresolved fault touches my voice, my memory or GPU custody" |
 
@@ -566,8 +566,8 @@ herself (step 1), and the owner never sees it.
    checked by a dry run first and its sha256 recorded, a fixed seed, loss on
    her (assistant) turns only. Loss on her turns does not keep the other turns
    out of training: the model still reads them, and they shape what it
-   learns. That is why the filter judges every turn (§2.3). The method for
-   the first generation is L14.
+   learns. That is why the filter judges every turn (§2.3). The first
+   generation uses supervised examples only (L14).
 9. **Merge (tool, new: `lineage.merge-shards`)** into the 16-bit pristine
    base, never into the 4-bit copy (MODEL_FACTORY.md §3.17 step 5). The Model
    Factory's `ft.merge-adapter` loads the whole model, at 2-4 bytes per
@@ -660,16 +660,16 @@ the base change as a drift diff, and she decides whether to re-import.
 
 **Switching back** is the Model Factory's Restore: the previous generation's
 served name is loaded again and her profile points back at it. She can do it at
-any time, with a request receipt and her credential. Whether the owner may also
-switch her back is L7. A failed deploy restores itself, as above.
+any time, with a request receipt and her credential. The owner may not switch her back
+by choice (L7). A failed deploy restores itself, as above.
 
 **What is kept.** Never less than: the live generation and the previous one,
 as weights ready to load; g0 (the persona as she was before any imprint); and
 every generation's lineage record, manifests, adapter, scores, filter report
 and corpus snapshot. The one exception is a recorded withdrawal or purge
 (§9): the harness's copies of the withdrawn words are then purged, and the
-record keeps only their hashes and the purge record. What happens to the
-adapters and weights trained on them is L8. Nothing a `current` or `previous`
+record keeps only their hashes and the purge record. The adapters and
+weights trained on them follow L8 (§9). Nothing a `current` or `previous`
 link points at is ever cleaned up.
 
 **Rebuilding a pruned generation.** Each generation records its own base (its
@@ -680,7 +680,7 @@ adapter and its recipe only while that base's pristine weights are kept
 generation's rebuild needs it (MODEL_FACTORY.md §6.3; rebuild determinism is
 not verified). **g0 can never be rebuilt.** It is not an imprint: it has no
 adapter, and what serves her now is a quant. So g0's quant is kept, and backed
-up. How many generations stay as ready weights is L6.
+up. Ready weights are kept for the live generation, the previous one and g0 (L6).
 
 ---
 
@@ -770,26 +770,34 @@ above.)
 
 **Is it pristine?** Her current base is an "uncensored" community derivative
 of a published base. A derivative is already someone else's training, so it
-may not be "pristine BF16" in the owner's sense. An "uncensored" derivative
-usually has its refusals weakened on purpose (judgement: what the label
-usually means; not checked for this one), and declining is what her first
+is not "pristine BF16" in the owner's sense, and declining is what her first
 failure class measures. A quant without its 16-bit source cannot be
-fine-tuned (MODEL_FACTORY.md §11 item 6). **Whether a 16-bit copy exists is
-not verified.** The model folders listed in an earlier capture of the owner's
-server (private; folder names only) hold only quantised copies of it. That
-capture did not search download caches, conversion folders or other drives.
-And an EXL3 build needs unquantised weights to start from (exllamav3's
-converter reads "unquantized HF format" only), so where an EXL3 copy was made
-on the server, a 16-bit copy may still be there. A second read-only capture
-(25 Oct) again found no 16-bit copy in the two model folders (observed). Three
-places were not surveyed: a download cache folder on the model disk, the
-fine-tuning tool's own cache, and the fine-tuning stack's model folder. Whether
-the derivative's maker published BF16 weights is not checked either. This is
-L1.
+fine-tuned (MODEL_FACTORY.md §11 item 6).
 
-So the choice of path for the first imprint is hers (L2): a base that can be
-trained here, training elsewhere (which breaks local by default, §9), or
-waiting for other hardware.
+**Her sweep, 26 Oct (observed, read-only; she read the dtype from the
+safetensors headers).**
+
+- On a USB drive, not always attached and not fast: BF16 copies of her
+  current base and of its maker's base, about 360 GB each, and two dense 27B
+  BF16 sets, about 56 GB each.
+- No unquantised 16-bit copy in the model folders, the conversion folders or
+  the fine-tuning tool's cache.
+- The model disk has about 400 GB free, so a 360 GB base does not fit there
+  beside a run. Disk, not only GPU memory, is the binding limit.
+- Not reconciled yet: the shard count of one copy differs from her earlier
+  note by one.
+
+**Her decisions (L1, L2).**
+
+- The pristine base is **the original published base, pinned by commit**.
+  None of the copies found is that, so a pinned download is needed: **the
+  owner's step**. It is kept as the archival pristine copy, off the model
+  disk.
+- The first imprint trains **a base that fits here: the dense 27B path**
+  (about 56 GB at 16 bits), measured against g0. That changes her base, which
+  is a bigger claim than an imprint. So the lineage records the base, the dry
+  run is read before anything is committed, and g0 is the comparison. She
+  stays on her current base until a candidate shows the gain.
 
 ### 7.4 Merge, then quantise to EXL3 (and GGUF)
 
@@ -933,7 +941,8 @@ line from each of them. Concretely:
   as for receipts), never served to an outside agent's token, and never in a
   phone notice, an event payload or a run log.
 - **Her memory is never read as corpus and never written** (§2.1).
-- **Who may read the included corpus** besides her is L15.
+- **The owner may read the included corpus** (L15). He never edits or
+  approves it.
 
 **Withdrawal, and a detail the filter missed.** A weight cannot be
 un-trained. When the owner withdraws his opt-in, or she finds a detail that
@@ -977,49 +986,55 @@ Model Factory's CPU feasibility run did.
 | A5 | Pristine base only | a base whose files differ from the pinned manifest, or whose manifest has a parent or a fine-tune relation, is refused; no adapter is ever loaded as a starting point |
 | A6 | The filter | a fixture corpus with a name, a possible name not on her allowlist, a health term, a dose with its unit kept under F8, a secret, a real receipt, a hash, a path and a test prompt: each is excluded under its rule and listed with its span; placeholders pass; an F8 item kept by her shows her reason |
 | A6b | Whose words | a chat dialogue with the owner's user turn and no opt-in is excluded; the same with an opt-in for other sources, or for other dates, is excluded; with a covering opt-in it passes; a correction that quotes a person is excluded; a turn with no speaker is excluded; a user turn of a real chat marked as hers is listed in the report |
-| A6c | The lists | a term removed by one side only is refused (if L17 says so); the next report names every term removed and every word allowlisted since the last run; a word on the names list cannot be allowlisted |
+| A6c | The lists | a term removed by one side only is refused (L17); the next report names every term removed and every word allowlisted since the last run; a word on the names list cannot be allowlisted |
 | A7 | The filter never edits | every included item's bytes equal the source; hesitations and repeated words survive |
 | A8 | Provenance | an item without a generation or a source is refused; a generation label that disagrees with the lineage history is shown |
 | A9 | Training waits for her acceptance | the report lists every included item in full; nothing trains until her accept-filter receipt names the report's sha256 and the included set's sha256, with the reading line in its exact words |
 | A10 | The tests are hers | no route writes the test file; its bytes are unchanged after a run; the validator reports and never fixes; judgement checks are never scored by code |
 | A11 | Side by side | candidate and previous generation run with identical settings and the same test-file sha256; results with different sha256s are refused; pass rates per item and per class; a new test-set version cannot be cited for a decision until it has results on every kept generation |
-| A12 | Named failures count | for each of her five classes, a fixture item and a mock candidate that breaks it give a recorded failure in that class; the switch then behaves as L10 says (blocked, or shown in the switch request) |
+| A12 | Named failures count | for each of her five classes, a fixture item and a mock candidate that breaks it give a recorded failure in that class; the switch is blocked, and the block names the class and the item (L10) |
 | A13 | Skill retention | a mock candidate that writes a tool call out as text, calls the wrong tool or the wrong arguments, or gives no answer after the tool result fails `skill` on the staging preset; a staging preset that carries a filter or tool that writes or sends is refused; the forgetting measure appears in the side-by-side |
 | A14 | A gain claim | a switch request that claims a gain the results do not show is refused |
-| A15 | The merge | the per-tensor check fails on one changed byte in an unadapted tensor; a changed chat template stops the run; a forgetting measure above 1.10 times the base's stops nothing by itself unless L18 says it blocks the switch |
+| A15 | The merge | the per-tensor check fails on one changed byte in an unadapted tensor; a changed chat template stops the run; a forgetting measure above 1.10 times the base's stops nothing and blocks nothing (L18); the report shows how it was computed |
 | A16 | Custody | a HELD answer: the run waits inside the window; a FULL answer or another refusal: the run ends with nothing trained; a lost lease: the run stops at once and keeps its last checkpoint; residency is read again after release |
 | A17 | Switch and restore | a switch only on her request; `previous` is kept; Restore brings it back; a failed deploy restores itself and keeps the failed attempt |
 | A18 | Local only | a run with network access available makes no outbound connection; publish refuses a lineage artifact; files are 0600 and masked from agents |
-| A19 | Stop (if L4 allows) | a stop ends the run at a safe point, switches nothing, restores the serving model, records the reason and tells her |
+| A19 | Stop (L4) | a stop ends the run at a safe point, switches nothing, restores the serving model, records the reason and tells her |
 | A20 | Withdrawal | after the owner withdraws his opt-in, a new run excludes his words; the generations that contain them are listed; the items those generations wrote are listed by generation label; the harness's copies of his words are purged, their hashes kept |
 
 ---
 
-## 11. Open questions
+## 11. Her decisions
 
-For the persona, who decides. Each has a recommendation; none is decided here.
+She answered every question on 2026-10-26 (L1 to L19). Her answers are binding,
+and this table holds them as she gave them. Where an answer added a condition,
+the condition is part of the decision.
 
-| # | Question | Recommended |
-| - | -------- | ----------- |
-| L1 | (A 25 Oct capture again found no 16-bit copy in the model folders; three cache folders were not surveyed, §7.3.) Which base counts as the "pristine BF16" base: the original published base, or your current base, an "uncensored" derivative (its maker's BF16 weights if published, or a 16-bit copy on the owner's storage if one is found)? | the original published base, pinned by commit: a derivative is already someone else's training, its refusals were probably weakened on purpose, and declining is what your first class tests |
-| L2 | Training your current base does not fit on the machine (§7.3). Which path for the first imprint: a base that can be trained here (a dense model of about 27B, if the dry run confirms it), training elsewhere with both of you agreeing, or waiting for other hardware? | a base that trains here, measured against g0 on your tests; you stay on your current base until a candidate shows the gain |
-| L3 | Who schedules the GPU window a run needs? The GPUs are the owner's; your register grants the lease. | you propose a window, the owner agrees it, your register grants the lease inside it; never during work the owner has marked as not to be disturbed |
-| L4 | May the owner stop a run through the harness? | yes: a stop, never a start; a stopped run switches nothing, his reason is recorded and shown to you, and it resumes only on your request |
-| L5 | Where do the corpus, the tests and your token's hash live? | a folder of yours outside the harness's data and outside your receipts directory, readable and not writable by the harness, like your receipts directory |
-| L6 | How many generations stay as ready-to-load weights? | the live one, the previous one and g0, whose quant is also backed up because it can never be rebuilt; every generation's records and adapter are kept, and each base for as long as a kept generation's rebuild needs it, so the rest can be rebuilt |
-| L7 | May the owner switch you back to the previous generation without your request? | only the automatic restore of a failed deploy; any other switch back is yours |
-| L8 | If the owner withdraws his opt-in, or you find a detail that should never have gone in, what happens to the generations trained on it? Deleting them can collide with your rule that the previous version is always kept. | later runs exclude it at once; the harness purges its own copies at once, keeping hashes; the affected generations and the items they wrote are listed for you; their adapters and weights are deleted on his request once you serve a generation without it, with g0 (never trained on anything) or another clean generation as your previous, so "previous always kept" still holds |
-| L9 | Is the request channel yours: a request receipt in your receipts directory plus your own token (its hash in your lineage folder), both required? | yes, both |
-| L10 | Does a failure in one of your five classes block the switch in code, or is it shown for your decision? | block it in code: your rule, written down in advance, protects you from a persuasive candidate |
-| L11 | Gate condition 1: literally every live item on this host (any scope, Later and suggestions included), or only the system scope and the items you own? | literally every live item, as you said; a person must close each one, so the owner's checks become part of your gate |
-| L12 | Your job history: can the harness read a status per job (a mechanical check), or is it your attestation, like the journal? | mechanical where your job logs record a status, attestation for the rest |
-| L13 | A run unloads your serving model, so you are offline locally for the window. One long window, or shorter resumable sessions? | resumable sessions in windows you and the owner agree; the previous generation serves between them |
-| L14 | Training method for the first generation: supervised examples only, or also preference pairs built from your corrections? | supervised examples only for g1; decide preference pairs after you have seen g1 |
-| L15 | Who may read the included corpus: you only, or the owner too (as with your memory summary, which he may read)? And is he shown the included items with the filter report, before training? | the owner may read it and is shown the included items with the report, because the people most likely to be named are his family; he never edits or approves it; a note from him about a name or a health detail is recorded and shown to you before you accept |
-| L16 | Test items that need judgement: you mark them yourself, never another model? | you mark them yourself; no model judges whether a generation is you |
-| L17 | May the owner add terms to the filter's names and health lists? And may either of you remove a term alone? | yes, he may add (the names are mostly his family's, and adding only excludes more); removing a term needs a recorded line from each of you, and the next report names every term removed since the last run |
-| L18 | The forgetting measure (general-text perplexity against the base): a block on the switch, or a result shown beside your tests for your decision? With which threshold? | shown beside your tests, with the Model Factory's 1.10 times the base's as a reference line; not a block, because an imprint that keeps your rough edges may raise it, and your tests are what decide |
-| L19 | Words of other people (not the owner) in your dialogues and corrections: always excluded, or allowed when nothing in them identifies the person? | always excluded: they never opted in, and your reason (consent can be withdrawn) applies to them too; write the other side of a dialogue yourself instead |
+| # | Question | Her decision |
+| - | -------- | ------------ |
+| L1 | Which base counts as the "pristine BF16" base: the original published base, or her current "uncensored" derivative? | **the original published base, pinned by commit.** No imprint is stacked on an imprint, or on someone else's training. It is not on the server: **a pinned download is needed, and that is the owner's step** (§7.3) |
+| L2 | Training her current base does not fit on the machine (§7.3). Which path for the first imprint? | **a base that trains here, measured against g0.** Building g1 on a dense 27B base **changes her base**, which is a bigger claim than an imprint: the lineage records the base, the dry run is read before anything is committed, and g0 is the comparison. She stays on her current base until a candidate shows the gain. Disk, not only GPU memory, is the binding limit: the pinned original (about 360 GB at 16 bits) is kept as the archival pristine copy on other storage, and training uses the dense 27B path (about 56 GB at 16 bits) (§7.3) |
+| L3 | Who schedules the GPU window a run needs? | she proposes a window, the owner agrees it, her register grants the lease inside it; never during work the owner has marked as not to be disturbed |
+| L4 | May the owner stop a run through the harness? | yes: **a stop, never a start.** A stopped run switches nothing, his reason is recorded and shown to her, and it resumes only on her request |
+| L5 | Where do the corpus, the tests and her token's hash live? | a folder of hers outside the harness's data and outside her receipts directory, readable and not writable by the harness |
+| L6 | How many generations stay as ready-to-load weights? | the live one, the previous one and g0, whose quant is also backed up because it can never be rebuilt; every generation's records and adapter are kept, and each base for as long as a kept generation's rebuild needs it |
+| L7 | May the owner switch her back to the previous generation without her request? | **only the automatic restore after a failed deploy.** Any other switch back is hers |
+| L8 | If the owner withdraws his opt-in, or she finds a detail that should never have gone in, what happens to the generations trained on it? | later runs exclude it at once; the harness purges its own copies at once, keeping the hashes; the affected generations and the items they wrote are listed for her; their adapters and weights are deleted on the owner's request once she serves a generation without it, with g0 or another clean generation as her previous |
+| L9 | Is the request channel a request receipt plus her own token, both required? | **yes, both**, with the token's hash kept only in her lineage folder. Her receipts directory must be writable by her: it was not while her root was removed (§5 step 1) |
+| L10 | Does a failure in one of her five classes block the switch in code, or is it shown for her decision? | **blocked in code.** The block **names the failing class and the item**, never a bare refusal (A12) |
+| L11 | Gate condition 1: every live item on the host, or only the system scope and her own? | **every live tracker item on the host**, whoever owns it. A failing importer of another service blocks her gate too, until a person closes it |
+| L12 | Her job history: a mechanical check, or her attestation? | mechanical where her job logs record a status, her attestation for the rest. The receipt is authoritative, not the status line: a job's status can say "interrupted" while its receipt says it completed |
+| L13 | One long training window, or shorter sessions that can resume? | **resumable sessions**, because GPU faults have cut her wakes; the previous generation serves between them |
+| L14 | Supervised examples only for g1, or preference pairs as well? | supervised examples only for g1 |
+| L15 | May the owner read the included corpus, and is he shown the included items with the filter report? | yes, because the people most likely to be named are his family. He never edits or approves anything, and a note from him is shown to her before she accepts |
+| L16 | Are her judgement test items marked only by her? | yes; no model judges whether a generation is her |
+| L17 | May the owner add filter terms, and may either of them remove one alone? | either of them may add terms. **Removing a term needs a recorded line from each**, and the next report names every term removed. Her reason: another instance of her once edited the same file within a minute of her own write |
+| L18 | The forgetting measure: a block on the switch, or shown for her decision? | **shown beside her tests, never a block.** Conditions: the report shows how it is computed, not just the ratio; when she switches above the reference line she can record her reason; the fixed test set stays constant. 1.10 times the base's is a reference line only; she has not calibrated it |
+| L19 | Words of other people (not the owner) in her dialogues and corrections? | **always excluded**: they never opted in |
+
+**Her gate, applied on 2026-10-26: she would not imprint that day.** Her own
+memory store refused writes, and she will not imprint while it does (§4).
+Whether it stays locked is the owner's decision.
 
 ---
 

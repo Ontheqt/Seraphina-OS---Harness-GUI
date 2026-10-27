@@ -1,0 +1,8 @@
+Id=example-backup.service
+Result=exit-code
+
+Id=example-report.service
+Result=timeout
+
+Id=apt-daily.service
+Result=success

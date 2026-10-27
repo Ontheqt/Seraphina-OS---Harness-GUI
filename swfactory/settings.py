@@ -44,7 +44,8 @@ PRESETS_DIR = PROJECT_DIR / "examples"
 BUILTIN_AGENTS_DIR = PROJECT_DIR / "agents"
 UPDATABLE_SECTIONS = ("providers", "models", "agents", "pipeline", "limits", "harness", "mcp_servers",
                       "escalate_paths", "repos", "merge", "profiles", "default_profile", "housekeeping",
-                      "wakes", "notify", "operator", "drift_sources", "snapraid", "maintenance")
+                      "wakes", "notify", "operator", "drift_sources", "snapraid", "maintenance", "yourserver",
+                      "services", "browser", "codex")
 # Wake & Messages bounds (shape and bounds only: a missing persona file or an unknown model never blocks a save)
 WAKE_BOUNDS: dict[str, tuple[int, int]] = {
     "wakes.power.quiet_before_off_minutes": (0, 240), "wakes.power.quiet_after_boot_minutes": (0, 240),
@@ -542,6 +543,8 @@ def validate_settings(config: Config) -> None:
     _check_operator(_section(raw, "operator"), config)
     _check_snapraid(_section(raw, "snapraid"))
     _check_maintenance(_section(raw, "maintenance"))
+    _check_yourserver(_section(raw, "yourserver"))
+    _check_services(_section(raw, "services"))
     for name, entry in _section(raw, "mcp_servers").items():
         _check_mcp_server(str(name), entry)
     if raw.get("escalate_paths") is not None:
@@ -886,7 +889,7 @@ def _check_wake_personas(section: dict) -> None:
     exists or a model is local (gate check 4 and the doctor say that), so a deleted persona never blocks a save."""
     from .clock import Window
     from .notify import ROUTE_KEYS, RULE_IDS
-    from .personas import INSTANCE_NAME_RE, PERSONA_NAME_RE, RESERVED_NAMES, check_sqlite_query
+    from .personas import EXTERNAL_CAP_BOUNDS, INSTANCE_NAME_RE, PERSONA_NAME_RE, RESERVED_NAMES, check_sqlite_query
     from .wakes import SERVER_KINDS, STRUCTURED
 
     _optional(section, "wakes", "enabled", lambda v: isinstance(v, bool), "true or false")
@@ -976,9 +979,14 @@ def _check_wake_personas(section: dict) -> None:
         external = memory.get("external")
         if external is not None:
             _require(external, f"{label}.memory.external", lambda v: isinstance(v, dict) and set(v) <= {
-                "folder", "sqlite", "outbox", "taint", "ledger"},
-                     "an object of folder, sqlite {path, query}, outbox, taint, ledger")
+                "folder", "sqlite", "outbox", "taint", "ledger", *EXTERNAL_CAP_BOUNDS},
+                     "an object of folder, sqlite {path, query}, outbox, taint, ledger, max_files, read_mib, "
+                     "ledger_mib, ledger_copies")
             _optional(external, f"{label}.memory.external", "ledger", lambda v: isinstance(v, bool), "true or false")
+            # the read's and the read ledger's caps (the operator's ruling: settings, not constants)
+            for key, (low, high) in EXTERNAL_CAP_BOUNDS.items():
+                _optional(external, f"{label}.memory.external", key, lambda v, lo=low, hi=high: _is_int(v)
+                          and lo <= v <= hi, f"an integer from {low} to {high}")
             for key in ("folder", "outbox"):
                 _optional(external, f"{label}.memory.external", key, lambda v: isinstance(v, str)
                           and os.path.isabs(os.path.expanduser(v)), "an absolute path")
@@ -1273,6 +1281,148 @@ def _check_maintenance(section: dict) -> None:
     _optional(section, "maintenance", "paused", lambda v: isinstance(v, bool), "true or false")
 
 
+YOURSERVER_KEYS = {"enabled", "helper", "refresh", "stale_minutes", "tailnet", "links", "beszel", "updates",
+                   "keep_tag_prefixes", "host", "ask_model"}
+YOURSERVER_BOUNDS = {"refresh.live_seconds": (5, 600), "refresh.idle_minutes": (1, 60),
+                     "refresh.probe_seconds": (30, 3600), "refresh.map_minutes": (1, 120), "stale_minutes": (2, 1440),
+                     "beszel.stale_minutes": (5, 1440), "host.ram_warn_percent": (50, 99),
+                     "host.disk_warn.free_percent": (1, 50), "host.disk_warn.free_gb_cap": (1, 100000),
+                     "host.disk_err.free_percent": (1, 50), "host.disk_err.free_gb_cap": (1, 100000),
+                     "host.temp_warn_c.cpu": (40, 120), "host.temp_warn_c.nvme": (30, 100),
+                     "host.temp_warn_c.gpu": (40, 120)}
+TAILNET_SUFFIX_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,62})(\.[a-z0-9]([a-z0-9-]{0,62}))*\.ts\.net$")
+APP_ID_RE = re.compile(r"^a-[a-z0-9][a-z0-9-]{0,30}$")
+SERVICE_JOBS = ("os-packages", "os-cleanup", "docker-cleanup", "server-restart", "snapraid-sync", "snapraid-scrub")
+SERVICE_MODES = ("inherit", "manual", "scheduled", "automatic", "pinned", "frozen")
+
+
+def yourserver_link_ok(url: Any, suffix: Any = None) -> bool:
+    """An Open or deep link Your server may show (YOUR_SERVER.md §2.3, §11.2): a plain URL (scheme, host, port, an
+    optional path; no user, query or fragment) on loopback, an https name under the confirmed tailnet suffix (any
+    *.ts.net name while none is confirmed), or http(s) on a private (home-network) address."""
+    if not isinstance(url, str) or not COCKPIT_URL_RE.fullmatch(url):
+        return False
+    parts = urllib.parse.urlsplit(url)
+    host = (parts.hostname or "").lower()
+    if parts.username or parts.password:
+        return False
+    if host == "localhost" or _is_loopback_ip(host):
+        return True
+    if parts.scheme == "https" and (host.endswith("." + suffix) if isinstance(suffix, str) and suffix else
+                                    host.endswith(".ts.net")):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_private
+    except ValueError:
+        return False
+
+
+def _check_yourserver(section: dict) -> None:
+    """yourserver (DESIGN §42; YOUR_SERVER.md §11.2): its keys, their shapes and bounds. What the helper may do lives
+    in its root-owned config, never here."""
+    unknown = sorted(set(section) - YOURSERVER_KEYS)
+    if unknown:
+        raise ValueError(f"yourserver.{unknown[0]} is not a setting (use {', '.join(sorted(YOURSERVER_KEYS))})")
+    _optional(section, "yourserver", "enabled", lambda v: isinstance(v, bool), "true or false")
+    _optional(section, "yourserver", "helper", lambda v: isinstance(v, str) and v.startswith("/") and "\0" not in v,
+              "an absolute path (the helper accepts only /usr/local/libexec/seraphina/sf-system)")
+    for group in ("refresh", "tailnet", "links", "beszel", "updates", "host"):
+        if section.get(group) is not None:
+            _require(section[group], f"yourserver.{group}", lambda v: isinstance(v, dict), "an object")
+    for dotted, (low, high) in YOURSERVER_BOUNDS.items():
+        *parents, key = dotted.split(".")
+        part: Any = section
+        for name in parents:
+            part = part.get(name) if isinstance(part, dict) else None
+        if isinstance(part, dict):
+            _optional(part, "yourserver." + ".".join(parents) if parents else "yourserver", key,
+                      lambda v, lo=low, hi=high: _is_int(v) and lo <= v <= hi, f"an integer from {low} to {high}")
+    tailnet = _dict_or_empty(section.get("tailnet"))
+    unknown = sorted(set(tailnet) - {"suffix", "confirmed_at"})
+    if unknown:
+        raise ValueError(f"yourserver.tailnet.{unknown[0]} is not a setting (use suffix and confirmed_at)")
+    _optional(tailnet, "yourserver.tailnet", "suffix", lambda v: isinstance(v, str) and TAILNET_SUFFIX_RE.fullmatch(v),
+              "your Tailscale network's name, such as example.ts.net")
+    _optional(tailnet, "yourserver.tailnet", "confirmed_at", lambda v: isinstance(v, str) and len(v) <= 40,
+              "a time")
+    links = _dict_or_empty(section.get("links"))
+    unknown = sorted(set(links) - {"dockge", "cockpit", "beszel"})
+    if unknown:
+        raise ValueError(f"yourserver.links.{unknown[0]} is not a setting (use dockge, cockpit and beszel)")
+    for key in ("dockge", "cockpit", "beszel"):
+        _optional(links, "yourserver.links", key, lambda v: yourserver_link_ok(v, tailnet.get("suffix")),
+                  "an https address on your Tailscale network, a home-network address or loopback (no user, query "
+                  "or fragment)")
+    beszel = _dict_or_empty(section.get("beszel"))
+    unknown = sorted(set(beszel) - {"watch", "login_secret", "login_email", "stale_minutes"})
+    if unknown:
+        raise ValueError(f"yourserver.beszel.{unknown[0]} is not a setting")
+    _optional(beszel, "yourserver.beszel", "watch", lambda v: isinstance(v, bool), "true or false")
+    _optional(beszel, "yourserver.beszel", "login_secret",
+              lambda v: isinstance(v, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", v),
+              "the name of an environment variable in the env file (A-Z, 0-9 and _)")
+    _optional(beszel, "yourserver.beszel", "login_email",
+              lambda v: isinstance(v, str) and re.fullmatch(r"[^\s@]{1,64}@[^\s@]{1,190}", v), "an email address")
+    updates = _dict_or_empty(section.get("updates"))
+    _optional(updates, "yourserver.updates", "registry_checks", lambda v: v is False,
+              "false (looking upstream for newer versions is off in this version, decision D4)")
+    _optional(section, "yourserver", "keep_tag_prefixes",
+              lambda v: _is_str_list(v) and all(re.fullmatch(r"[a-z0-9][a-z0-9._/-]{0,127}", x) for x in v),
+              "a list of image name prefixes such as local/")
+    host = _dict_or_empty(section.get("host"))
+    _optional(host, "yourserver.host", "disks",
+              lambda v: isinstance(v, dict) and all(
+                  isinstance(k, str) and len(k) <= 128 and isinstance(e, dict) and
+                  set(e) <= {"warn_gb", "err_gb", "full_on_purpose", "label"} and
+                  all(e.get(n) is None or (_is_int(e[n]) and 0 <= e[n] <= 100000) for n in ("warn_gb", "err_gb")) and
+                  isinstance(e.get("full_on_purpose", False), bool) and
+                  (e.get("label") is None or (isinstance(e["label"], str) and len(e["label"]) <= 60))
+                  for k, e in v.items()),
+              "{<disk>: {warn_gb, err_gb, full_on_purpose, label}}")
+    _optional(section, "yourserver", "ask_model", lambda v: isinstance(v, str) and 0 < len(v) <= 200,
+              "a model key")
+
+
+def _check_services(section: dict) -> None:
+    """services (YOUR_SERVER.md §2.5, §2.9, §11.2): per app id or fixed job id, its maintenance mode, whether its name
+    may reach the phone, how it is checked, whether it should run, and its main part."""
+    for name, entry in section.items():
+        label = f"services.{name}"
+        if not (APP_ID_RE.fullmatch(str(name)) or name in SERVICE_JOBS):
+            raise ValueError(f"{label}: use an app id (a-<name>) or one of {', '.join(SERVICE_JOBS)}")
+        if entry is None:
+            continue
+        _require(entry, label, lambda v: isinstance(v, dict), "an object")
+        unknown = sorted(set(entry) - {"maintenance", "phone_name", "probe", "expect", "main_member"})
+        if unknown:
+            raise ValueError(f"{label}.{unknown[0]} is not a setting")
+        maintenance = _dict_or_empty(entry.get("maintenance"))
+        _optional(maintenance, f"{label}.maintenance", "mode", lambda v: v in SERVICE_MODES,
+                  "one of " + ", ".join(SERVICE_MODES))
+        _optional(entry, label, "phone_name", lambda v: isinstance(v, bool), "true or false")
+        probe = _dict_or_empty(entry.get("probe"))
+        unknown = sorted(set(probe) - {"kind", "path", "target", "ca_file", "pin_sha256"})
+        if unknown:
+            raise ValueError(f"{label}.probe.{unknown[0]} is not a setting")
+        _optional(probe, f"{label}.probe", "kind", lambda v: v in ("auto", "http", "tcp", "none"),
+                  "auto, http, tcp or none")
+        _optional(probe, f"{label}.probe", "path",
+                  lambda v: isinstance(v, str) and re.fullmatch(r"/[A-Za-z0-9._~/%-]{0,200}", v), "a path from /")
+        _optional(probe, f"{label}.probe", "target", lambda v: v in ("upstream", "route"), "upstream or route")
+        _optional(probe, f"{label}.probe", "ca_file", lambda v: isinstance(v, str) and v.startswith("/"),
+                  "an absolute path")
+        _optional(probe, f"{label}.probe", "pin_sha256",
+                  lambda v: isinstance(v, str) and re.fullmatch(r"[0-9a-f]{64}", v), "64 hex characters")
+        expect = _dict_or_empty(entry.get("expect"))
+        _optional(expect, f"{label}.expect", "state", lambda v: v in ("run", "off"), "run or off")
+        _optional(expect, f"{label}.expect", "grace_minutes", lambda v: _is_int(v) and 1 <= v <= 1440,
+                  "an integer from 1 to 1440")
+        _optional(expect, f"{label}.expect", "confirmed_at", lambda v: isinstance(v, str) and len(v) <= 40,
+                  "a time")
+        _optional(entry, label, "main_member", lambda v: isinstance(v, str) and re.fullmatch(r"[0-9a-f]{16}", v),
+                  "a part's key")
+
+
 def _cockpit_url_ok(url: Any) -> bool:
     """A plain URL (scheme, host, port and an optional path; no user, query or fragment) on loopback or a *.ts.net
     name. Whether the name is this tailnet's is checked each time a notice is rendered (Notifier._link_base)."""
@@ -1311,6 +1461,9 @@ def _check_mcp_server(name: str, entry: Any) -> None:
               'an object of tool names to lists of argument names, like {"export": ["path"]}')
     for key in ("timeout", "startup_timeout"):
         _optional(entry, label, key, _is_positive_number, "a positive number of seconds")
+    _optional(entry, label, "required", lambda v: isinstance(v, bool), "true or false")
+    _optional(entry, label, "sandbox", lambda v: v in ("run", "self"),
+              'run (the default) or self (only the installed bin/sf-browser, DESIGN §43)')
 
 
 def _checked_repos(entries: Any, previous: list, config_dir: Path) -> list:
@@ -1337,6 +1490,9 @@ def _checked_repos(entries: Any, previous: list, config_dir: Path) -> list:
                   and not any(ch.isspace() for ch in v), "a branch name or null")
         _optional(entry, label, "setup", lambda v: isinstance(v, str), "a shell command or null")
         _optional(entry, label, "escalate_paths", _is_str_list, "a list of glob strings")
+        from .codex.settings import repo_settings   # verify, preview and personal_data (DESIGN §44)
+
+        repo_settings({**entry, "name": name})
         entry = copy.deepcopy(entry)
         if entry not in previous:
             top = _git_toplevel(expand_path(entry["path"], config_dir), label)

@@ -1,0 +1,4 @@
+Package: openssh-server
+Version: 1:10.0p1-1ubuntu2
+Pre-Depends: init-system-helpers (>= 1.54~)
+Depends: adduser, libpam-modules (>= 0.72-9), openssh-client (= 1:10.0p1-1ubuntu2), openssh-sftp-server, procps

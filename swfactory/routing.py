@@ -19,10 +19,12 @@ A route names a logical model. At run start it becomes a placement:
   configured, and lazy_load or allow_model_swap) is usable only once the operator's custody register
   grants one (the placement's claim, a custody.Claims); a denial, an error, a timeout or an unreachable
   register passes the build over, so the run follows the overflow path. A HELD answer (someone else
-  holds the card) first waits, for at most the provider's overflow_after_seconds; FULL (the card cannot
-  fit the model now) passes the build over at once, to the next build (another card or a smaller
-  build), then the overflow. An overflow the register caused says why in its words ("the card cannot
-  fit this model now").
+  holds the card) sends the run at once to the model's other builds (another card that is free takes
+  it); only when none of them can take the run now does it wait the HELD answer out, for at most the
+  provider's overflow_after_seconds, before the overflow; FULL (the card cannot fit the model now)
+  passes the build over at once, to the next build (another card or a smaller build), then the
+  overflow. An overflow the register caused says why in its words ("the card cannot fit this model
+  now").
 - **independence**: a judge (a reviewer or the approver) whose model is of a family the builder ran
   on in that round (the approver: in any round) runs on its ``independent_alternate`` instead
   (judge_choice; under GPU custody, an alternate the register gives no lease for counts as not
@@ -307,8 +309,16 @@ def choose_build(builds: list[Build], reach_: Reachability,
     Usable: its provider answers and, on a model-aware server, it has the build's model loaded, or
     allow_model_swap lets the request load it (the swap: {provider, from, to}); with claim, a build whose
     provider needs a request lease also needs the custody register to grant one (DESIGN §37). Without claim
-    (a probe that only looks, such as the escalation rungs' check) no lease is asked for."""
+    (a probe that only looks, such as the escalation rungs' check) no lease is asked for.
+
+    HELD while another card is free goes to the free card at once (the operator's rule, §37): a custody.Claims
+    is asked with wait=False, so a build whose register answers HELD is put off and the later builds are asked
+    first; only when none of them can take the run now are the put-off builds waited out, in order
+    (Claims.wait_for: the placement's one wait). LEASED, FULL and every other refusal pass the build over as
+    before."""
     notes: list[str] = []
+    claims = claim if isinstance(claim, custody.Claims) else None   # puts a HELD answer off (wait=False)
+    held: list[tuple[int, dict | None, int]] = []   # builds whose HELD answer was put off: (index, swap, its note)
     for index, build in enumerate(builds):
         up, why = reach_.up(build.provider)
         if not up:
@@ -326,11 +336,22 @@ def choose_build(builds: list[Build], reach_: Reachability,
                     continue
                 swap = {"provider": build.provider.name, "from": loaded, "to": build.model_id}
         if claim is not None:
-            granted, why = claim(build.provider, build.model_id)
+            granted, why = claims(build.provider, build.model_id, wait=False) if claims is not None \
+                else claim(build.provider, build.model_id)
             if not granted:
                 notes.append(f"build {build.where()} is unavailable: GPU custody: {why}")
+                if claims is not None and claims.put_off_held(build.provider, build.model_id):
+                    held.append((index, swap, len(notes) - 1))
                 continue
         return index, swap, notes
+    # no other build can take the run now: wait out the HELD answers put off, in the builds' order
+    for index, swap, note in held if claims is not None else []:
+        build = builds[index]
+        granted, why = claims.wait_for(build.provider, build.model_id)
+        if granted:
+            del notes[note]   # it waited, and got the card: as if it had been waited for at once
+            return index, swap, notes
+        notes[note] = f"build {build.where()} is unavailable: GPU custody: {why}"
     return None, None, notes
 
 

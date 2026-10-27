@@ -16,6 +16,53 @@ capture are labelled **observed** (below).
 The owner decides the choices in §12.1; until he answers, the defaults named
 there apply and this document is a proposal.
 
+**Built: phases P1a, P1b and P1c (26 Oct 2026; DESIGN.md §42).** P1a: The host strip and the
+summary card without any helper; `bin/sf-system` with the `read` class and the
+verbs `info`, `containers`, `compose` (the project name only), `ports`,
+`tailscale`, `ingress`, `disks` and `gpu`, its one-paste `setup`, `remove` and
+`explain helper-config|ingress`; the cards, grouping, old copies, the review
+list with addresses and expected states, QR codes, lights, versions, badges and
+deep links, the Beszel watch, "Ask about this app" (a local model only), the
+maintenance toggle and the backup lines; the doctor's lines; the mock and the
+GUI area. It only looks: no verb of P1b, P2 or P3 exists, and the owner's
+decisions D1 (the system user `seraphina`), D2 to D7 (a), D8 (b), D17, D19 to
+D21, D23 and D25 (a) apply, with D24 keeping every changing button out. Tested
+against a placeholder server (`tests/sfsystem_rig.py`; T1-T7, T9-T12, T15-T17,
+T25-T29, T36-T38 in their P1a parts, U1-U5, U9, U10, U12); labs L1, L3, L7,
+L15 and L16 are not run. Not built in P1a, though this design places them
+there or near: the How to go back panel (it needs keep tags, P1b), a probe of a
+gateway route itself with `ca_file` or `pin_sha256` (T38's TLS half), the
+reference QR matrices of T17 (no well-known encoder was installed; a reader in
+the test checks every code instead), `channels.tailnet_status`'s fallback
+(Appendix A11) and the Blueprint's helper mode (§11.9). One route was added to
+§11.3 for §4.4: `POST /api/yourserver/beszel {action: password|check, email?}`,
+and one for a read now, `POST /api/yourserver/refresh`.
+
+P1b: the Check buttons 1-8 of §7.2 with **Check everything** (Check 8, one
+app's logs, reads them only once P1c's preconditions hold, else links to Dockge
+and Cockpit); the verbs `docker` (D3 (a): the fixed list of read-only Docker
+API calls, never while `docker.service` is stopped), `compose` (now also the
+service hashes and image names), `smart`, `needrestart`, `journal`, `du`,
+`job`, `log`, `receipts` and `apt.refresh` (class `refresh`: `apt-get update`
+in a job, which writes the package lists and runs apt's own hooks, as Ubuntu's
+daily timer does; it installs nothing); the update kinds and Docker's own health
+on the cards; the keep pass (`keep.images`, class `keep`, D9 (a): names under
+`seraphina-keep/` only, 2 per app and 50 GB in all) with its receipts and the
+How to go back panel; the records page; the Blueprint's helper mode;
+`channels.tailnet_status`'s fallback to the confirmed suffix. P1c: the root page
+(view only, §8.1-§8.3 and §8.5) from the `access` job and logs through the
+helper's `logs`, both class `private`, refused with the reason until Seraphina
+runs as her own system account, outside every root-equivalent group, with the
+sandbox on and no command-line agent route; `explain access` for the owner's own
+terminal meanwhile. Tested against the placeholder server (T8, T13, T14, T18,
+T20's keep part, T21-T23, T30, T34, T35; U6-U8; L2's automated half). Not run:
+labs L1-L5, L7, L8, L9, L15 and L16. Not built: Maintain, Fix and root-access
+changes (P2, P3; D24), the activity source `system`, the phone notice
+`access.new` (a Needs you item instead), the root rows from `dpkg.log` for
+changes made outside Seraphina, Tailscale state's age, snap's `refresh --list`,
+reusing `sf-snapraid`'s SMART answers, `tickets` (P2), and T38's TLS half and
+T17's reference matrices (as in P1a).
+
 **What it serves.** The owner's decisions in [DESIGN.md](../../DESIGN.md) §30
 (nothing is off limits; everything has a way back) and §31: any novice can
 install it (point 1), one Restore button (point 2), maintenance that runs
@@ -527,6 +574,9 @@ name, "This is an old copy"). Detection can be wrong, which is why it asks
 (judgement, from the cases below). Later, an app that appears or a changed
 address asks on its own card: "Is this the address you use for Photos?
 photos.<tailnet>.ts.net [Yes] [No, it's another one] [I only use it at home]".
+"No, it's another one" puts that address aside: it is not proposed again, the
+next one found is, else "Type the one you use"; an address already confirmed
+stays until the owner answers for it.
 The record keeps `{url, source, fingerprint, confirmed_at}`; the fingerprint is
 a hash of the serve key, the mount path, the proxy target and the sidecar's node
 name. The card asks again when the fingerprint changes, and never changes a
@@ -619,7 +669,9 @@ the address as something the owner confirms.
 
 1. **Running.** For a container, its cgroup has PIDs (§2.2). For a unit,
    `systemctl show -p ActiveState,SubState,Result,NRestarts <unit>`, which needs
-   no root.
+   no root. A service started on demand through its socket (Cockpit behind
+   `cockpit.socket`) is inactive between visits: while its socket listens it is
+   green, "Ready: it starts when you open it", never "Stopped".
 2. **How it stopped.** From the helper's `containers` verb: running or not,
    exit code, finish time, restart count and restart policy (verified: written
    to `config.v2.json` on stop, lab R7), and Moby's "manually stopped" flag.
@@ -894,7 +946,7 @@ left", read by Seraphina's own user without the helper unless noted:
 | Swap | `SwapTotal`, `SwapFree` | as above | only while swap is in use: "Using 2 GB of swap" |
 | CPU | `/proc/stat` over two reads; `/proc/loadavg` | as above | "CPU 12%" |
 | Up since | `/proc/uptime`, and the boot cause when the power schedule records it (v2 §6.3) | 5 min | "Up 9 hours (started by the morning wake)" |
-| Free space per disk | `/proc/self/mounts`, one entry per device (one filesystem can be mounted under two names), real filesystems only (ext4, xfs, btrfs, zfs, vfat, fuse pools; never overlay, tmpfs, squashfs, proc, sysfs or cgroup); `os.statvfs` `f_bavail × f_frsize`, the space a normal user can use. `statvfs` needs search permission on every parent folder but none on the mount point itself, so a disk mounted under a private folder goes through the helper's `disks` verb (verified: as `nobody`, `statvfs("/var/lib/docker")` worked and `statvfs("/var/lib/docker/volumes")` failed with `EACCES`, lab R8) | 60 s | "System disk 71 GB free", using the owner's label, else the mount point. A disk is keyed by its filesystem UUID, never by its `/dev` name, because NVMe device names swapped order between two boots (observed) |
+| Free space per disk | `/proc/self/mounts`, one entry per device (one filesystem can be mounted under two names), real filesystems only (ext4, xfs, btrfs, zfs, vfat, fuse pools; never overlay, tmpfs, squashfs, proc, sysfs or cgroup); `os.statvfs` `f_bavail × f_frsize`, the space a normal user can use. `statvfs` needs search permission on every parent folder but none on the mount point itself, so a disk mounted under a private folder goes through the helper's `disks` verb (verified: as `nobody`, `statvfs("/var/lib/docker")` worked and `statvfs("/var/lib/docker/volumes")` failed with `EACCES`, lab R8). A mount point the cockpit's own unit covers (`InaccessiblePaths=`, `ProtectHome=` or `TemporaryFileSystem=` put an empty folder from `/run` over it; `/proc/self/mountinfo` shows the cover stacked on it) is never stat'ed, since the cover would answer: the helper's numbers when its namespace sees the disk (the PID 1 hand-off), else "cannot be seen from Seraphina's service" (judgement) | 60 s | "System disk 71 GB free", using the owner's label, else the mount point. A disk is keyed by its filesystem UUID, never by its `/dev` name, because NVMe device names swapped order between two boots (observed) |
 | GPU per card | `nvidia-smi --query-gpu=index,uuid,name,memory.used,memory.total,temperature.gpu,utilization.gpu --format=csv,noheader,nounits`, which needs no root (docs: nvidia-smi 595 manual; only setters say "Requires root") | 15 s while shown | "GPU 1: 18 of 24 GB, 61 °C" |
 | Temperatures | `/sys/class/hwmon/hwmon*/temp*_input` in millidegrees with a `name` per chip: `coretemp` or `k10temp` for the CPU, `nvme` for NVMe disks (docs: Linux `Documentation/hwmon/sysfs-interface.rst:251-262`; the lab had no sensors) | 60 s | "CPU 54 °C · NVMe 41 °C" |
 | SATA disk temperatures | from the daily SMART read only, with its time (§7.2 Check 5), never from `drivetemp` | daily | "Disk 2: 34 °C this morning" |
@@ -1014,7 +1066,8 @@ wording of PocketBase's buttons is UNVERIFIED, and P1a's novice check tries thes
 5. "Back here, type the email you chose and press **Check**." Seraphina signs in
    and says "Seraphina can read Beszel: 1 system, recording." or the one thing
    that failed ("Beszel did not accept the password", "The login sees no
-   systems: do step 4").
+   systems: do step 4"). After a failed Check the password stays on the page to
+   paste again; it goes once the login works.
 
 ### 4.5 Beszel's heartbeat does not fit the harness's hooks
 
@@ -1208,7 +1261,7 @@ request's typed fields.
 | `ingress` | P1a | read | the owner's login gateway's route table, from the nginx config the gateway container binds (found through the `containers` verb, by image repository or the owner's mark), parsed by a strict-shape reader like the `compose` verb's: per `server` block only `listen` (address and port), `server_name`, each `location` path, its `proxy_pass` target or named `upstream` servers, and whether it has `auth_request`. Never `proxy_set_header` values, `include`d secret files, certificates or keys, the sign-in service's config (`dex.json` and the like), oauth2-proxy's configs or the database; a config it cannot parse in that shape is `ingress_parse_failed`, a fixed error with no file text. Answers are routes `<address:port><path>` to an upstream, with `auth: sign-in | none` | direct | read |
 | `gpu` | P1a | read | `nvidia-smi --query-compute-apps=pid,process_name,used_gpu_memory,gpu_uuid --format=csv,noheader,nounits`, only if the harness's user cannot see other users' processes (Q4) | direct | read |
 | `tailscale` | P1a | read | each sidecar's name, tailnet, serve entries, TCP forwards and Funnel state, decoded from its state file (§6.5); for a host tailscaled, `tailscale status --json` and `serve status --json` | direct | read |
-| `disks` | P1a | read | `lsblk -J -b` and `statvfs` for filesystems under private folders | direct | read |
+| `disks` | P1a | read | `lsblk -J -b` and `statvfs` for filesystems under private folders (a mount point covered in its namespace is left out) | direct | read |
 | `smart` | P1b | read | per disk, `smartctl -H -A -j -n standby,3 [-d <type>] <device>`, the type only from a fixed list (§7.2 Check 5) | direct | read |
 | `needrestart` | P1b | read | `needrestart -b -r l`, parsed (§7.2 Check 2) | direct | read |
 | `journal` | P1b | read | `journalctl --disk-usage`, and the names, sizes and times of archived journal files | direct | read |
@@ -1505,7 +1558,14 @@ mapping is direct: `caller` is `actor`, `verb` and `request` are `intent`,
 `class` is `undo_class`, `steps` are `jobs`, `way_back` is `rollback`. The
 receipts page shows both in one list, each labelled by where it came from: "Done
 by Seraphina's system access (recorded on the server)" or "Reported by the
-operator" (source for the label: `swfactory/operator.py:28`). The helper's
+operator" (source for the label: `swfactory/operator.py:28`), and each with its
+outcome in words (Done, Partly done, Failed, Refused, Nothing to do, or the
+operator's reported outcome), never only as a colour; the changes whose outcome
+is still unknown are named above the list (one the helper's record later settled as
+done or never started is not). A record that did not do its change (any
+outcome but Done or Partly done) is shown by the change's name, never by words
+written as done; a failed keep pass added no name, so it says that none were
+kept and there is nothing to undo instead of a way back and checks. The helper's
 receipts are not "reported": the helper wrote them as it acted. The harness
 reads them through `receipts` and keeps only ids, verbs, classes, outcomes and
 counts in `<data_dir>`; names stay root-side and reach the cockpit a page at a
@@ -1670,7 +1730,7 @@ once:
 | 2 | **Restart needed?** | `/run/reboot-required` and `/run/reboot-required.pkgs`, world-readable and gone after a restart (source: update-notifier's `notify-reboot-required`, called from the `postinst` of `libc6`, `dbus`, `libpam0g` and others and from `/etc/kernel/postinst.d/update-notifier`); the helper's `needrestart -b -r l`, whose `NEEDRESTART-KCUR`, `-KEXP`, `-KSTA` (0 unknown, 1 current, 2 ABI-compatible upgrade pending, 3 version upgrade pending), `-UCSTA` and one `NEEDRESTART-SVC: <unit>` per service are parsed (source: needrestart `v3.11` `needrestart:165-171, 265-282, 919-921`, `perl/lib/NeedRestart/Kernel.pm:33-38`) | harness user, and the helper for the service list | "Restart needed: a new kernel is installed but not running yet. 4 services use old libraries." Then one row per service, each with its own **Restart** (P2) and its own before text; never one button for all. A service the refusal list of §7.4 F1 covers (needrestart's own never-restart list, and the units that reach the server) has no button and says "This one is restarted only by restarting the server. [Schedule a server restart] (P2)". Ubuntu's own config never restarts dbus, display managers, networking, gettys, `user@`, Docker, `systemd-logind`, unattended-upgrades, the apt timers' services or cloud-init (verified: the `override_rc` table in the lab's `/etc/needrestart/needrestart.conf`, Ubuntu 24.04's package; upstream `ex/needrestart.conf:125`) |
 | 3 | **Disk use** | the host strip's numbers; Docker's share from `GET /system/df` (images with how many containers use each, containers, volumes with how many containers link each, build cache); the journal's size (`journal`); the apt cache's size; the kept images and kept `.deb` files; on request, the biggest folders on one disk (`du`, two levels) | harness user and the helper | "System disk: 71 GB free of 465 GB. Docker uses 177 GB: 143 GB of images (12 GB that no app uses), 35 GB of leftover build files. System logs: 3.1 GB. Previous versions kept: 9 GB." Folder names only on the cockpit (§10.1) |
 | 4 | **Failed services** | `systemctl list-units --failed --output=json` and `systemctl list-timers --all --output=json` (source: systemd `v255` `src/systemctl/systemctl-util.c:895-907`, `systemctl.c:810-826`; not run in the lab, which had no systemd), each timer's service `Result`; containers that exited with an error under a restart policy, and restart loops, from §2.5 | harness user | "2 things failed: the nightly backup timer (failed at 03:00) and the notes app (keeps restarting). [Open in Cockpit] [Open its logs]" |
-| 5 | **Disk health** | the helper's `smart`: per disk `smartctl -H -A -j -n standby,3 [-d <type>] <device>`, reading `smartctl.exit_status`, `smart_status.passed` and the attributes; the exit status is a bitmask and is decoded bit by bit (bit 3 "DISK FAILING", bit 4 a pre-failure attribute at or below its threshold now, bit 5 in the past, bit 6 errors in the error log, bit 7 errors in the self-test log; bit 1 can mean "could not open" or "asleep"), so a non-zero exit is never read as "failing" (source: smartmontools `smartctl.8.in:2486-2520`; verified: `nobody` gets exit status 2, root reads the device, lab R19). The `-d` type for a USB bridge comes from the same fixed list `sf-snapraid` accepts (BACKUPS_SNAPRAID §3.4 item 7). Disks in SnapRAID's array show that panel's daily reading instead of being read twice (judgement) | the helper | "All 5 disks healthy. Disk 3 was asleep; its last reading is from this morning." / "Disk 2 reports a failure. Replace it soon." |
+| 5 | **Disk health** | the helper's `smart`: per disk `smartctl -H -A -j -n standby,3 [-d <type>] <device>`, reading `smartctl.exit_status`, `smart_status.passed` and the attributes; the exit status is a bitmask and is decoded bit by bit (bit 3 "DISK FAILING", bit 4 a pre-failure attribute at or below its threshold now, bit 5 in the past, bit 6 errors in the error log, bit 7 errors in the self-test log; bit 1 can mean "could not open" or "asleep"), so a non-zero exit is never read as "failing" (source: smartmontools `smartctl.8.in:2486-2520`; verified: `nobody` gets exit status 2, root reads the device, lab R19). The `-d` type for a USB bridge comes from the same fixed list `sf-snapraid` accepts (BACKUPS_SNAPRAID §3.4 item 7). Disks in SnapRAID's array show that panel's daily reading instead of being read twice (judgement). Only a disk read as healthy counts as healthy: while one was asleep or could not be read (smartctl timed out, which a failing disk may do) the result is grey and counts it apart, never "All N disks healthy" | the helper | "All 5 disks healthy." / "4 of 5 disks healthy. Disk 3 was asleep." / "2 of 3 disks healthy. 1 could not be read." / "Disk 2 reports a failure. Replace it soon." |
 | 6 | **What is listening** | the helper's `ports`, each listener joined to its container or unit (a socket-activated one to its socket unit and the service that socket starts, so Cockpit and SSH are named even while idle), given a scope with the Blueprint's own rules (loopback, all interfaces, tailnet range `100.64.0.0/10` and `fd7a:115c:a1e0::/48`, private, link-local, public; source: `collect.py:641-655, 916-955`) plus "home-network address only" for a listener bound to one private address of this server (observed: the gateway's routes and several apps listen that way), and Docker's published ports mapped through `PortBindings`. The login gateway's ports are shown as one row with its routes under it (§6.3 `ingress`), not as a listener per port. Sockets inside a container's own network namespace do not appear on the host (judgement; lab R18 lists host listeners only) | the helper | "14 things listen. 3 can be reached from your home network without Tailscale: Dockge (which can control the whole server), Cockpit and the media app. Your login gateway: 15 ports (443 and 14 routes) on your home network only, and port 80 on every address." Each is a finding under DESIGN §31.4; a direct port that bypasses the gateway for an app the gateway also serves is named as such ("The file manager also answers on its own port, without your gateway's sign-in") |
 | 7 | **Tailscale** | the helper's `tailscale` (§6.5): each node, its serve entries, whether Funnel is on, whether its container runs, its state file's age; a host tailscaled if there is one | the helper | "8 Tailscale connections, all running. Funnel is off everywhere. 1 old connection's state is still on disk but its container is gone. Who may reach what is set in Tailscale's admin console and cannot be read from here." Funnel on is a high finding |
 | 8 | **Logs for one app** | the helper's `logs` (class `private`, so only once the harness runs as its own user; until then the button says "Open its logs in Dockge" or "in Cockpit" and links there): for Docker's `json-file` driver, the container's log file and its rotated copies read directly (mode 0640 root; verified: lab R4), one JSON object per line; for the `journald` driver, `journalctl CONTAINER_ID=<12 hex> -n <lines> -o json`; for a unit, `journalctl --unit=<unit> -n <lines> -o json`; the `local` driver's binary files are refused ("Open its logs in Dockge"). At most 500 lines or 256 KiB a page. The helper redacts each page itself before it answers, with a frozen copy of the Blueprint redactor's patterns kept in its own file, because it never imports harness code; T35 checks both give the same output on one corpus (source: `swfactory/blueprint/redact.py:37-74`) | the helper | the newest lines, with times; the harness runs each page through its redactor again and keeps no copy; never sent to a model unless the owner sends a page himself (§10.3) |
@@ -2668,6 +2728,9 @@ A22 says why some remain).
 | **P1c: who can act as root** | the root page (view only) with the `access` verb, and logs read through the helper (both class `private`) | the harness runs as its own system user (D1; the first step of v2 §9.2's migration); agents cannot reach sudo (D20). Until then `explain access` shows the same page in the owner's own terminal (§6.1) | T21-T23; U7; **novice check**: answer "who can take full control of my server?" and mark one row as known |
 | **P2: Maintain and Fix** | `apt.upgrade`, `apt.remove`, `apt.restore`, `apt.restore_check`, `journal.vacuum`, `docker.clean`, `restart`, `reboot`; your code; approval ahead of a maintenance time; the restart waiter; "restart needed" and "updates waiting" in Needs you | P1c's preconditions; the approval key enrolled (one paste); the way-back check of §7.3 in every package job, which the helper runs itself, so the order Forge's point 7 and the owner set (changing buttons after backup and restore work) holds for the package layer without waiting for v2 phase B (D24); L6, L8, L9 and L10 pass | T14, T19, T20, T31-T33; U11; L6, L8-L10, L14; **novice check**: install the waiting security fixes in a maintenance time, put them back with the Undo button, and restart one app |
 | **P3: Root-access changes** | `access.ticket`, `approve`, `confirm`, the timed undo, the boot unit | P1c's preconditions; the boot unit installed by `setup`; L11-L13 pass | T24; U7 (changes part); L11-L13; **novice check**: remove one old SSH key and confirm it from a new login, with the two terminal pastes the page gives |
+
+P1a, P1b and P1c are built (DESIGN.md §42; Status above lists what is not); P2
+and P3 are not.
 
 The v2 roadmap's phases still apply around these: P1a to P1c are v2's A1 ("see
 everything, change nothing") for this area; P2's buttons are v2's phase C and D

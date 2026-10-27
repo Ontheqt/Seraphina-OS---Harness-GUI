@@ -1,0 +1,6 @@
+{"Defaults": [{"Options": [{"env_reset": true}]}],
+ "User_Specs": [
+  {"User_List": [{"username": "owner"}], "Host_List": [{"hostname": "ALL"}], "Cmnd_Specs": [{"runasusers": [{"username": "ALL"}], "Commands": [{"command": "ALL"}]}]},
+  {"User_List": [{"username": "oldadmin"}], "Host_List": [{"hostname": "ALL"}], "Cmnd_Specs": [{"Commands": [{"command": "ALL"}]}]},
+  {"User_List": [{"usergroup": "sudo"}], "Host_List": [{"hostname": "ALL"}], "Cmnd_Specs": [{"Commands": [{"command": "ALL"}]}]}
+ ]}

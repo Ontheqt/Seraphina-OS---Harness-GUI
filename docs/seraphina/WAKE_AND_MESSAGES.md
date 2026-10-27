@@ -1371,10 +1371,11 @@ summary the persona wrote is shown to its next turns inside a data block
 **(b) One memory per persona: `memory.external`.** A persona whose canonical
 memory lives in its own tools (a folder of notes, a SQLite file, kept by the
 persona's tools in Open WebUI, say) names it: `{folder, sqlite: {path, query},
-outbox, taint, ledger}`. The harness only reads it: the folder's `*.md` and
-`*.txt` files (regular files inside it with UTF-8 names, no symlinks, newest
-first, 64 KB of each; one read opens at most 100 files and takes at most 1 MiB,
-whatever they hold), and the database opened read-only (`mode=ro`,
+outbox, taint, ledger, max_files, read_mib, ledger_mib, ledger_copies}`. The
+harness only reads it: the folder's `*.md` and `*.txt` files (regular files
+inside it with UTF-8 names, no symlinks, newest first, 64 KB of each; one read
+opens at most `max_files` files, 200 by default, and takes at most `read_mib`,
+8 MiB by default, whatever they hold), and the database opened read-only (`mode=ro`,
 `query_only`, an authorizer that allows nothing but reading) with one `SELECT`.
 The query is the persona's own: the harness assumes no table or column of her
 store (her first column is the text, a second one, when there is one, its time).
@@ -1417,7 +1418,9 @@ taken out of a copy first (the copy is then `<sha256>.redacted.txt`, and the
 hash stays the hash of what was read). A file with no text (empty or only
 whitespace) is listed but not copied: there is nothing to restore.
 
-The ledger keeps at most 32 MiB per persona, copies and manifests together.
+The ledger keeps at most 32 MiB and 2000 copies per persona, copies and
+manifests together (`ledger_mib` and `ledger_copies` change that: settings, not
+constants).
 When a new version needs room, the oldest copies go first: older versions of a
 file before the newest version of any file, so the newest version of each note
 (even one she has since deleted) is kept the longest. The manifests keep 4 MiB
@@ -1429,9 +1432,12 @@ The owner lists the versions per file, reads one, compares two, and prepares a
 restore: the harness gives back the earlier text, and the persona's own tools
 or the owner write it. The harness never writes her store. A file longer than
 64 KB is read only in part, so its copy is not offered as a restore. The owner
-can also **erase one version**: its copy is deleted at once, the manifests keep
-only its sha256, and the ledger never keeps it again (her own note is not
-touched). This is for a detail that should no longer be kept, such as one about
+can also **erase one version**: its copy file is deleted from disk at once
+(not marked), the manifests keep only its sha256, every run log whose prompt
+held it loses that note (also the logs of wakes whose manifests retention has
+since removed, and of later wakes that read it again from her note), and the
+ledger never keeps it again (her own note is not touched). No other copy of it
+is left in the persona's directory. This is for a detail that should no longer be kept, such as one about
 another person.
 
 No turn reads her memory unrecorded. If the ledger cannot be written, the
@@ -2782,7 +2788,7 @@ under the master token. No personal value (names, chat ids) is kept in config.
                            "thread_in_ambient": false},
                   "may_wake_sleeping_model": false, "silent_first_days": 7,
                   // the owner's decisions (§2.8):
-                  "memory": {"curation": "owner", "external": null},        // a; b: {folder, sqlite, outbox, taint, ledger}
+                  "memory": {"curation": "owner", "external": null},        // a; b: {folder, sqlite, outbox, taint, ledger, max_files, read_mib, ledger_mib, ledger_copies}
                   "wake": {"tools": "none", "read_paths": [], "commands": null},  // c: null = git status, git log; [] = none
                   "reimport_decider": "owner",                              // e
                   "instance_name": null}                                    // f

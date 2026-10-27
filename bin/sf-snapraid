@@ -117,6 +117,7 @@ SMARTCTL_RE = re.compile(r"^-d (sat|sat,12|sat,16|scsi|ata|nvme|usbjmicron|usbpr
                          r"( -T permissive)? %s$")
 UUID_RE = re.compile(r"^[0-9A-Fa-f][0-9A-Fa-f-]{3,63}$")
 DISK_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+IN_USE_FSTYPES = ("crypto_LUKS", "bcache", "swap")    # with every "*_member" (LVM2, linux_raid, zfs, ...): in use
 LEVELS = {"parity": 1, "1-parity": 1, "2-parity": 2, "q-parity": 2, "3-parity": 3, "r-parity": 3, "z-parity": 3,
           "4-parity": 4, "5-parity": 5, "6-parity": 6}
 # The name SnapRAID logs a protection disk under (state.c lev_config_name), whichever keyword the config used for it:
@@ -1496,9 +1497,11 @@ class Helper:
     def verb_disks(self, request: dict, cfg: dict, conf: Conf) -> dict:
         """Each array disk's identity (lsblk -J and blkid -p, as root): its device, filesystem UUID,
         /dev/disk/by-id name, model and serial, kept in disks.json with the last known record of a disk that has
-        gone, so a dead disk can still be named; and the whole disks that hold no mounted filesystem."""
+        gone, so a dead disk can still be named; and the whole disks nothing uses (spare: the disk checklist builds
+        the commands that erase one of them, so a disk is left out when anything on it, at any depth, is mounted,
+        is swap, is a member of LVM, RAID, encryption or ZFS, has holders, or holds an array disk's filesystem)."""
         code, output, _ = self.system.run(["lsblk", "-J", "-b", "-o", ("NAME,PATH,PKNAME,TYPE,SIZE,FSTYPE,UUID,"
-                                                                   "MOUNTPOINT,MODEL,SERIAL")], 30)
+                                                                   "MOUNTPOINT,MODEL,SERIAL,PTTYPE")], 30)
         try:
             tree = json.loads(output).get("blockdevices") or [] if code == 0 else []
         except (ValueError, AttributeError):
@@ -1508,8 +1511,9 @@ class Helper:
         def walk(nodes: list, parent: dict | None) -> None:
             for node in nodes:
                 if isinstance(node, dict):
-                    flat.append({**node, "_parent": parent})
-                    walk(node.get("children") or [], node)
+                    entry = {**node, "_parent": parent, "_root": (parent or {}).get("_root") or parent}
+                    flat.append(entry)
+                    walk(node.get("children") or [], entry)
         walk(tree, None)
         by_id = self._by_id()
         known = self._read_json(os.path.join(self.paths.state, "disks.json")) or {}
@@ -1522,7 +1526,7 @@ class Helper:
         for name, role, _ in roles:
             found = _mounted(mounts, self.system.uuid, recorded.get(name, "")) if recorded.get(name) else None
             node = next((n for n in flat if found is not None and n.get("path") == found.source), None)
-            whole = node.get("_parent") if node and node.get("_parent") else node
+            whole = node.get("_root") if node and node.get("_root") else node
             if node is not None:
                 record = {"name": name, "role": role, "mount": found.point if found else None,
                           "device": node.get("path"), "uuid": node.get("uuid") or recorded.get(name),
@@ -1536,19 +1540,37 @@ class Helper:
                           "present": False}
             out.append(record)
         mounted = {m.source for m in mounts}
+        busy = {str(n.get("uuid")).lower() for n in flat if n.get("uuid") and (n.get("path") in mounted
+                                                                             or n.get("mountpoint"))}
+        busy |= {str(uuid).lower() for uuid in recorded.values()}    # the array's filesystems, mounted or not
+
+        def in_use(n: dict) -> bool:
+            fstype = str(n.get("fstype") or "")
+            return bool(n.get("path") in mounted or n.get("mountpoint") or n.get("type") not in ("disk", "part")
+                        or fstype.endswith("_member") or fstype in IN_USE_FSTYPES
+                        or str(n.get("uuid") or "").lower() in busy or self._holders(str(n.get("name") or "")))
         spare = []
         for node in flat:
             if node.get("type") != "disk" or node.get("_parent") is not None:
                 continue
-            family = [node] + [n for n in flat if n.get("_parent") is node]
-            if any(n.get("path") in mounted for n in family):
+            family = [node] + [n for n in flat if n.get("_root") is node]
+            if any(in_use(n) for n in family):
                 continue
             spare.append({"device": node.get("path"), "size": node.get("size"), "model": node.get("model"),
-                          "serial": node.get("serial"), "signature": any(n.get("fstype") for n in family)
-                          or len(family) > 1, "by_id": by_id.get(node.get("path"))})
+                          "serial": node.get("serial"), "signature": any(n.get("fstype") or n.get("pttype")
+                                                                         for n in family) or len(family) > 1,
+                          "by_id": by_id.get(node.get("path"))})
         self._write_json(Path(self.paths.state, "disks.json"), known)
         return {"ok": True, "verb": "disks", "at": seen_at, "disks": out, "spare": spare,
                 "numbers": conf.numbers()}
+
+    def _holders(self, name: str) -> bool:
+        """Something (device mapper, md, bcache) is built on the block device name (/sys/class/block/NAME/holders)."""
+        if not re.fullmatch(r"[A-Za-z0-9._:-]+", name) or name in (".", ".."):
+            return False
+        with contextlib.suppress(OSError):
+            return bool(os.listdir(self.paths.at(f"/sys/class/block/{name}/holders")))
+        return False
 
     def _by_id(self) -> dict[str, str]:
         folder = self.paths.at("/dev/disk/by-id")

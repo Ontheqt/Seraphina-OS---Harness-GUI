@@ -84,10 +84,12 @@ WAKE_RE = re.compile(r"^W-\d{6,9}$", re.ASCII)
 ENTRY_RE = re.compile(r"^J-\d{6,9}$", re.ASCII)
 REMINDER_RE = re.compile(r"^R-\d{6,9}$", re.ASCII)
 RUN_RE = re.compile(r"^\d{1,6}-wake$", re.ASCII)
+CODEX_RUN_RE = re.compile(r"^[0-9]{2,4}-[a-z0-9][a-z0-9-]{0,40}$", re.ASCII)   # a job run's log stem (DESIGN §44)
 SNAPRAID_JOB_RE = re.compile(r"^J-[0-9]{1,9}$", re.ASCII)      # a run of the disk protection reader (DESIGN §41)
 SNAPRAID_GUARD_RE = re.compile(r"^G-[0-9]{1,9}$", re.ASCII)
 SNAPRAID_APPROVAL_RE = re.compile(r"^A-[0-9]{1,9}$", re.ASCII)   # an approval of a SnapRAID Daemon action
 SNAPRAID_RUN_RE = re.compile(r"^[0-9]{1,9}$", re.ASCII)         # a daemon task's number
+YOURSERVER_APP_RE = re.compile(r"^a-[a-z0-9][a-z0-9-]{0,30}$", re.ASCII)   # a Your server app (DESIGN §42)
 VERSION_RE = re.compile(r"^\d{1,9}$", re.ASCII)
 PROVIDER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$", re.ASCII)
 TOKEN_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}", re.ASCII)
@@ -170,6 +172,7 @@ _PARAM_RULES: dict[str, tuple[re.Pattern[str], str]] = {
     "guard": (SNAPRAID_GUARD_RE, "guard report"),
     "approval": (SNAPRAID_APPROVAL_RE, "approval id"),
     "srun": (SNAPRAID_RUN_RE, "run step number"),
+    "app": (YOURSERVER_APP_RE, "app id"),
     "token_name": (TOKEN_NAME_RE, "agent token name"),
     "message": (MESSAGE_RE, "message id"),
     "channel": (CHANNEL_RE, "channel name"),
@@ -179,10 +182,16 @@ _PARAM_RULES: dict[str, tuple[re.Pattern[str], str]] = {
     "entry": (ENTRY_RE, "journal entry id"),
     "reminder": (REMINDER_RE, "reminder id"),
     "run": (RUN_RE, "run log"),
+    "jobrun": (CODEX_RUN_RE, "job run"),
     "version": (VERSION_RE, "memory version"),
     "provider": (PROVIDER_RE, "provider name"),
     "receipt": (re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,95}"), "receipt id"),
+    "sysjob": (re.compile(r"J-[1-9][0-9]{0,8}"), "job of Seraphina's system access"),
+    "row": (re.compile(r"[0-9a-f]{16}"), "row id"),
     "sha256": (SHA256_RE, "sha256"),
+    "grant": (re.compile(r"G-\d{8}-\d{4,}"), "grant id"),
+    "session_lock": (re.compile(r"SL-\d{8}-\d{4,}"), "session lock id"),
+    "shot": (re.compile(r"[a-z0-9][a-z0-9-]{0,39}(?:-\d{1,4})?\.png"), "screenshot name"),
 }
 MAX_CONFIRM_LINES = 200          # lines one POST .../confirm may name
 
@@ -1135,6 +1144,59 @@ class FactoryRequestHandler(BaseHTTPRequestHandler):
             extra["profile"] = profile
         return json_reply({"chat": self._call("new_chat", repo, model, mode, **extra)}, 201)
 
+    # the browser adapter (section 43)
+
+    def api_browser(self, req: ApiRequest) -> Reply:
+        """GET /api/browser → the browser card and the newest sessions (counts and hashes, never page text)."""
+        return json_reply(self._call("browser_state"))
+
+    def api_browser_revoke(self, req: ApiRequest) -> Reply:
+        """POST /api/browser/grants/<grant>/revoke → {grant, revoked, closed}: the session lock is revoked and the
+        locking run's browser ends (BROWSER_AND_CODEX.md §2.6 rule 3)."""
+        try:
+            return json_reply(self._call("browser_revoke", req.params["grant"]))
+        except KeyError:
+            raise HttpError(404, "no such grant") from None
+
+    def api_browser_shot(self, req: ApiRequest) -> Reply:
+        """GET /api/chats/<chat>/browser/<session lock>/<name>.png: a screenshot the shim wrote, for a person (never
+        sent to a model): image/png, nosniff, the sandboxing CSP."""
+        try:
+            path = self._call("browser_shot", req.params["chat"], req.params["session_lock"], req.params["shot"])
+            data = Path(path).read_bytes()
+        except (KeyError, OSError):
+            raise HttpError(404, "no such screenshot") from None
+        if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise HttpError(404, "no such screenshot")
+        return Reply(200, data, "image/png", {"Content-Disposition": "inline"})
+
+    # the Codex worker (section 44)
+
+    def api_job_receipts(self, req: ApiRequest) -> Reply:
+        """GET /api/jobs/<repo>/<job>/receipts → {receipts, chain_broken, reconcile, verify, preview}: the job's run
+        receipts as the run card shows them (ids, outcomes, paths, the commit, the checks; never text)."""
+        try:
+            return json_reply(self._call("job_receipts", req.params["repo"], req.params["job"]))
+        except KeyError:
+            raise HttpError(404, "no such job") from None
+
+    def api_job_receipt(self, req: ApiRequest) -> Reply:
+        """GET /api/jobs/<repo>/<job>/receipts/<run> → the run's receipt as the harness wrote it."""
+        try:
+            return json_reply({"receipt": self._call("job_receipt", req.params["repo"], req.params["job"],
+                                                     req.params["jobrun"])})
+        except KeyError:
+            raise HttpError(404, "no such receipt") from None
+
+    def api_verify_in_browser(self, req: ApiRequest) -> Reply:
+        """POST /api/jobs/<repo>/<job>/verify-in-browser → {chat} 201: a browsing chat whose chat.json carries the
+        job's verify record; its grant names the job's preview (DESIGN §44). 409 when it is not offered."""
+        return json_reply({"chat": self._call("verify_in_browser", req.params["repo"], req.params["job"])}, 201)
+
+    def api_codex(self, req: ApiRequest) -> Reply:
+        """GET /api/codex → the Codex worker's settings (no secret), the Responses checks and the setup blocks."""
+        return json_reply(self._call("codex_state"))
+
     # personas and Open WebUI profiles (section 33)
 
     def api_personas(self, req: ApiRequest) -> Reply:
@@ -1178,7 +1240,8 @@ class FactoryRequestHandler(BaseHTTPRequestHandler):
         return json_reply(self._call("operator_state"))
 
     def api_operator_receipts(self, req: ApiRequest) -> Reply:
-        """GET /api/operator/receipts?limit=&since=&until=&rescan= → {receipts, refused, scan} (newest first)."""
+        """GET /api/operator/receipts?limit=&since=&until=&rescan= → {receipts, refused, unreadable, scan} (newest
+        first; every actor's receipts, each with its actor)."""
         limit = req.int_arg("limit") if req.arg("limit") else 200
         if not 1 <= limit <= MAX_ITEMS_LIMIT:
             raise HttpError(400, f"limit must be from 1 to {MAX_ITEMS_LIMIT}")
@@ -1342,9 +1405,151 @@ class FactoryRequestHandler(BaseHTTPRequestHandler):
         """GET /api/snapraid/fixes?offset= → one page of the files an undelete or heal brought back, live."""
         return json_reply(self._call("snapraid_fixes", req.int_arg("offset")))
 
+    def api_snapraid_rebuild(self, req: ApiRequest) -> Reply:
+        """GET /api/snapraid/rebuild → the owner's checklist for a whole failed disk (BACKUPS_SNAPRAID.md §9.4):
+        its steps, their copy blocks and the current step's read-only check; or the disks it may be opened for."""
+        return json_reply(self._call("snapraid_rebuild"))
+
+    def api_snapraid_rebuild_start(self, req: ApiRequest) -> Reply:
+        """POST /api/snapraid/rebuild {disk} → opens the checklist for that data disk (400 with the refusal)."""
+        body = req.body
+        if set(body) - {"disk"} or not isinstance(body.get("disk"), str):
+            raise HttpError(400, "give {disk: the failed disk's name}")
+        return json_reply(self._call("snapraid_rebuild_start", body["disk"]), 201)
+
+    def api_snapraid_rebuild_action(self, req: ApiRequest) -> Reply:
+        """POST /api/snapraid/rebuild/step {step, confirm?} (check the step, and mark it done when it passes),
+        /prepare {by_id, typed} (the new disk's commands, once its serial number is typed; never stored) or /close
+        (close the checklist before the end; it undoes nothing). Seraphina runs none of the blocks."""
+        action, body = req.params["raction"], req.body
+        if action == "step":
+            confirm = body.get("confirm", [])
+            if set(body) - {"step", "confirm"} or not isinstance(body.get("step"), str) or \
+                    not isinstance(confirm, list) or not all(isinstance(item, str) for item in confirm):
+                raise HttpError(400, "give {step, confirm?: [what you tick]}")
+            return json_reply(self._call("snapraid_rebuild_step", body["step"], confirm))
+        if action == "prepare":
+            if set(body) - {"by_id", "typed"} or not isinstance(body.get("by_id"), str) or \
+                    not isinstance(body.get("typed"), str):
+                raise HttpError(400, "give {by_id, typed}")
+            return json_reply(self._call("snapraid_rebuild_prepare", body["by_id"], body["typed"]))
+        if body:
+            raise HttpError(400, "close takes no fields")
+        return json_reply(self._call("snapraid_rebuild_close"))
+
     def api_snapraid_runs(self, req: ApiRequest) -> Reply:
         """GET /api/snapraid/runs → {runs}: the daemon's recent runs (typed fields)."""
         return json_reply(self._call("snapraid_runs"))
+
+    # Your server (section 42; phase P1a: it only looks, every route reads or changes Seraphina's own record)
+
+    def api_yourserver(self, req: ApiRequest) -> Reply:
+        """GET /api/yourserver → {phase, enabled, looks_only, helper, host, apps_summary, beszel, needs, stale, summary,
+        review, tailnet, lab_line}."""
+        return json_reply(self._call("yourserver_view"))
+
+    def api_yourserver_refresh(self, req: ApiRequest) -> Reply:
+        """POST /api/yourserver/refresh → the view, read again now (only reads)."""
+        return json_reply(self._call("yourserver_refresh"))
+
+    def api_yourserver_apps(self, req: ApiRequest) -> Reply:
+        """GET /api/yourserver/apps → {apps, not_shown, review, observed_at, stale}: the cards."""
+        return json_reply(self._call("yourserver_apps"))
+
+    def api_yourserver_app(self, req: ApiRequest) -> Reply:
+        """GET /api/yourserver/apps/<a-id> → {app, parts, candidates, changes, facts, ...}."""
+        return json_reply(self._call("yourserver_app", req.params["app"]))
+
+    def api_yourserver_app_update(self, req: ApiRequest) -> Reply:
+        """POST /api/yourserver/apps/<a-id> {name?, icon?, hidden?, note?, order?, phone_name?, probe?, expect?,
+        main_member?, maintenance?}: the owner's corrections."""
+        return json_reply(self._call("yourserver_app_update", req.params["app"], dict(req.body)))
+
+    def api_yourserver_address(self, req: ApiRequest) -> Reply:
+        """POST /api/yourserver/apps/<a-id>/address {action: confirm|reject|set|home_only, candidate?, url?}."""
+        return json_reply(self._call("yourserver_address", req.params["app"], dict(req.body)))
+
+    def api_yourserver_qr(self, req: ApiRequest) -> Reply:
+        """GET /api/yourserver/apps/<a-id>/qr → {size, rows}: only for a confirmed Tailscale address."""
+        return json_reply(self._call("yourserver_qr", req.params["app"]))
+
+    def api_yourserver_ask(self, req: ApiRequest) -> Reply:
+        """POST /api/yourserver/apps/<a-id>/ask {question} → {facts, answer, label}: a local model only."""
+        return json_reply(self._call("yourserver_ask", req.params["app"], req.body.get("question")))
+
+    def api_yourserver_review(self, req: ApiRequest) -> Reply:
+        """GET /api/yourserver/review → {rows, words, tailnet, done_at}: the first-run review list."""
+        return json_reply(self._call("yourserver_review"))
+
+    def api_yourserver_review_confirm(self, req: ApiRequest) -> Reply:
+        """POST /api/yourserver/review {rows: [{app, name?, url?, home_only?, expect?, old_copy?}], tailnet?}: These
+        are right."""
+        return json_reply(self._call("yourserver_review_confirm", req.body.get("rows"), req.body.get("tailnet")))
+
+    def api_yourserver_groups(self, req: ApiRequest) -> Reply:
+        """POST /api/yourserver/groups {action: merge|split|move|retire|keep|part|undo, ...}."""
+        return json_reply(self._call("yourserver_groups", dict(req.body)))
+
+    def api_yourserver_beszel(self, req: ApiRequest) -> Reply:
+        """POST /api/yourserver/beszel {action: password|check, email?}: the read-only Beszel login (§4.4)."""
+        return json_reply(self._call("yourserver_beszel", dict(req.body)))
+
+    def api_yourserver_setup(self, req: ApiRequest) -> Reply:
+        """GET /api/yourserver/setup → {blocks, details, removal, staged, setup_dir, release_sha256, helper}."""
+        return json_reply(self._call("yourserver_setup"))
+
+    def api_yourserver_setup_action(self, req: ApiRequest) -> Reply:
+        """POST /api/yourserver/setup/<stage|check> {classes?}: stage the files the one paste installs (reading, and
+        the classes ticked: refresh, keep, private), or ask the helper's info."""
+        return json_reply(self._call("yourserver_setup_action", req.params["action"], dict(req.body)))
+
+    def api_yourserver_checks(self, req: ApiRequest) -> Reply:
+        """GET /api/yourserver/checks → {checks, running, refresh, disks}: the Check buttons' last results."""
+        return json_reply(self._call("yourserver_checks"))
+
+    def api_yourserver_check(self, req: ApiRequest) -> Reply:
+        """POST /api/yourserver/checks/<check> {refresh?, mount?}: run one Check now (it only looks); refresh asks the
+        helper to refresh the list of updates (apt.refresh, a job)."""
+        return json_reply(self._call("yourserver_check", req.params["check"], dict(req.body)))
+
+    def api_yourserver_logs(self, req: ApiRequest) -> Reply:
+        """GET /api/yourserver/apps/<a-id>/logs?member=&lines=&before= → one redacted page (Check 8), or why it waits
+        and the links to Dockge and Cockpit."""
+        return json_reply(self._call("yourserver_logs", req.params["app"], req.arg("member") or None,
+                                     req.arg("lines") or None, req.arg("before") or None))
+
+    def api_yourserver_keep(self, req: ApiRequest) -> Reply:
+        """POST /api/yourserver/keep: the keep pass now (class keep; it only adds names)."""
+        return json_reply(self._call("yourserver_keep"))
+
+    def api_yourserver_jobs(self, req: ApiRequest) -> Reply:
+        """GET /api/yourserver/jobs → {jobs, recent}: the helper's jobs this harness started."""
+        return json_reply(self._call("yourserver_jobs"))
+
+    def api_yourserver_job(self, req: ApiRequest) -> Reply:
+        """GET /api/yourserver/jobs/<J-n> → {job, log}: one job's record and a page of its output."""
+        return json_reply(self._call("yourserver_job", req.params["sysjob"]))
+
+    def api_yourserver_receipts(self, req: ApiRequest) -> Reply:
+        """GET /api/yourserver/receipts?cursor= → {receipts, next, problem, unknown}: the helper's receipts and the
+        operator's, each labelled."""
+        return json_reply(self._call("yourserver_receipts", req.arg("cursor") or None))
+
+    def api_yourserver_receipt(self, req: ApiRequest) -> Reply:
+        """GET /api/yourserver/receipts/<R-n> → {receipt, label}."""
+        return json_reply(self._call("yourserver_receipt", req.params["receipt"]))
+
+    def api_yourserver_root(self, req: ApiRequest) -> Reply:
+        """GET /api/yourserver/root → who can act as root (view only), or why it waits."""
+        return json_reply(self._call("yourserver_root"))
+
+    def api_yourserver_root_check(self, req: ApiRequest) -> Reply:
+        """POST /api/yourserver/root/check: look again (the helper's access job; it changes nothing)."""
+        return json_reply(self._call("yourserver_root_check"))
+
+    def api_yourserver_root_mark(self, req: ApiRequest) -> Reply:
+        """POST /api/yourserver/root/<row>/mark {known, note?}: the owner's mark (it changes nothing on the server)."""
+        return json_reply(self._call("yourserver_root_mark", req.params["row"], dict(req.body)))
 
     def api_snapraid_run(self, req: ApiRequest) -> Reply:
         """GET /api/snapraid/runs/<number> → {task, messages}: one daemon task, its messages as text, live."""
@@ -2022,6 +2227,10 @@ _ROUTES: list[tuple[str, re.Pattern[str], Handler]] = [
         ("GET", "/api/jobs/{repo}/{job}/items", _H.api_job_items),
         ("POST", "/api/jobs/{repo}/{job}/items", _H.api_add_job_item),
         ("POST", "/api/jobs/{repo}/{job}/{action:approve|rework|reject|retry|cancel|routing}", _H.api_job_action),
+        ("GET", "/api/jobs/{repo}/{job}/receipts", _H.api_job_receipts),
+        ("GET", "/api/jobs/{repo}/{job}/receipts/{jobrun}", _H.api_job_receipt),
+        ("POST", "/api/jobs/{repo}/{job}/verify-in-browser", _H.api_verify_in_browser),
+        ("GET", "/api/codex", _H.api_codex),
         ("POST", "/api/repos", _H.api_add_repo),
         ("GET", "/api/repos/{repo}/backlog", _H.api_backlog),
         ("POST", "/api/repos/{repo}/backlog", _H.api_add_backlog),
@@ -2038,6 +2247,9 @@ _ROUTES: list[tuple[str, re.Pattern[str], Handler]] = [
         ("POST", "/api/chats", _H.api_new_chat),
         ("GET", "/api/chats/{chat}", _H.api_chat),
         ("GET", "/api/chats/{chat}/items", _H.api_chat_items),
+        ("GET", "/api/chats/{chat}/browser/{session_lock}/{shot}", _H.api_browser_shot),
+        ("GET", "/api/browser", _H.api_browser),
+        ("POST", "/api/browser/grants/{grant}/revoke", _H.api_browser_revoke),
         ("POST", "/api/chats/{chat}/items", _H.api_add_chat_item),
         ("POST", "/api/chats/{chat}/{action:messages|cancel|handoff|delete}", _H.api_chat_action),
         ("GET", "/api/personas", _H.api_personas),
@@ -2071,8 +2283,37 @@ _ROUTES: list[tuple[str, re.Pattern[str], Handler]] = [
         ("POST", "/api/snapraid/actions/{approval}/cancel", _H.api_snapraid_action_cancel),
         ("GET", "/api/snapraid/review", _H.api_snapraid_review),
         ("GET", "/api/snapraid/fixes", _H.api_snapraid_fixes),
+        ("GET", "/api/snapraid/rebuild", _H.api_snapraid_rebuild),
+        ("POST", "/api/snapraid/rebuild", _H.api_snapraid_rebuild_start),
+        ("POST", "/api/snapraid/rebuild/{raction:step|prepare|close}", _H.api_snapraid_rebuild_action),
         ("GET", "/api/snapraid/runs", _H.api_snapraid_runs),
         ("GET", "/api/snapraid/runs/{srun}", _H.api_snapraid_run),
+        ("GET", "/api/yourserver", _H.api_yourserver),
+        ("POST", "/api/yourserver/refresh", _H.api_yourserver_refresh),
+        ("GET", "/api/yourserver/apps", _H.api_yourserver_apps),
+        ("GET", "/api/yourserver/apps/{app}", _H.api_yourserver_app),
+        ("POST", "/api/yourserver/apps/{app}", _H.api_yourserver_app_update),
+        ("POST", "/api/yourserver/apps/{app}/address", _H.api_yourserver_address),
+        ("GET", "/api/yourserver/apps/{app}/qr", _H.api_yourserver_qr),
+        ("POST", "/api/yourserver/apps/{app}/ask", _H.api_yourserver_ask),
+        ("GET", "/api/yourserver/review", _H.api_yourserver_review),
+        ("POST", "/api/yourserver/review", _H.api_yourserver_review_confirm),
+        ("POST", "/api/yourserver/groups", _H.api_yourserver_groups),
+        ("POST", "/api/yourserver/beszel", _H.api_yourserver_beszel),
+        ("GET", "/api/yourserver/setup", _H.api_yourserver_setup),
+        ("POST", "/api/yourserver/setup/{action:stage|check}", _H.api_yourserver_setup_action),
+        ("GET", "/api/yourserver/checks", _H.api_yourserver_checks),
+        ("POST", "/api/yourserver/checks/{check:updates|restart|disk|failed|health|listening|tailscale}",
+         _H.api_yourserver_check),
+        ("GET", "/api/yourserver/apps/{app}/logs", _H.api_yourserver_logs),
+        ("POST", "/api/yourserver/keep", _H.api_yourserver_keep),
+        ("GET", "/api/yourserver/jobs", _H.api_yourserver_jobs),
+        ("GET", "/api/yourserver/jobs/{sysjob}", _H.api_yourserver_job),
+        ("GET", "/api/yourserver/receipts", _H.api_yourserver_receipts),
+        ("GET", "/api/yourserver/receipts/{receipt}", _H.api_yourserver_receipt),
+        ("GET", "/api/yourserver/root", _H.api_yourserver_root),
+        ("POST", "/api/yourserver/root/check", _H.api_yourserver_root_check),
+        ("POST", "/api/yourserver/root/{row}/mark", _H.api_yourserver_root_mark),
         ("GET", "/api/config", _H.api_config),
         ("POST", "/api/config", _H.api_update_config),
         ("POST", "/api/config/preset", _H.api_preset),

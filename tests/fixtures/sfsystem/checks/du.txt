@@ -1,0 +1,5 @@
+120000000000	/srv/data1/media
+80000000000	/srv/data1/media/films
+30000000000	/srv/data1/photos
+2000000	/srv/data1/lost+found
+160000000000	/srv/data1

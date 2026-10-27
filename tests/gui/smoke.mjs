@@ -6,8 +6,9 @@
 // save theirs under $GUI_AREA_SHOTS/<area>/ (default: $GUI_SHOTS/areas/<area>/).
 //
 // Each area of the GUI has its own file of checks, imported below and run with the same harness `t` (see AREA_SUITES):
-// home.mjs (Home, branding, the view registry) and routing, tracker, personas, messages, operator and backups .mjs, one per
-// view module (swfactory/web/views/<area>.js). GUI_ONLY=home,tracker runs only those suites (after login).
+// home.mjs (Home, branding, the view registry) and routing, tracker, personas, messages, operator, backups,
+// yourserver and browser .mjs, one per view module (swfactory/web/views/<area>.js). GUI_ONLY=home,tracker runs only those suites
+// (after login).
 // For a visual review, tests/gui/screens.mjs (not a test) saves every screen at 1440 and 390 px, light and dark.
 import { createRequire } from 'node:module';
 import { spawn, execSync } from 'node:child_process';
@@ -22,10 +23,14 @@ import { run as personasSuite } from './personas.mjs';
 import { run as messagesSuite } from './messages.mjs';
 import { run as operatorSuite } from './operator.mjs';
 import { run as backupsSuite } from './backups.mjs';
+import { run as yourserverSuite } from './yourserver.mjs';
+import { run as browserSuite } from './browser.mjs';
+import { run as codexSuite } from './codex.mjs';
 
 /** The Seraphina OS Harness suites, in order. Each exports run(t); t is built in main() (see `harness`). */
 const AREA_SUITES = [['home', homeSuite], ['routing', routingSuite], ['tracker', trackerSuite], ['personas', personasSuite],
-  ['messages', messagesSuite], ['operator', operatorSuite], ['backups', backupsSuite]];
+  ['messages', messagesSuite], ['operator', operatorSuite], ['backups', backupsSuite], ['yourserver', yourserverSuite],
+  ['browser', browserSuite], ['codex', codexSuite]];
 const ONLY = (process.env.GUI_ONLY || '').split(',').map((x) => x.trim()).filter(Boolean);
 
 const require = createRequire(import.meta.url);

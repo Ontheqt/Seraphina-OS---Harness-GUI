@@ -1231,7 +1231,7 @@
    *  answered HELD (custody: "HELD", DESIGN §37), the register: someone else holds the card. Never "a slot" then. */
   const HELD_WAIT = 'waiting for the GPU custody register: the card is held by someone else';
   function waitWords(w) {
-    if (w && w.custody === 'HELD') return { short: HELD_WAIT, long: 'Waiting for the GPU custody register: the card is held by someone else. The run waits once, up to the provider’s overflow_after_seconds, then goes to the next build or its overflow.' };
+    if (w && w.custody === 'HELD') return { short: HELD_WAIT, long: 'Waiting for the GPU custody register: the card is held by someone else, and no other build is free now. The run waits once, up to the provider’s overflow_after_seconds, then goes on to its overflow.' };
     const p = (w && w.provider) || 'the provider';
     return { short: 'waiting for a free ' + p + ' slot', long: 'Queued: the ' + p + ' provider has no free slot (max_concurrency); the run starts when one frees up' };
   }

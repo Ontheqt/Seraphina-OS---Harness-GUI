@@ -455,10 +455,16 @@
       ['Answer’s sha256', a.body_sha256 ? h('code', { class: 'sf-wrap op-sha' }, str(a.body_sha256)) : h('span', { class: 'sf-muted' }, 'no body')],
     ]);
   }
+  /** Who the receipt names, as written (receipts.Receipts.view: null when it names nobody): every actor's receipt is
+   *  listed, hers and other agents', so each says whose it is. */
+  function actorEl(r) {
+    return r.actor ? h('span', { class: 'op-rcpt-actor sf-muted sf-wrap' }, 'by ', str(r.actor))
+      : h('span', { class: 'op-rcpt-actor sf-muted', dataset: { actor: 'not-stated' } }, 'actor not stated');
+  }
   function receiptRow(r, many) {
     if (r.status !== 'read') {
       return h('li', { class: 'op-rcpt is-unread', dataset: { file: str(r.file), status: 'cannot-read' } },
-        h('div', { class: 'op-rcpt-head' }, h('code', { class: 'op-rcpt-file sf-wrap' }, str(r.file)), pill('Cannot read', 'warn'), h('span', { class: 'spacer' }), whenEl(r.mtime, 'op-when', null)),
+        h('div', { class: 'op-rcpt-head' }, h('code', { class: 'op-rcpt-file sf-wrap' }, str(r.file)), pill('Cannot read', 'warn'), actorEl(r), h('span', { class: 'spacer' }), whenEl(r.mtime, 'op-when', null)),
         h('p', { class: 'op-rcpt-problem sf-wrap' }, str(r.problem)),
         h('div', { class: 'op-rcpt-chips' }, labelTag(), flagTags(r)));
     }
@@ -468,7 +474,7 @@
     return h('li', { class: 'op-rcpt', dataset: { receipt: str(r.id), file: str(r.file), outcome: str(outcome.state) } },
       h('div', { class: 'op-rcpt-head' },
         h('a', { class: 'op-rcpt-id', id: titleId, href: receiptHref(r.id), dataset: { focus: 'r-' + r.file } }, str(r.id)),
-        h('span', { class: 'op-rcpt-actor sf-muted sf-wrap' }, 'by ', str(r.actor)),
+        actorEl(r),
         h('span', { class: 'spacer' }), whenEl(r.time)),
       many || r.gone || r.duplicate_of ? h('p', { class: 'op-rcpt-where' }, 'in ', h('code', { class: 'sf-wrap' }, str(r.file))) : null,
       h('p', { class: 'op-rcpt-intent sf-wrap' }, str(r.intent)),
@@ -538,14 +544,20 @@
     const filters = h('div', { class: 'op-filters', role: 'group', 'aria-label': 'Show' }, counts.map(([id, label, n]) =>
       h('button', { type: 'button', class: 'op-filter' + (O.filter === id ? ' is-on' : ''), 'aria-pressed': O.filter === id ? 'true' : 'false', dataset: { filter: id, focus: 'filter-' + id },
         onclick: () => { O.filter = id; SF.storage.set('sf.operator.filter', id); O.handle.refresh(); } }, label, h('span', { class: 'op-filter-n' }, String(n)))));
-    const refused = arr(data.refused);
+    // what the harness's user may not read (her 0700 root folders): named apart, and left as they are
+    const refused = arr(data.refused).filter((x) => !(x && x.unreadable));
+    const unreadable = arr(data.unreadable);
     const ids = new Map();
     for (const r of rows) if (r.id) ids.set(r.id, (ids.get(r.id) || 0) + 1);
     const list = shown.length ? h('ul', { class: 'op-rcpts', role: 'list' }, shown.map((r) => receiptRow(r, ids.get(r.id) > 1)))
       : SF.emptyState('file', rows.length ? 'Nothing here with this filter' : 'No receipts yet', rows.length ? 'Choose “All” to see every receipt.' : 'When she writes a change receipt into her folder, the next scan lists it here.', null, true);
-    return section('Her receipts', 'op-rcpts-t', 'Newest first. Each is what she wrote about one change: what it was for, how it can be undone, and the checks she did and did not do.',
+    return section('Her receipts', 'op-rcpts-t', 'Newest first, whoever wrote them: each names its actor, hers and other agents’ alike. Each is what was written about one change: what it was for, how it can be undone, and the checks done and not done.',
       O.recErr ? h('span', { class: 'tag tag-warn' }, 'Could not refresh: ' + O.recErr.message) : null,
       [cutNote(rows, data), filters, list, cutMore(rows, data),
+        unreadable.length ? h('div', { class: 'callout callout-info op-unreadable', dataset: { unreadable: String(unreadable.length) } }, SF.icon('shield', 'icon-sm'), h('div', null,
+          h('strong', null, SF.plural(unreadable.length, 'place') + ' in her folder the harness may not read: '),
+          unreadable.map((f, i) => [i ? ', ' : null, h('code', { class: 'sf-wrap' }, str(f))]),
+          '. They are left as they are: the harness never changes their owner, mode or access, and reads the rest.')) : null,
         refused.length ? disclosure('refused', 'op-refused', 'Not read (' + refused.length + ')', [
           h('p', { class: 'sf-muted op-fine' }, 'Symbolic links are refused and never followed; files past the limit wait in her folder.'),
           h('ul', { class: 'op-refused-list' }, refused.map((x) => h('li', null, h('code', { class: 'sf-wrap' }, str(x.file)), h('span', { class: 'sf-wrap' }, str(x.why)))))], { refused: String(refused.length) }) : null]);
@@ -608,7 +620,7 @@
       h('h3', { class: 'op-h3' }, 'Where it was read'),
       kv([
         ['When', h('span', null, whenEl(r.time), r.time_as_written && r.time_as_written !== r.time ? h('span', { class: 'sf-muted' }, ' (written as ', h('code', null, str(r.time_as_written)), ')') : null)],
-        ['Actor', h('span', { class: 'sf-wrap' }, str(r.actor))],
+        ['Actor', r.actor ? h('span', { class: 'sf-wrap' }, str(r.actor)) : h('span', { class: 'sf-muted' }, 'not stated')],
         ['Attributed to', r.operator ? str(r.operator) : h('span', { class: 'sf-muted' }, 'nobody (its new items go to a person)')],
         ['Schema', h('code', null, str(r.schema))],
         ['File', code(r.file, 'the file path', 'p-file')],
@@ -944,7 +956,7 @@
       row.custody_from ? h('span', { class: 'sf-muted' }, 'follows ' + row.custody_from + ' (the same server): its custody is edited on ' + row.custody_from)
         : row.needs_lease ? h('span', { class: 'sf-muted' }, 'needs a lease' + (row.lazy_load ? ' (loads its model on the first request)' : row.allow_model_swap ? ' (may swap models)' : ''))
           : h('span', { class: 'sf-muted' }, 'needs no lease: its requests load nothing'),
-      row.needs_lease ? h('span', { class: 'op-held-wait', dataset: { part: 'held-wait' } }, ' · ', row.held_wait_seconds ? 'a HELD answer waits up to ' + Math.round(Number(row.held_wait_seconds)) + 's, once per run' : 'a HELD answer does not wait', '; FULL never waits') : null));
+      row.needs_lease ? h('span', { class: 'op-held-wait', dataset: { part: 'held-wait' } }, ' · ', row.held_wait_seconds ? 'a HELD answer waits up to ' + Math.round(Number(row.held_wait_seconds)) + 's, once per run, when no other card is free' : 'a HELD answer does not wait', '; FULL never waits') : null));
     const set = (group.rows.find((row) => !row.custody_from) || group.rows[0] || {}).settings || {};
     const token = set.token_credential ? ['the systemd credential ', h('code', null, str(set.token_credential)), ' (a LoadCredential= line in the harness’s unit)']
       : set.token_file ? ['the file ', h('code', { class: 'sf-wrap' }, str(set.token_file))] : set.token_env ? ['the name ', h('code', null, str(set.token_env)), ' in the env file'] : ['none'];
@@ -973,7 +985,7 @@
         ['Residency is what is on the GPUs.', 'It is read before every lease and again after every give-back, and kept apart from the leases: giving a lease back never proves the memory is free.'],
         ['A lease is permission for runs.', 'Runs that want the same model share one; it is renewed while they run and given back when they end.'],
         ['Answers that cannot be believed are refused.', 'An answer older than the newest generation seen is stale; a lost connection is an unknown outcome, and nothing is sent again.'],
-        ['Held waits once; full moves on.', 'When someone else holds the card (HELD), a run waits once, up to its provider’s “Overflow after” time. When the card cannot fit the model now (FULL), it goes on at once to the next build or its overflow.'],
+        ['Held goes to a free card; full moves on.', 'When someone else holds the card (HELD), a run goes at once to another build that is free; only when none is does it wait, once, up to its provider’s “Overflow after” time. When the card cannot fit the model now (FULL), it goes on at once to the next build or its overflow.'],
       ], 'proc-sm')];
     let body;
     if (O.custodyErr && !O.custody) body = SF.unavailable(O.custodyErr, 'GPU custody');

@@ -246,15 +246,49 @@ def _is_cli(config: Config, driver: str) -> bool:
         return False
 
 
+def refuse_codex_worker(config: Config, driver: str) -> None:
+    """ValueError when driver is on the codex-worker preset: it runs a factory job's builder only (DESIGN §44,
+    K20), where the routing check, the codex model blocker, a custody request lease, the receipt and the harness
+    commit go with it; a chat turn or a lead run has none of them."""
+    from .codex import work as codex_work
+
+    if codex_work.is_worker(config, driver):
+        raise ValueError(f"the {driver} driver (codex-worker) runs a factory job's builder only: route this agent to "
+                         f"another driver")
+
+
+def verify_route_problem(config: Config, verify: Any, driver: str, models: list[Any]) -> str | None:
+    """Why a "Verify in the browser" chat (verify: its chat.json record) may not run on driver with models (anything
+    with a provider: a ModelConfig, a routing Build): the page it reads is the preview of a Codex branch, so on a
+    repository not marked personal_data: false the model stays on this machine, as every role of a codex-worker job
+    does (BROWSER_AND_CODEX.md §3.3, codex.work.hosted_route: a CLI driver counts as hosted). None: it may run."""
+    from .codex import work as codex_work
+
+    if not isinstance(verify, dict):
+        return None
+    repo = str(verify.get("repo") or "")
+    if not codex_work.repo_work(config, repo).personal_data:
+        return None
+    for model in models:
+        base_url = str(getattr(getattr(model, "provider", None), "base_url", "") or "")
+        why = codex_work.hosted_route(config, {"driver": driver, "provider_entry": {"base_url": base_url}})
+        if why:
+            return (f"Verify in the browser reads the preview of {repo}, built from what Codex wrote, and {why}: on a "
+                    f"repository not marked personal_data: false it runs only on a model on this machine "
+                    f"(BROWSER_AND_CODEX.md §3.3)")
+    return None
+
+
 def place_run(config: Config, route: Route, reach: Reachability | None, cancel: threading.Event,
               emit: Emit, purpose: str = "chat turn") -> tuple[ModelConfig, dict, list[str], Callable[[], None]] | None:
     """Where a chat turn or lead run of route goes, as a job's run is placed: placed_model, then the slot
     wait (routing.wait_live: agent.waiting {provider, overflow_after_seconds} when the slot is busy,
     the overflow past overflow_after_seconds). On a server under GPU custody the run's request lease is
     taken in the placement (purpose: what the run is, for the register; DESIGN §37): a build the register
-    gives none for is passed over, and a CLI route that gets none raises CustodyDenied. A HELD answer waits
-    first, for at most the provider's overflow_after_seconds (agent.waiting {provider, overflow_after_seconds,
-    custody: "HELD"}); FULL passes the build over at once. Returns (the model, with its lease, placement info
+    gives none for is passed over, and a CLI route that gets none raises CustodyDenied. A HELD answer sends
+    the run at once to another build that can take it; only when none can does it wait, for at most the
+    provider's overflow_after_seconds (agent.waiting {provider, overflow_after_seconds, custody: "HELD"}); FULL
+    passes the build over at once. Returns (the model, with its lease, placement info
     for agent.start with the placement's reason, notes, the release: call it when the run ends, it gives back
     the slot and the lease), or None when cancel was set while waiting."""
     reach = reach or REACHABILITY
@@ -517,6 +551,7 @@ class ChatManager:
         if personas.wakes(agent_def):
             raise ValueError(f"agent {agent!r} is a persona that wakes itself (wake: true): it talks to you in its "
                              f"own thread, never in a chat")
+        browsing = self._browsing_checks(agent_def, bound, repo_cfg)
         if mode != "none" and not _has_callable_tools(agent_def):
             raise ValueError(f"agent {agent!r} has no tools the model can call (it lists "
                              f"{', '.join(agent_def.tools) or 'none'}); a chat on a repo needs an agent with tools "
@@ -530,6 +565,13 @@ class ChatManager:
             if key:
                 placement = {**(placement or {}), "model": key}
         route = agent_route(self.config, agent_def, placement or None)
+        if browsing:
+            try:
+                model_now = route.model_config(self.config)
+            except (KeyError, ValueError):
+                model_now = None   # an unresolved model never starts a turn; each turn checks the one it runs on
+            self._browsing_route(agent_def, bound, route.driver, model_now)
+        refuse_codex_worker(self.config, route.driver)
         record = None
         if bound is not None:
             personas.check_driver(self.config, bound, route.driver)
@@ -560,6 +602,8 @@ class ChatManager:
             }
             if record is not None:
                 chat["persona"] = record
+            if browsing:
+                chat["browser"] = []   # a browsing chat (§43): the turns' browser records land here
             with self._lock:
                 return self._save(chat)
         except BaseException:
@@ -568,6 +612,23 @@ class ChatManager:
                     self._remove_checkout(repo_cfg.path, cwd, branch)
             shutil.rmtree(chat_dir, ignore_errors=True)
             raise
+
+    def set_verify(self, chat_id: str, record: dict) -> dict:
+        """Record a "Verify in the browser" chat's job (DESIGN §44): {repo, job, branch, preview}, written by the core
+        through the server endpoint, never by a model. Its browsing turns' grant is built from it (the job's preview
+        in its sibling namespace); the receipt goes to the job's criteria at the end of each turn. Only a browsing
+        chat takes it."""
+        with self._lock:
+            chat = self._load(chat_id)
+            if not isinstance(chat.get("browser"), list):
+                raise ValueError("Verify in the browser needs a browsing persona (its file names the browser)")
+            problem = verify_route_problem(self.config, record, str(chat.get("driver") or ""),
+                                           self._route_builds(chat))
+            if problem:
+                raise ValueError(problem)
+            chat["verify"] = {key: record.get(key) for key in ("repo", "job", "branch", "preview")}
+            chat["title"] = chat.get("title") or f"Verify {record.get('repo')}/{record.get('job')} in the browser"
+            return self._save(chat)
 
     def chat_send(self, chat_id: str, text: str, origin: str = "user", wake_id: str | None = None,
                   wake_item: str | None = None) -> dict:
@@ -693,6 +754,88 @@ class ChatManager:
 
     # -- internals ----------------------------------------------------------------
 
+    def _browsing_checks(self, agent: AgentDef, persona: Any, repo_cfg: Any, browsed: bool = False) -> bool:
+        """Whether agent browses (BROWSER_AND_CODEX.md §2.10, DESIGN §43); ValueError when its chat may not start or
+        go on: a browsing chat has no repository, its agent has nothing else (rule 2), browsing must be on, and an
+        Open WebUI persona's preset carries no writer and no transmitter (rule 7). Run at chat start and on every
+        turn. browsed: the chat browsed before (chat.json's browser list). It stays a browsing chat, without a
+        browser, when its agent's file no longer names one: its session holds page text, so rules 2 and 7 still
+        hold (False is returned: the turn gets no grant)."""
+        from .browser import runs as browser_runs
+
+        servers = self.config.mcp_servers()
+        if not browser_runs.browses(agent, servers):
+            if browsed:
+                browser_runs.check_agent(agent, servers, browsed=True)
+                if persona is not None and getattr(persona, "kind", None) == "openwebui":
+                    self._preset_check(persona)
+            return False
+        if repo_cfg is not None:
+            raise ValueError(f"agent {agent.name!r} browses: a browsing chat has no repository (leave out the repo)")
+        browser_runs.check_agent(agent, servers)
+        if not browser_runs.settings(self.config)["enabled"]:
+            raise ValueError("the browser is off (browser.enabled is false): turn it on in Settings, with the "
+                             "harness's own runtime set up (DESIGN §43)")
+        if persona is not None and getattr(persona, "kind", None) == "openwebui":
+            self._preset_check(persona)
+        return True
+
+    def _browsing_route(self, agent: AgentDef, persona: Any, driver: str, model: Any = None) -> None:
+        """Where a browsing chat may run (DESIGN §43), at chat start and on every turn; ValueError otherwise. Only on
+        the builtin harness: the browser is an MCP server a CLI driver never starts, so such a turn would run on the
+        CLI's own tools without it. And through Open WebUI only as an Open WebUI persona, whose own preset rule 7
+        checks (§2.10 rule 7, K13): any other workspace model there is never read, and its filters, memory or tools
+        would see the page text. model: the turn's (None: the driver alone)."""
+        from . import personas
+
+        try:
+            kind = self.config.driver(driver).type
+        except (KeyError, ValueError) as exc:
+            raise ValueError(f"agent {agent.name!r} browses: driver {driver!r}: "
+                             f"{exc.args[0] if exc.args else exc}") from None
+        if kind != "builtin":
+            raise ValueError(f"agent {agent.name!r} browses: a browsing chat runs on the builtin harness only (its "
+                             f"driver {driver} is {kind}); the browser is an MCP server, which a CLI driver never "
+                             f"starts")
+        provider = getattr(model, "provider", None)
+        if getattr(provider, "kind", None) == personas.OPENWEBUI_KIND and \
+                getattr(persona, "kind", None) != personas.OPENWEBUI_KIND:
+            raise ValueError(f"agent {agent.name!r} browses through Open WebUI (models.{model.key}) without being a "
+                             f"browsing persona: a browsing chat reaches Open WebUI only as an Open WebUI persona "
+                             f"bound to its checked preset (BROWSER_AND_CODEX.md §2.10 rule 7: no writer, no "
+                             f"transmitter)")
+
+    def _route_builds(self, chat: dict) -> list[Any]:
+        """Every build a turn of chat's route may be placed on (routing.place_live): its model's builds, then its
+        overflow's. ValueError when the model no longer resolves."""
+        from .routing import config_builds, overflow_key
+
+        try:
+            model = Route(str(chat.get("driver") or ""), str(chat.get("model") or ""), {}, None).model_config(
+                self.config)
+            builds = list(config_builds(self.config, model))
+            key = overflow_key(self.config, model)
+            if key:
+                builds += config_builds(self.config, self.config.model(key))
+        except KeyError as exc:
+            raise ValueError(f"the chat's model does not resolve: {exc.args[0] if exc.args else exc}") from None
+        return builds
+
+    def _preset_check(self, persona: Any) -> None:
+        from . import personas
+        from .browser import preset as browser_preset
+        from .browser import runs as browser_runs
+
+        model_id = (persona.binding or {}).get("model")
+        try:
+            api = personas.client(self.config, persona)
+        except (KeyError, personas.OpenWebUIError) as exc:
+            raise ValueError(f"not browsing: {exc.args[0] if exc.args else exc}") from None
+        found = browser_preset.check(api, str(model_id), local_ids=personas.local_model_ids(self.config),
+                                     checked_by_hand=browser_runs.settings(self.config)["preset_checked_by_hand"])
+        if not found["ok"]:
+            raise ValueError(browser_preset.reason(found, str(model_id)))
+
     def _turn(self, chat_id: str, text: str, cancel: threading.Event, wake: dict | None = None) -> None:
         cost: tuple[float | None, bool] | None = None
         switch: dict = {}
@@ -787,7 +930,14 @@ class ChatManager:
         else:
             agent = load_agent(self.config, repo_path, chat["agent"])
             _refuse_new_persona(agent)
+        browsed = isinstance(chat.get("browser"), list)   # it stays a browsing chat (§43): the ingest reads the same
+        browsing = self._browsing_checks(agent, found, self.config.repo(chat["repo"]) if chat.get("repo") else None,
+                                         browsed=browsed)
+        browser_chat = browsing or browsed   # browsing: this turn gets a grant; browser_chat: the rules hold
         route = Route(chat["driver"], chat["model"], chat.get("extra_body") or {}, chat.get("reason"))
+        if browser_chat:   # an edited chat.json or agents.* driver never takes a browsing turn off the builtin harness
+            self._browsing_route(agent, found, route.driver)
+        refuse_codex_worker(self.config, route.driver)   # chat.json can be edited, and the config can change
         chat_dir = self.root / chat["id"]
         cwd = Path(chat["cwd"])
         log_path = log_path or next_log_path(chat_dir / "logs", "turn")
@@ -804,7 +954,8 @@ class ChatManager:
                 emit("log", {"level": level, "message": message})
             emit("persona.turn", event)
             items = self._operator_items(found, {**record, **(update or {})}, emit)
-        else:
+        elif not browser_chat:   # a browsing chat has no Items tool (§2.10 rule 2): what it would write is untrusted,
+            # and the ingest never applies a browsing chat's journal, so a chat that browsed never gets one either
             def changed(ledger: Any) -> None:
                 self.bus.publish("items.updated", {"ref": ledger.scope.ref, "summary": ledger.summary(),
                                                    "changed": list(ledger.changed), "chat": chat["id"]},
@@ -822,10 +973,17 @@ class ChatManager:
             return AgentRun(ok=False, error="cancelled while waiting for a slot"), None, kept
         model, info, notes, release = placed
         try:
+            # a "Verify in the browser" turn reads a Codex branch's preview: where it was placed, not only where
+            # it was routed, stays on this machine (an overflow can be hosted)
+            problem = verify_route_problem(self.config, chat.get("verify"), route.driver, [model])
+            if problem:
+                raise ValueError(problem)
             if found is not None:   # neither a placement nor an edited route takes a persona elsewhere
                 personas.check_driver(self.config, found, route.driver)
                 personas.check_model(self.config, found, model)
                 personas.check_offline(self.config, found)
+            if browser_chat:   # the model the turn really runs on (a placement or an overflow may differ)
+                self._browsing_route(agent, found, route.driver, model)
             checkin = wake is not None
             ctx = agent_context(
                 self.config, repo_path, agent, model, job=chat, cwd=cwd,
@@ -843,13 +1001,65 @@ class ChatManager:
             if switch.get("handover"):
                 info = {**info, "handover": True}
             started = time.time()
-            result = run_agent(self.runner_factory, self.config, route, ctx, prompt, session, info)
+            grant = None
+            if browsing and wake is None:   # the grant for this turn's session lock (§2.6): code, never the model
+                from .browser import runs as browser_runs
+
+                grant = browser_runs.begin(self.config, agent, kind="chat", ref=f"chat:{chat['id']}",
+                                           run=log_path.stem, verify=chat.get("verify"))
+                grant.locked_by["turn"] = self._transcript_turn(chat)
+                ctx.browser_grant = grant.path
+                emit("browser.grant", {"grant": grant.id, "profile": grant.profile})
+                with self._lock:   # the GUI's Revoke button names this grant while the turn runs
+                    with contextlib.suppress(OSError, KeyError, ValueError):
+                        current = self._load(chat["id"])
+                        current["browser_active"] = {"grant": grant.id, "profile": grant.profile,
+                                                     "since": utc_now()}
+                        self._save(current)
+            try:
+                result = run_agent(self.runner_factory, self.config, route, ctx, prompt, session, info)
+            finally:
+                if grant is not None:
+                    self._browser_done(chat["id"], grant, log_path.stem, emit)
             if found is not None and found.kind == "openwebui":   # an Open WebUI-backed persona (§33)
                 self._persona_window(emit, found.name, model, started, result, update)
         finally:
             release()
         switch.pop("handover", None)
         return result, run_cost_of(ctx, result), {**switch, "model": now, "family": model_family(model), **kept}
+
+    def _browser_done(self, chat_id: str, grant: Any, run: str, emit: Emit) -> None:
+        """A browsing turn ended: the grant ended, the receipt written, a login_required item opened, and the turn's
+        browser record added to chat.json (§2.13)."""
+        from .browser import runs as browser_runs
+
+        try:
+            record = browser_runs.finish(self.config.data_dir, grant,
+                                         open_item=getattr(self.factory, "system_item", None))
+        except (OSError, ValueError) as exc:
+            record = {"grant": grant.id, "error": str(exc)}
+        record = {**(record or {}), "turn_run": run, "turn": grant.locked_by.get("turn")}
+        with contextlib.suppress(OSError, ValueError):   # the transcript's rows (§43), kept with the record
+            record["rows"] = browser_runs.chat_rows(self.config.data_dir, record)[:200]
+        emit("browser.receipt", {key: record.get(key) for key in ("grant", "session_lock", "actions", "commits",
+                                                                  "unknown", "reclassified")})
+        verify = None
+        with self._lock:
+            with contextlib.suppress(OSError, KeyError, ValueError):
+                chat = self._load(chat_id)
+                chat.setdefault("browser", []).append(record)
+                chat["browser"] = chat["browser"][-200:]
+                chat.pop("browser_active", None)
+                verify = chat.get("verify") if isinstance(chat.get("verify"), dict) else None
+                self._save(chat)
+        attach = getattr(self.factory, "attach_browser_receipt", None)
+        if verify and attach is not None:   # the core adds it to the job's criteria; the chat never writes there
+            try:
+                added = attach(str(verify.get("repo")), str(verify.get("job")), record)
+                emit("log", {"level": "info", "message": f"browser receipt added beside {len(added or [])} "
+                                                          f"criteria of {verify.get('repo')}/{verify.get('job')}"})
+            except Exception as exc:  # noqa: BLE001 - the turn ended either way
+                emit("log", {"level": "warn", "message": f"the browser receipt could not reach the job: {exc}"})
 
     def _transcript_turn(self, chat: dict) -> int:
         """The turn the transcript (_messages) gives the message and reply of the turn about to run: one past the
@@ -1024,14 +1234,22 @@ class ChatManager:
         try:
             with self._chat_items(chat) as ledger:
                 try:
-                    notices = tracker.apply_journal(ledger, self.root / chat["id"] / JOURNAL_FILE, agent)
+                    journal = self.root / chat["id"] / JOURNAL_FILE
+                    if isinstance(chat.get("browser"), list):   # a browsing chat has no Items tool: never applied
+                        skipped = tracker.skip_journal(ledger, journal, agent)
+                        notices = [f"{skipped} journal line(s) of a browsing chat were not applied"] if skipped else []
+                    else:
+                        notices = tracker.apply_journal(ledger, journal, agent)
                     if hk.sweep != "off" and result.final_text:
                         suppress = self.factory.store.sweep_suppressed(chat["repo"]) if chat.get("repo") and hasattr(
                             self.factory, "store") else set()
                         turns = [entry["turn"] for entry in self._messages(chat) if entry.get("turn")]
+                        sweep = self._persona_sweep(chat)
+                        if isinstance(chat.get("browser"), list):   # a browsing chat: every suggestion untrusted
+                            sweep["taint"] = sorted({*sweep.get("taint", []), "untrusted"})
                         tracker.apply_sweep(ledger, [("reply", result.final_text)], agent,
                                             limit=hk.max_proposals_per_run, suppress=suppress, run=run,
-                                            turn=turns[-1] if turns else None, **self._persona_sweep(chat))
+                                            turn=turns[-1] if turns else None, **sweep)
                 except tracker.ItemsFull as exc:
                     notices = [str(exc)]
                 notices += self._move_later(chat, ledger)

@@ -13,7 +13,7 @@ from tests.test_settings import TOKEN, SettingsTestCase
 
 PRESETS = ["anthropic", "deepseek", "gpt-oss", "hybrid", "local-first", "mixed", "nanogpt", "nanogpt-value", "ollama",
            "strata"]   # routing
-ADD_ONS = ["rea"]   # presets that add sections (MCP servers) and route nothing
+ADD_ONS = ["rea", "browser"]   # presets that add sections (MCP servers) and route nothing
 PROVIDER_ADD_ONS = ["openwebui"]   # presets that add a provider and its model entries and route nothing (DESIGN §33)
 FACTORY_AGENTS = ["spec-writer", "builder", "approver", "reviewer-security", "reviewer-ux", "reviewer-ui",
                   "reviewer-code", "lead", "coder", "repo-scout"]

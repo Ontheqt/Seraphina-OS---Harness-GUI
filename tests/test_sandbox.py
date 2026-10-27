@@ -328,7 +328,10 @@ class PgidReuseTest(SandboxTestCase):
         (pgid,) = box._groups
         if not wait_only_leader_left(pgid):
             self.skipTest("this container's init does not reap orphaned zombies promptly")
-        Path("/proc/sys/kernel/ns_last_pid").write_text(str(pgid - 1))   # the next new pid would be pgid
+        try:
+            Path("/proc/sys/kernel/ns_last_pid").write_text(str(pgid - 1))   # the next new pid would be pgid
+        except PermissionError:  # the file looks writable, but steering pids needs CAP_CHECKPOINT_RESTORE
+            self.skipTest("needs root to steer pid allocation")
         victim = subprocess.Popen(["sleep", "30"], start_new_session=True)
         self.addCleanup(victim.wait)
         self.addCleanup(victim.kill)

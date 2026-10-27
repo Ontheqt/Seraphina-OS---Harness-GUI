@@ -1,0 +1,2 @@
+/usr/bin/ping cap_net_raw=ep
+/usr/local/bin/backup-reader cap_dac_read_search=ep

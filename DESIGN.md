@@ -66,6 +66,9 @@ bin/sf-snapraid                  the disk protection reader: the root helper the
 bin/sf-snapraidd                 Seraphina's link to the SnapRAID Daemon (serve: socket-activated, it holds
                                  the daemon's login) and the daemon's report forwarder (notify) (§41)
 systemd/seraphina-snapraidd.socket, seraphina-snapraidd@.service   the link's units (§41)
+bin/sf-system                    Seraphina's system access: the root helper of Your server (one JSON request on
+                                 stdin; read verbs, logs and the root enumeration, a refresh of the package lists
+                                 and kept names when allowed; setup, remove, explain for the owner's sudo; §42)
 install.sh                       Ubuntu installer (symlinks, config init, optional systemd user unit)
 scripts/package.py               builds the release zip from `git ls-files` and refuses any file with a
                                  denylist term, a secret or an owner path (see its docstring); VERSION
@@ -86,7 +89,8 @@ docs/seraphina/                  the Seraphina OS Harness designs: WAKE_AND_MESS
                                  (a design with the operator's decisions of 22 Oct 2026; nothing built yet);
                                  BACKUPS_SNAPRAID.md: SnapRAID disk protection through the SnapRAID Daemon,
                                  with P1's reader as a read-only fallback (design, revision 2);
-                                 YOUR_SERVER.md: Apps launcher without Cosmos, system helper, root access (design)
+                                 YOUR_SERVER.md: Apps launcher without Cosmos, system helper, root access (design;
+                                 its phases P1a to P1c are built, §42)
 docs/model-factory/              the Model Factory design (MODEL_FACTORY.md, catalog.json) and LINEAGE.md, the
                                  persona lineage line (a persona's corpus imprinted onto a pristine base, for
                                  her decision); designs only, nothing built
@@ -147,6 +151,13 @@ swfactory/
                                  facts cache, the light, findings, notices, copy blocks, doctor lines (§41)
   snapraidd.py                   the SnapRAID Daemon route: /metrics, the link's client, the poll, restarts,
                                  runs and reports, approvals and their outcomes, the daemon's light (§41)
+  yourserver.py                  Your server (P1a-P1c): the host strip, cgroup numbers, grouping, addresses and the
+                                 app record with its hash chain, probes, lights, update kinds, kept versions, the
+                                 Beszel watch, receipts, logs, the root page's state, setup blocks, doctor (§42)
+  serverchecks.py                Your server's Check buttons 1-7: their parsers and results (§42)
+  rootaccess.py                  who can act as root: the owner's marks and the page (view only; §42)
+  helpers.py                     HelperClient: `sudo -n <helper>` with one JSON line each way (§42)
+  qr.py                          the QR encoder for app addresses (byte mode, level M, versions 1-10; §42)
   plainhttp.py                   one plain HTTP request with exactly the caller's headers, no redirects, no
                                  proxy; Bearer tokens read from a file (§37, §38)
   server.py                      HTTP server: JSON API, SSE, auth, static files
@@ -177,7 +188,11 @@ tests/                           unittest suites + mocks (mock_llm.py, mock_mcp_
                                  test_snapraid_lab.py runs the reader against a real 13.0 on loop disks,
                                  only with SF_SNAPRAID_LAB=1 (§41); mock_snapraidd.py is a SnapRAID Daemon
                                  2.1 built from fixtures/snapraidd21/ (recorded exchanges, placeholder
-                                 paths), snapraidd_rig.py runs the link in a temporary tree (§41)
+                                 paths), snapraidd_rig.py runs the link in a temporary tree (§41);
+                                 fixtures/sfsystem/ and sfsystem_rig.py: a placeholder server (Docker 29 state
+                                 files, cgroups, Tailscale state with planted keys, a gateway's nginx config with
+                                 planted secrets, the checks' tools and the root page's files) that sf-system reads
+                                 in a temporary tree (§42)
 ```
 
 Tests: `python3 -m unittest discover -s tests -t .` from repo root. Every module
@@ -1685,6 +1700,7 @@ routes `/api/hooks/*` take only their own tokens, never the master token (§34).
 | GET, POST | `/api/drift-sources`, `/api/drift-sources/<source>/check`, `/api/drift-sources/<source>/manifest` | | drift sources: their status, a check now, the role manifest (§38); never a token |
 | GET, POST | `/api/snapraid`, `/api/snapraid/refresh`, `/api/snapraid/jobs`, `/api/snapraid/jobs/<J-n>`, `/api/snapraid/guard/<G-n>`, `/api/snapraid/files`, `/api/snapraid/setup`, `/api/snapraid/setup/stage\|check\|link-stage\|link-check` | refresh `{what: status\|health\|diff, wait?}`; jobs `?log=1&offset=N`; guard and files `?disk=&kind=&dir=&q=&offset=` | disk protection with SnapRAID (§41): the card (with the SnapRAID Daemon's facts on its route), a check now (202), the reader's runs, a guard report and a page of its change list, the last good run's file index, the setup copy blocks for the reader and the link; master token only |
 | GET, POST | `/api/snapraid/actions`, `/api/snapraid/actions/<A-n>`, `/api/snapraid/actions/<A-n>/approve`, `/api/snapraid/actions/<A-n>/cancel`, `/api/snapraid/review`, `/api/snapraid/fixes`, `/api/snapraid/runs`, `/api/snapraid/runs/<number>` | actions `{action: stop\|hold_off\|maintenance\|accept\|undelete\|heal, paths?, enabled?}` (201, a preview); approve `{shown_sha256, typed?}` (409 `{error: "changed"}`); review `?disk=&change=&q=&offset=` | the SnapRAID Daemon route (§41): approvals, one send each, their outcomes and runs; the last scan's change list and an undelete's results, live through the link; the daemon's runs and one step's messages; master token only |
+| GET, POST | `/api/yourserver`, `/api/yourserver/refresh`, `/api/yourserver/apps`, `/api/yourserver/apps/<a-id>`, `/api/yourserver/apps/<a-id>/address`, `/api/yourserver/apps/<a-id>/qr`, `/api/yourserver/apps/<a-id>/ask`, `/api/yourserver/apps/<a-id>/logs?member=&lines=&before=`, `/api/yourserver/review`, `/api/yourserver/groups`, `/api/yourserver/beszel`, `/api/yourserver/setup`, `/api/yourserver/setup/stage\|check`, `/api/yourserver/checks`, `/api/yourserver/checks/<check>`, `/api/yourserver/keep`, `/api/yourserver/jobs`, `/api/yourserver/jobs/<J-n>`, `/api/yourserver/receipts?cursor=`, `/api/yourserver/receipts/<R-n>`, `/api/yourserver/root`, `/api/yourserver/root/check`, `/api/yourserver/root/<row>/mark` | app `{name?, icon?, hidden?, note?, order?, phone_name?, probe?, expect?, main_member?, maintenance?}`; address `{action: confirm\|reject\|set\|home_only, candidate?, url?}`; ask `{question}`; review `{rows: [{app, name?, url?, home_only?, expect?, old_copy?}], tailnet?}`; groups `{action: merge\|split\|move\|retire\|keep\|part\|undo, ...}`; stage `{classes?}`; check `{refresh?, mount?}`; mark `{known, note?}` | Your server, P1a to P1c (§42): it only looks, but for the list of updates refreshed and kept names when the owner allows them. The host strip, the cards, one app, the review list, the QR code of a confirmed Tailscale address, Ask about this app (a local model), the owner's corrections, the one-paste setup, the Check buttons, the keep pass, the records of changes, one app's logs and the root page (both only under P1c's preconditions); master token only, none an agent's |
 | GET | `/`, `/app.js`, `/style.css`, `/views/<name>.js` | | static from `swfactory/web/` (`Cache-Control: no-store`); below it only `views/*.js`, the GUI's view modules (never a symlink, nor a `views` folder that is one) |
 
 `Factory` interface used by the server:
@@ -2789,7 +2805,7 @@ factory personas check [<name>] [--json]   (server) the drift check, now (a time
 factory personas before-import <name> [--attach ID ...] [--detach ID ...] [--by owner|operator] [--json]   (server) §33
 factory personas ledger <name> [--show SHA256 | --diff OLDER NEWER | --restore SHA256 [--file NAME] | --erase SHA256] [--json]   (server) §35
 factory estimate <repo> [--kind feature|plan] [--profile P] [--preset NAME] [--json]   offline: Factory.estimate (§23)
-factory snapshot --out DIR [--sudo]     read-only server inventory: snapshot.json + overview.md (§28)
+factory snapshot --out DIR [--sudo|--helper]   read-only server inventory: snapshot.json + overview.md (§28)
 factory capture --since WHEN [--until WHEN] [--container NAME ...] --out DIR [--json]   read-only, offline:
                                         the run logs' diagnostic events and containers' logs for a window (§39)
 factory drift [--json] | drift check <name> [--json]   (server) drift sources: status, or a check now (§38)
@@ -2808,6 +2824,13 @@ factory snapraid [--json] | snapraid check-now [status|health|diff] | snapraid j
          | snapraid helper install|check|remove | snapraid link install|check|remove
                                         disk protection (§41; server): the card, a read now, the reader's runs,
                                         a guard report (counts only), the copy blocks; no action command
+factory apps [--json] | apps show <a-id> | apps qr <a-id>
+                                        Your server's apps (§42; server): lights, addresses, a QR code drawn in
+                                        the terminal; it only reads
+factory system [--json] | system host | system helper stage|check|remove | system check <check> | system root
+         | system receipts [<R-n>]
+                                        the host strip and Seraphina's system access, its one paste, one Check, who
+                                        can act as root, the records of changes (§42; server)
 sf-items add "<title>" [--detail D] [--scope system|repo:<repo>] [--blocking]   outside agents (§32), with
 sf-items list [--scope system|followups] [--status S] [--json]                   an agent token in
 sf-items update <ref> doing|done|defer [--reason R] [--commit SHA]               SF_ITEMS_TOKEN (and
@@ -3550,8 +3573,10 @@ not the route's first build.
   claim (`custody.Claims`, passed to `choose_build`) asks after the build's
   other checks, and a denial, an error, a timeout or an unreachable register
   passes it over like a build that does not answer, so the run follows the
-  overflow path. A HELD answer (someone else holds the card) first waits, for
-  at most the provider's `overflow_after_seconds`; a FULL answer (the card
+  overflow path. A HELD answer (someone else holds the card) sends the run at
+  once to the next build that can take it now (another card); only when none
+  can does it wait, for at most the provider's `overflow_after_seconds`,
+  before the overflow; a FULL answer (the card
   cannot fit the model now) passes the build over at once, so list another
   card or a smaller build in `builds` for FULL to go to (§37). The escalation
   rungs' look-ahead asks for no lease. The lease
@@ -4405,7 +4430,8 @@ the real server's first blueprint, so v2 is designed against what is actually
 there rather than the plan's assumptions. v0 of it ships now (below).
 
 ### Capture format v0 (`swfactory/blueprint/`, `factory snapshot`)
-`factory snapshot --out DIR [--sudo]` (no config or server needed) runs
+`factory snapshot --out DIR [--sudo|--helper]` (no config or server needed;
+`--helper` asks Seraphina's system access instead of sudo, §42) runs
 `blueprint.collect.collect(runner=SubprocessRunner(), sudo=False)` and
 `write_snapshot(snapshot, DIR)`: `DIR` is created 0700, `snapshot.json`
 (indent 1) and `overview.md` are written 0600 and replaced atomically; stdout
@@ -4950,7 +4976,7 @@ item:
 | a chat's open items at hand-off (not a pending wake's check-in) | `Factory.submit(..., items=[...])`: checked before the job is created, written before it is announced and queued | the job's items (owner builder, verifier approver, must-do as marked, `links.chat`) |
 | `sf-items` and its MCP server, or the token routes (outside agents) | any time, with an agent token | items in the system scope or a repo's follow-ups, owner `agent:<token name>`, verifier human; a commitment, gap, risk or note (the scope's default kind, `followup` in the follow-ups), never a contract kind (400) |
 | a persona (Wake & Messages, through `Factory.open_persona_item`) | its own wake or open_item | a system item: its own (owner `persona:<name>`, open; verifier `code` for a wake) or a suggestion for the owner (`for: owner`: proposed, owner human); from an untrusted turn both are proposed, a for-me one staying the persona's (Wake & Messages §2.6); with its taint; never served to an agent token |
-| an operator's change receipts (§36) | a scan of `operator.receipts_dir` | one `gap` suggestion per not-verified claim on the server (owner `persona:<name>` of the operator its newest report is attributed to, a person when none; verifier human; taint private, plus untrusted when the harness's own user may write the file; `links.receipt`, `source.type: receipt`), kept one across rescans and attribution changes; a later receipt that reports the check verified makes it done (receipt evidence, waiting for a person's check); never counted in the proposal cap |
+| an operator's change receipts (§36) | a scan of `operator.receipts_dir` | one `gap` suggestion per not-verified claim on the server (owner `persona:<name>` of the operator its newest report is attributed to, a person when none; verifier human; taint private, plus untrusted when the harness's own user may write the file or the receipt's actor does not name her; `links.receipt`, `source.type: receipt`), kept one across rescans and attribution changes; a later receipt that reports the check verified makes it done (receipt evidence, waiting for a person's check); never counted in the proposal cap |
 | a person (API) | any time | any kind, owner and blocking as chosen, in any scope including the system scope |
 
 Taking the same file in again adds nothing (dedupe by source and text hash), so
@@ -6882,7 +6908,7 @@ the first diff covering every version-stamp change since the import.
 | | Config | Code |
 | - | ------ | ---- |
 | a | `wakes.personas.<n>.memory.curation`: `owner` (the default: the owner edits the summary and the persona cannot write it) \| `self` (the persona writes its own summary with no review gate; the owner reads every version and rolls back) | `PersonaStore.set_memory` records every write in `memory-writes.jsonl` (time, sha256 before and after, by, reason, wake); `memory_versions`, `memory_version`, `rollback_memory`; `update_memory` (never from an `untrusted` turn; written on top of the version the turn read, refused when the owner edited meanwhile); a consolidation is accepted only on top of its `base_version` (409 otherwise), and an owner's edit, a rollback or the persona's own update marks a pending proposal `stale` |
-| b | `memory.external {folder, sqlite: {path, query}, outbox, taint, ledger}`; `wakes.external_memory_roots` | `read_external_memory(spec, limit, roots=, denied=, record=, problems=)` (the query is the persona's own: nothing assumes a table or a column; the paths checked again at read time; the folder reached from its allowlisted root one component at a time with `O_NOFOLLOW`, each file opened with `O_NOFOLLOW` and checked with `fstat`: regular, one link, a UTF-8 name; one read opens at most `EXTERNAL_FILES` (100) files and takes at most `EXTERNAL_READ_BYTES` (1 MiB) in all, 64 KB of one file, whatever they hold; SQLite a regular non-symlink file just before `mode=ro`, `query_only`, an authorizer that allows reading only, one `SELECT`; a database that cannot be read, such as a query naming a column her schema does not have, adds a line written by code to `problems`, which the wake shows: "Your database could not be read just now (the query failed); nothing from it is in this turn." An aborted read is never an empty memory); never written, and never opened up for the harness: `sqlite.path` should name a read-only snapshot her own tools publish, because an ACL or a looser mode on her live store or its folder can break that store (with no snapshot, leave `sqlite` out and only the folder is read; this is the owner's configuration: the code cannot tell a snapshot from a live store); `remember` → `propose_memory` → `append_outbox` (the same walk and checks, `O_NONBLOCK`, never a symlink, a FIFO or a hard link, no folder created or chmodded there; `ExternalPathError` refuses the action and the audit says `outbox.refused`); gate check 4 and the doctor check the paths, and the doctor runs the query once, read-only, saying only whether it works and how many rows it returns (`persona <name> database`; a file it cannot open adds `doctor.SQLITE_SNAPSHOT_ADVICE`: point `sqlite.path` at such a snapshot or leave `sqlite` out, never add an ACL or loosen the mode on her live store); with external memory there is no harness summary, so `update_memory` is neither offered nor applied |
+| b | `memory.external {folder, sqlite: {path, query}, outbox, taint, ledger, max_files, read_mib, ledger_mib, ledger_copies}`; `wakes.external_memory_roots` | `read_external_memory(spec, limit, roots=, denied=, record=, problems=)` (the query is the persona's own: nothing assumes a table or a column; the paths checked again at read time; the folder reached from its allowlisted root one component at a time with `O_NOFOLLOW`, each file opened with `O_NOFOLLOW` and checked with `fstat`: regular, one link, a UTF-8 name; one read opens at most `max_files` files (default `EXTERNAL_FILES`, 200; 1 to 2000) and takes at most `read_mib` in all (default `EXTERNAL_READ_BYTES`, 8 MiB; 1 to 64), 64 KB of one file, whatever they hold (`personas.external_caps`; the operator's ruling of 26 Oct: these caps are settings, not constants. Her folder holds 96 notes, about one more a day, the largest 22,513 bytes: 200 of that size are 4.3 MiB, so the old 1 MiB would have cut her reads short); the walk also ends when `turn.memory_chars` is filled; SQLite a regular non-symlink file just before `mode=ro`, `query_only`, an authorizer that allows reading only, one `SELECT`; a database that cannot be read, such as a query naming a column her schema does not have, adds a line written by code to `problems`, which the wake shows: "Your database could not be read just now (the query failed); nothing from it is in this turn." An aborted read is never an empty memory); never written, and never opened up for the harness: `sqlite.path` should name a read-only snapshot her own tools publish, because an ACL or a looser mode on her live store or its folder can break that store (with no snapshot, leave `sqlite` out and only the folder is read; this is the owner's configuration: the code cannot tell a snapshot from a live store); `remember` → `propose_memory` → `append_outbox` (the same walk and checks, `O_NONBLOCK`, never a symlink, a FIFO or a hard link, no folder created or chmodded there; `ExternalPathError` refuses the action and the audit says `outbox.refused`); gate check 4 and the doctor check the paths, and the doctor runs the query once, read-only, saying only whether it works and how many rows it returns (`persona <name> database`; a file it cannot open adds `doctor.SQLITE_SNAPSHOT_ADVICE`: point `sqlite.path` at such a snapshot or leave `sqlite` out, never add an ACL or loosen the mode on her live store); with external memory there is no harness summary, so `update_memory` is neither offered nor applied |
 | c | `wake.tools`: `none` \| `read_only`; `wake.read_paths`, `wake.commands` (missing or null: `WAKE_COMMANDS`, `git status` and `git log`; `[]`: no commands at all; `gh` refused by the settings) | the read-only toolset (Read, Glob, Grep, RunCheck with no network, Jobs; `ToolPolicy.denied` = the data dir and every H1 mask, except `operator.receipts_dir` in the operator's own wake (`config.sandbox_masks(config, receipts=False)`; her ruling, §36: her wake may read her change receipts when `wake.read_paths` holds them, RunCheck's sandbox still masks them, and every other persona's wake is refused there); `wakes.wake_commands(cfg)` is what RunCheck may run, and with none the Toolset offers no RunCheck and sends no description of it, and the preamble is `READ_ONLY_NO_COMMANDS`: a wake reads files and harness status, and with `wake.commands` set to `[]` it runs no commands; the persona row's `settings.commands` shows the list; with the read ledger on, no tool reads her memory unrecorded: `ToolPolicy.recorded` holds `memory.external`'s folder and database (with SQLite's `-wal`, `-shm` and `-journal` files beside it), a Read there is recorded first (`via: "Read"`) and refused when it cannot be, Grep refuses them, Glob lists names only, and RunCheck's bwrap sandbox masks them; without bwrap no RunCheck is offered beside the ledger); a turn that used a tool is `untrusted`; gate check 4 needs bwrap or the acknowledgement; doctor `bubblewrap` |
 | d | | `decline` in the menu for requested wakes only; `Factory.record_decline` (a verified decision item, never a failure); audit `decline` with the reason's sha256; the reason answered in the thread when asked |
 | e | `reimport_decider`: `owner` \| `persona`; `agents.<n>.offline` | `COPY_LABEL` in every wake block of an imported copy; labelled thread replies and offline chat replies; `reimport_stage` / `reimport_decide`, never automatic; `personas.check_offline` |
@@ -6932,9 +6958,16 @@ and the copy differs from its name's hash). A version is listed with `kept:
 false` and `why` when it is not UTF-8, has no text (empty or only whitespace:
 nothing to restore) or does not fit.
 
-**Caps.** `EXTERNAL_LEDGER_BYTES` (32 MiB per persona) covers the copies and
-the manifests together, and `EXTERNAL_LEDGER_COPIES` (2000) the number of
-copies. A new version is never refused while room can be made: the oldest
+**Caps.** Two settings of `memory.external`, per persona (the operator's
+ruling: settings, not constants; `personas.external_caps` reads them, and a
+value the settings would refuse counts as unset): `ledger_mib` (default
+`EXTERNAL_LEDGER_BYTES`, 32 MiB; 1 to 1024) covers the copies and the manifests
+together, and `ledger_copies` (default `EXTERNAL_LEDGER_COPIES`, 2000; 10 to
+100000) the number of copies. `PersonaStore.external_read(name, wake=, via=,
+spec=)` takes her `memory.external` and the read keeps to its caps; the
+listing shows the caps set now (`cap_bytes`, `cap_copies`, `max_files`,
+`read_bytes`) beside what is kept (`kept_bytes`, `kept_copies`), and so do her
+Memory tab, `factory personas ledger` and the doctor. A new version is never refused while room can be made: the oldest
 copies go first, every older version of a file before the newest version of any
 file, the least recently read first, and never one the current read holds, so
 the newest version of each file (even of a note she has since deleted) is kept
@@ -6945,8 +6978,8 @@ three quarters of it, with every copy no remaining manifest names. Each of
 these is counted in `external-ledger.json` (`evicted`, `trimmed`, `not_kept`,
 each with its time), shown as `caps` in the listing, and the doctor warns
 ("persona <name> read ledger: at its cap ... The oldest rollbacks are gone").
-The reader's own bounds (`EXTERNAL_FILES`, `EXTERNAL_READ_BYTES`, decision b)
-keep one read far below the cap.
+The reader's own bounds (`max_files`, `read_mib`, decision b) keep one read
+below the cap (8 MiB of 32 by default).
 
 **Every read, by any tool.** A wake's own tools never read her memory around
 the ledger (decision c): a Read of a file under `memory.external`'s folder or
@@ -6959,17 +6992,53 @@ RunCheck.
 
 `PersonaStore.prune` (retention, `wakes.retention.text_days`) and
 `forget_before` remove the older manifests and every copy no remaining manifest
-names. `external_versions`, `external_version`, `external_diff` and
+names (the run logs stay for `run_log_days`; an erase still finds a version in
+them by its blocks, below). `external_versions`, `external_version`, `external_diff` and
 `external_restore` serve the routes and `factory personas ledger`, each reading
 the manifests once; a restore is prepared, never applied (`RESTORE_APPLY`: the
 persona's own tools or the owner write it back), is refused for a truncated
 version, and warns about a redacted one. **Erase one version**
 (`external_erase`, the owner only: `POST …/external/erase`, `factory personas
-ledger --erase`): for a detail whose keeping is no longer agreed. Its copy is
-deleted, every manifest entry of it keeps only `{sha256, erased}` (no name, size
-or time), `external-ledger.json` lists it, and the ledger never keeps it again,
-however often it is read (her store is not touched: while a file there holds
-the text, wakes read it). The audit line `external.erased` holds the sha256
+ledger --erase`): for a detail whose keeping is no longer agreed. The
+operator's condition (26 Oct) is that the erase really deletes, verified where
+it acts: its copy file is unlinked (never marked), every manifest entry of it
+keeps only `{sha256, erased}` (no name, size or time), `external-ledger.json`
+lists it, and the ledger never keeps it again, however often it is read (her
+store is not touched: while a file there holds the text, wakes read it). The
+turn's prompt held the note too, so every run log (`logs/NN-wake.jsonl`) that
+holds it loses it (`erase_from_run_log`: its data block becomes `ERASED_BLOCK`;
+the line keeps `erased: [sha256]`). Each prompt block of a file names the
+version it holds (`personas.memory_source`: `memory-<the first 12 hex digits of
+its sha256>-<name>`, the version first, so `frame`'s 40-character cut never
+takes it), so the erase finds every log that holds it whatever became of its
+wake's manifest (retention, `forget_before`, the manifest trim), and takes out
+that version's block only, never that of another note whose name begins alike.
+Each wake marks its request line `blocks: "versioned"`
+(`personas.VERSIONED_BLOCKS`): every file its prompt holds is in a block named
+by its version. A version its wake's manifest names that never reached the
+prompt (a note that is not UTF-8 or holds only spaces, or the version a first
+render read when the look-alike re-render read a newer one) takes nothing from a
+line so marked, nor does any version from one whose prompt holds no file. A log
+written before blocks named their version has no mark, and is never judged by
+its blocks' names (the released code framed a note named `202610261200
+someone.md`, the YYYYMMDDHHmm names of Obsidian and of Zettelkasten ids, as
+`memory-202610261200-someone.md`, which looks versioned): it is found through
+its wake's manifest, an entry already erased included, and there the block of
+the name it was read under goes, or the whole prompt when none is found (an
+entry already erased has no name left). Her store still holds the note, so later
+wakes read it again: a wake writes its run log under the store's lock, the one
+the erase holds, and first takes out every erased version whose block its prompt
+holds, whenever it was erased (`PersonaStore.write_run_log`), so an erase lands
+either before the log is written or after it, and finds it. A read the erase
+lands in (between hashing a file and appending its manifest) still enters it as
+`{sha256, erased}` only. Erasing
+again cleans whatever is left and is otherwise a no-op. Each file
+is rewritten whole through a temporary file that replaces it, so no copy is
+left anywhere in the persona's directory: the tests write a version with a
+unique marker, erase it and find the marker's bytes in no file there. A wake's
+Read tool output is not in the run log (it keeps its size). What the persona
+herself wrote is hers and stays: her reply in the run log, her thread, her
+notices; if she quoted the note there, the erase does not reach that quote. The audit line `external.erased` holds the sha256
 only. Everything lives in the masked data directory and is labelled private.
 If the ledger cannot be written (a copy or the manifest), the copies that read
 wrote are removed, a `LedgerError` is raised and the turn fails ("no turn reads
@@ -7028,11 +7097,11 @@ Behind the master token, except `/api/hooks/wake`. `<persona>`: a persona name;
 | POST | `/api/personas/<persona>/reimport` | `{export, model_id?}` or `{source: "openwebui", key, model_id}` (the key used for this call only) | `{reimport}` 201 (staged; never applied here) |
 | POST | `/api/personas/<persona>/reimport/<accept\|reject>` | | `{state: accepted \| rejected}` |
 | GET | `/api/personas/<persona>/runs/<run>` | | `{run, lines}` |
-| GET | `/api/personas/<persona>/external` | | the read ledger: `{persona, ledger (on now), files: [{name, versions: [{sha256, bytes, read_bytes, mtime, first_read_at, last_read_at, reads, kept, redacted, truncated}]}], erased: [{sha256, erased_at, reads}], sqlite: [{at, rows, sha256, error?, detail?}], reads, kept_bytes, manifest_bytes, cap_bytes, caps: {evicted?, trimmed?, not_kept?, and their *_at}, recent: [manifests], label: "private"}` |
+| GET | `/api/personas/<persona>/external` | | the read ledger: `{persona, ledger (on now), files: [{name, versions: [{sha256, bytes, read_bytes, mtime, first_read_at, last_read_at, reads, kept, redacted, truncated}]}], erased: [{sha256, erased_at, reads}], sqlite: [{at, rows, sha256, error?, detail?}], reads, kept_bytes, kept_copies, manifest_bytes, cap_bytes, cap_copies, max_files, read_bytes (her `memory.external` caps as set now), caps: {evicted?, trimmed?, not_kept?, and their *_at}, recent: [manifests], label: "private"}` |
 | GET | `/api/personas/<persona>/external/versions/<sha256>` | | `{sha256, names, text, redacted, truncated, bytes, first_read_at, last_read_at, label}`; 404 when no copy is kept |
 | GET | `/api/personas/<persona>/external/diff` | `?from=<sha256>&to=<sha256>` | `{from, to, diff, label}` |
 | POST | `/api/personas/<persona>/external/restore` | `{sha256, file?}` | `{restore: {name, sha256, text, current: {sha256, read_at, kept} \| null, diff, warnings, apply, label}}`: prepared, never applied (audit `external.restore_prepared`); 400 for a version read only in part or one read under several names without `file` |
-| POST | `/api/personas/<persona>/external/erase` | `{sha256}` | `{erased: {sha256, erased, copies, entries}}`: the owner erases one version (its copy goes, its manifest entries keep the sha256 only; audit `external.erased` with the sha256 only); her store is not touched; 404 for a version the ledger never read |
+| POST | `/api/personas/<persona>/external/erase` | `{sha256}` | `{erased: {sha256, erased, copies, entries, run_logs}}`: the owner erases one version (its copy goes, its manifest entries keep the sha256 only, every run log holding it loses it; audit `external.erased` with the sha256 only); her store is not touched; 404 for a version the ledger never read (no manifest, copy or run log holds it) |
 | GET, POST | `/api/chats/<chat>/wakes` | `{allow: bool}` | `{chat, allow, wakes}` (GET reads the owner's switch back) |
 | GET, POST | `/api/notify/rules` | the keys to change (not `confirmed_profiles`) | the rules in force `{…, source, error}` |
 | POST | `/api/hooks/wake` | Bearer hook token, `Idempotency-Key?`; `{persona, reason?, dedupe_key?}` | `{wake, state}` 202 |
@@ -7412,10 +7481,15 @@ evidence, `links.receipt`), `chats.py`, `wakes.py`, `orchestrator.py`,
 ### What the harness guarantees, and what it only records
 
 An operator acts on the server through her own tools, outside the harness,
-with whatever rights the owner gives her: root, where he gave it. (On the
-owner's server the operator persona held root until 25 Oct, when he removed
-her sudo grant and paused interaction with her; other root paths of hers may
-remain while they are audited. The guarantees below hold either way.) **The
+with whatever rights she has there. **An operator may or may not hold root;
+the harness behaves the same either way** (her decision, 26 Oct). Her rights
+are state read live, never assumed from a setting: what her account may run
+is what she, or whoever reads it, reports in a receipt at the time, with the
+time it was read. "Whoever holds root" in this document means whoever does
+at that moment, which may be the owner, her, or another operator. (On the
+owner's server her grant was removed on 25 Oct, by an agent rather than the
+owner, and restored by the owner on 26 Oct. The guarantees below hold in both
+states.) **The
 harness never gates an operator's own actions.** It is her
 toolkit: records, the tracker, drift checks, the activity query. Her own rule
 for herself is to tell the owner before anything irreversible and to keep a
@@ -7472,13 +7546,31 @@ code path writes the mark (the importers write `agents.<name>.offline` only).
 mark on a name that is not a persona name. `GET /api/personas` rows and a wake
 persona's page row carry `role` (`"operator"` or null).
 
+**Her wake persona carries the mark itself.** Her ruling (26 Oct): a wake
+persona imported from her Open WebUI profile is a persona of its own, so it
+must carry `role: "operator"` itself, and `operator.several` must list both
+names exactly, her live profile's and the wake persona's id; without that her
+wakes read no receipts and get none of her items. The mark is verified where
+it acts, not assumed: the doctor's `operator wake persona` check
+(`operator.wake_mark_problems`) pairs each marked persona with the other half
+of its profile (`operator.wake_pairs`: an Open WebUI-bound persona whose
+`openwebui:` model is the wake persona's `source_model`, either one marked),
+and passes only when both are marked, `operator.several` lists both, and
+`operator.operators(config)`, which a wake turn asks, names both. Otherwise it
+warns and says exactly what to set (`Set agents.<wake>.role to "operator" and
+operator.several to ["<live>", "<wake>"]`), or why the harness still does not
+treat one as the operator (an invalid file, a broken rule). With no persona
+marked there is no pair and no such check (the `operator` line says none is
+marked).
+
 ```json
 "operator": {"several": [], "receipts_dir": null, "max_receipt_bytes": 262144, "max_receipts": 5000,
              "scan_seconds": 60}
 ```
 
 `receipts_dir`: where the operator writes her receipts (`~` and relative paths
-as for other paths; null: none). The harness's user needs read access there,
+as for other paths; null: none). The harness's user needs read and search
+(r-x) access there,
 which the operator grants; the harness never asks for more, and it must not be
 able to write there: a file the harness or one of its agents (one running
 without bwrap, or through a CLI driver) put there would read as her own words.
@@ -7568,8 +7660,31 @@ an older file, not read"), counted in `past_limit` and warned about by the
 doctor; they are still there, so they are never marked gone, and what was read
 of them before stays in the index. Hidden files (a write in progress) are
 skipped; anything else (her prose journal) is never parsed, though a receipt
-may link to it. Nothing is ever opened for writing, created, renamed or
-chmodded in her directory.
+may link to it. Nothing is ever opened for writing, created, renamed,
+chmodded, chowned or given an ACL in her directory.
+
+**Shared, read only, custody never widened.** Her ruling (26 Oct): the shared
+`receipts_dir` is read only, every receipt in it is read and listed whoever
+its `actor` is (no filter to her own: she needs to see other agents' faults),
+and every returned receipt carries `actor` as written in it (`Receipts.view`;
+a cannot-read file that still parses as an object keeps the actor it names;
+none: `actor` null, shown as "not stated", `ACTOR_NOT_STATED`). Sharing must
+not widen custody: some of her receipts are 0700 root and stay so. A
+subdirectory the harness's user may not open or list, one it may list but not
+search (read without execute: no entry in it can be looked at, so it is never
+skipped in silence), or a receipt file it may not open (`PermissionError`), is
+named, never widened, and does not hide the rest: the folder (`.` for
+`receipts_dir` itself) is listed in `refused` with `unreadable: true` and the
+words `UNREADABLE` ("the harness's user may not read it: left as it is (the
+harness never changes its owner, mode or ACL)") with its owner and mode, and a
+receipt read in it before is still there, never marked gone; the file is a
+cannot-read entry with the same words and `unreadable: true`.
+`receipts.unreadable(index)` names both, the scan's summary counts them
+(`unreadable`), and `GET /api/operator/receipts` returns the names. The tests
+check a 0700 folder stays as it was after a scan (as root, where the kernel lets
+root read it, the refusal is simulated) and that no `chmod`, `chown` or xattr
+call of the scan, its index or its tracker writes touches anything under
+`receipts_dir`.
 
 **A place the harness may write.** `receipts.harness_may_write(stat)`: the
 harness runs as root, owns the file or directory (an owner may always chmod),
@@ -7605,7 +7720,11 @@ what the index holds).
 **Attribution.** A receipt belongs to the operator whose name or instance name
 (§35, decision f) is its `actor` (any case); with exactly one operator, to her
 whatever the actor; with several and no match, or with none, to nobody (its new
-items are then owned by a person). Attribution never decides which item a claim
+items are then owned by a person). The one-operator fallback decides ownership
+only: the index keeps `operator_named` (whether the actor names her), and a
+receipt whose actor does not name her (another agent's, in the shared folder)
+opens its items tainted `untrusted` and is never listed as hers by the activity
+query. Attribution never decides which item a claim
 is (below), so marking the operator after receipts were read, a hand edit that
 breaks the one-operator rule for a while, or a second operator never opens a
 claim again.
@@ -7623,7 +7742,8 @@ Each `not_verified` entry becomes one **suggestion** in the system scope (§32):
 kind `gap`, title the entry's words (of the newest report when it is made),
 owner `persona:<operator>` (a person when the receipt is attributed to nobody),
 verifier a person, taint `private` (plus `untrusted` from a place the harness
-may write, above), `links.receipt` the receipt's id, `source {type: receipt,
+may write, above, or when the receipt's actor does not name her: Attribution),
+`links.receipt` the receipt's id, `source {type: receipt,
 agent, receipt, file, hash, nv, v?, reported: "reported by the operator"}`,
 detail "Reported as not verified in receipt <id> of <time> by <actor>:
 <intent>" and the rollback as written; never refused for the cap nor folded,
@@ -7674,8 +7794,9 @@ report):
 whose `outcome` is `unknown` becomes one **suggestion** in the system scope,
 titled "Outcome unknown: check before retrying (receipt <id>)": kind `gap`,
 owner `persona:<operator>` (a person when attributed to nobody), verifier a
-person, taint `private` (and `untrusted` from a place the harness may write),
-`links.receipt`, `source {type: receipt, receipt, file, hash, outcome:
+person, taint `private` (and `untrusted` from a place the harness may write,
+or when the actor does not name her), `links.receipt`, `source {type: receipt,
+receipt, file, hash, outcome:
 "unknown", u, reported}` where `hash` is `sha256("receipt-outcome|" + id)`: one
 item per receipt id, whichever file holds it. Its detail says the change may
 or may not have happened and that it is looked at again, read only, before it
@@ -7705,7 +7826,7 @@ summary, evidence: {file, line?, …}}`:
 
 | source | read from | entries |
 | ------ | --------- | ------- |
-| `receipt` | the index (after a scan) | `change` (her receipts: those whose actor is the agent or attributed to it, with `label`, `undo`, `outcome`, `reported_outcome` (when the receipt gives one, §40), `not_verified`, `verified`, `items`, `warnings`; evidence the receipt file, sha256, `first_read_at`, `gone_at`), **one per receipt id**: from the file it is in now (or the one that went last), a second file with the same id and where a moved receipt was before in `evidence.also: [{file, sha256, why}]` (`why`: "the same id again", "was here (gone)", "an earlier version was here (gone)"); and, for an operator, `cannot read` files (dated by their modification time) |
+| `receipt` | the index (after a scan) | `change` (her receipts: those whose actor names the agent, its name or instance name; one attributed to her only as the one operator is not hers, with `label`, `undo`, `outcome`, `reported_outcome` (when the receipt gives one, §40), `not_verified`, `verified`, `items`, `warnings`; evidence the receipt file, sha256, `first_read_at`, `gone_at`), **one per receipt id**: from the file it is in now (or the one that went last), a second file with the same id and where a moved receipt was before in `evidence.also: [{file, sha256, why}]` (`why`: "the same id again", "was here (gone)", "an earlier version was here (gone)"); and, for an operator, `cannot read` files (dated by their modification time) |
 | `tracker` | every scope's `*.log.jsonl` (system, follow-ups, jobs, chats, plans) | each transition whose `by` is the name, `persona:<name>` or `agent:<name>`: `ref`, `from`, `to`, the note |
 | `audit` | `<data_dir>/wakes/audit-YYYY-MM.jsonl` (messages and wakes) | lines whose `persona`, `agent` (the instance name, any case) or `by` names it; the summary names typed fields only |
 | `run` | run logs: `jobs/<repo>/<job>/logs/NN-<agent>.jsonl` (also a repo's scout), `plans/<repo>/<plan>/logs/NN-<agent>.jsonl` (the whole name after the number: `02-reviewer-code` is never `code`'s), `chats/<id>/logs/NN-turn.jsonl` of chats whose agent it is; `wakes/history-YYYY-MM.jsonl` | `run started` and `run ended` (agent.start and agent.end events, with the job, plan or chat; a line whose `agent` names another agent is skipped), `wake ended` (a wake persona's ended wakes) |
@@ -7743,11 +7864,12 @@ As a factory agent gets its open items (§32), an operator persona sees hers:
   and each title as data, framed with the item's own taint plus `private`.
   Only words that are hers or a person's stay without `untrusted`
   (`wakes.operator_words`): one of her receipts attributed to her (owner and
-  `source.agent` `persona:<name>`), an item she wrote (`source.type: persona`,
-  `source.agent` hers), or one a person added (`source {type: added, by:
-  human}`). Anything else, such as an outside agent's item a person assigned to
-  her, a review or sweep item, another persona's words, or a receipt item from a
-  place the harness may write (taint untrusted), is framed `private untrusted`,
+  `source.agent` `persona:<name>`, and not tainted untrusted), an item she
+  wrote (`source.type: persona`, `source.agent` hers), or one a person added
+  (`source {type: added, by: human}`). Anything else, such as an outside agent's
+  item a person assigned to her, a review or sweep item, another persona's
+  words, or a receipt item from a place the harness may write or from a receipt
+  whose actor does not name her (taint untrusted), is framed `private untrusted`,
   so S39 applies to that turn as to every other wake persona's. Every other wake
   persona keeps §35's rule (refs only; titles with `sees.item_titles`, framed
   untrusted). The receipts themselves she can open with her wake's Read, Glob
@@ -7774,10 +7896,10 @@ As a factory agent gets its open items (§32), an operator persona sees hers:
 
 | method | path | body / query | response |
 | ------ | ---- | ------------ | -------- |
-| GET | `/api/operator` | | `{operators, marked, several, problem, receipts_dir, label, scan: {scanned_at, read, cannot_read, refused, past_limit, writable, gone, problem}}` (no scan) |
-| GET | `/api/operator/receipts` | `?limit=&since=&until=&rescan=1` | `{receipts: [newest first, without before and after; `harness_writable` when set], refused: [{file, why}], scan}` (a scan that failed: `scan.problem` "the scan failed (…): what was read before is shown") |
+| GET | `/api/operator` | | `{operators, marked, several, problem, receipts_dir, label, scan: {scanned_at, read, cannot_read, refused, past_limit, unreadable, writable, gone, problem}}` (no scan) |
+| GET | `/api/operator/receipts` | `?limit=&since=&until=&rescan=1` | `{receipts: [newest first, every actor's, each with `actor` (null: not stated), without before and after; `harness_writable` and `unreadable` when set], refused: [{file, why, unreadable?}], unreadable: [names the harness's user may not read, left as they are], scan}` (a scan that failed: `scan.problem` "the scan failed (…): what was read before is shown") |
 | GET | `/api/operator/receipts/<receipt>` | | `{receipt (with before, after and the fields kept as data, extra), duplicates: [files]}`; 404 unknown, 400 a malformed id |
-| POST | `/api/operator/receipts/scan` | | `{scan: {scanned_at, receipts_dir, read, cannot_read, refused, past_limit, writable, new, changed, gone, items, problem, skipped}}` |
+| POST | `/api/operator/receipts/scan` | | `{scan: {scanned_at, receipts_dir, read, cannot_read, refused, past_limit, unreadable, writable, new, changed, gone, items, problem, skipped}}` |
 | GET | `/api/activity` | `?agent=&since=&until=&limit=&after=` | `{agent, operator, since, until, entries, count, truncated, next_after, sources: {receipt, tracker, audit, run, custody, drift}, errors}` (`count`: the entries from `after` on; a failed receipt scan is an `errors` entry "receipt scan: …"); 400 a bad name, time or cursor |
 
 All behind the master token; an outside agent's token gets 403. `Factory` gains
@@ -7857,14 +7979,17 @@ write this directory, so a file put there would read as hers. Her items from it
 are marked untrusted. Give the directory to her user (see the doctor).",
 `scan.past_limit` → a note "N older receipts were not read (operator.max_receipts)",
 [Scan now] → `POST /api/operator/receipts/scan`. The receipts list (newest
-first): time (local), id, actor, intent, `undo.words`, `outcome.words` (amber
+first, every actor's): time (local), id, actor ("actor not stated" when the
+receipt names none), intent, `undo.words`, `outcome.words` (amber
 for `outcome_unknown`, never green), `reported_outcome.words` when the receipt
 gives one, the not-verified count first, `items` as links to the tracker, a "changed after it
 was first read" or "file gone" chip from `warnings`/`gone`, `duplicate_of`, a
 "May not be hers" chip from `harness_writable`; cannot-read rows with `problem`
 (including "nested more than 64 levels deep", "NaN is not JSON …", "could not be
-read (…)"); `refused` in a collapsed "Not read" list (symlinks, and the older
-files past the limit). A row opens `GET /api/operator/receipts/<id>` (before and
+read (…)"), each with its actor; `unreadable` as a note naming each place the
+harness may not read, "left as they are: the harness never changes their owner,
+mode or access, and reads the rest"; the rest of `refused` in a collapsed "Not
+read" list (symlinks, and the older files past the limit). A row opens `GET /api/operator/receipts/<id>` (before and
 after side by side as data).
 
 **Activity** (`#/activity?agent=`, a tab on each persona and agent page): a
@@ -8024,8 +8149,8 @@ contract is confirmed or changed, that class changes and nothing else does.
 | ---- | ------- | ------ |
 | residency | `GET <url>/residency` | `{resident: [{provider, model, vram_mib, since, gpus?}], generation, observed_at, epoch?}` |
 | acquire | `POST <url>/leases {provider, model, purpose, holder}` | `{granted, lease_id, holder, until, generation, reason_code, epoch?}` |
-| renew | `POST <url>/leases/<lease_id>/renew` | the same shape |
-| release | `POST <url>/leases/<lease_id>/release` | the same shape |
+| renew | `POST <url>/leases/<lease_id>/renew {epoch?}` | the same shape |
+| release | `POST <url>/leases/<lease_id>/release {epoch?}` | the same shape |
 
 `gpus` (optional) names the cards a resident model sits on, by GPU UUID
 (`GPU-…`, as nvidia-smi gives it) and only so: a card's index is not an
@@ -8045,10 +8170,11 @@ else uses the cards on this host.
 | Code | Meaning | What the placement does |
 | ---- | ------- | ----------------------- |
 | OK | granted | the run goes there |
-| HELD | someone else holds the card, outside the register's leases (the operator's own use of it, say) | waits, for at most the provider's `overflow_after_seconds` (below; one wait per placement), then the next build, then the overflow |
+| HELD | someone else holds the card, outside the register's leases (the operator's own use of it, say) | no wait while another build can take the run: that build at once; only when none can, waits, for at most the provider's `overflow_after_seconds` (below; one wait per placement), then the overflow |
 | FULL | the card cannot fit the request, whoever holds it | no wait: the next build at once (another card, or a smaller build), then the overflow |
 | LEASED | a lease the register granted to another request covers the card | no wait: the next build, then the overflow |
 | NOT_RESIDENT, MAINTENANCE | not resident and may not be loaded now; maintenance | no wait: the next build, then the overflow |
+| EPOCH_MISMATCH | (renew and release only) the epoch sent is not the register's own: the lease is of an earlier instance | the lease is `lost` (never outcome unknown), and nothing is sent for it again |
 | UNKNOWN | no reason (any code the client does not know reads as UNKNOWN) | no wait: the next build, then the overflow |
 
 HELD and FULL are the operator's decision: waiting helps while someone else
@@ -8063,8 +8189,10 @@ ISO-8601 time or
 epoch seconds from 1970 to 9999; a grant without a `lease_id` and an `until`,
 or with an `until` outside that range (NaN, infinity, 1e20), cannot be read
 and is OUTCOME_UNKNOWN (a grant may hide in it). The harness's own words for
-an answer it did not get or cannot use are UNREACHABLE, TIMEOUT, ERROR, STALE
-and OUTCOME_UNKNOWN (never sent to the register). Every code has plain words
+an answer it did not get or cannot use are UNREACHABLE, TIMEOUT, ERROR, STALE,
+OUTCOME_UNKNOWN and CONTRACT (a grant that breaks the contract, below; never
+sent to the register). Codes are read in any case (`epoch_mismatch` is
+EPOCH_MISMATCH). Every code has plain words
 (`custody.REFUSAL_WORDS`: FULL is "the card cannot fit this model now", HELD
 "the card is held by someone else"), used in log lines, the journal, the run's
 `custody_refused` and `/api/custody`'s `reason_codes`.
@@ -8084,16 +8212,40 @@ epoch; it only compares it with the last one seen:
   the next claim reads residency and asks for a new lease. The journal notes
   it (op `epoch`, "epoch A became B"), and the lost lease's error says "the
   register restarted (epoch A became B)".
-- No renew and no release is ever sent for a lease of an earlier epoch. Lease
-  ids are the register's own, and the contract does not keep them apart
-  across epochs, so the new instance may have given the same id to another
-  holder. Each lease keeps the epoch it was granted in (`epoch` in its view).
-  Before a renew or a release of a lease granted under an epoch, the client
-  reads residency first, so a restart it has not seen yet is seen before the
+- **The contract on epochs (the operator's answer, 26 Oct: both).** Lease ids
+  are unique across epochs: an instance of the register never hands out an id
+  an earlier instance gave. A renew and a release carry, in the JSON body, the
+  epoch the lease was granted in (`{"epoch": "<epoch>"}`; `{}` for a lease
+  granted without one, by a register that sends none; no header, as the rest
+  of the contract is the body). The register refuses a renew or a release
+  whose epoch is not its own (a missing one too, when it sends epochs): HTTP
+  409 `{granted: false, lease_id, generation, reason_code: "EPOCH_MISMATCH",
+  epoch}`, with its own epoch. In her words, reading residency first is a
+  courtesy; the refusal is the enforcement (six Xid 109 GPU faults on 23 Oct
+  ended two of her wakes, so an earlier instance coming back is a live risk).
+- **What the client does.** Each lease keeps the epoch it was granted in
+  (`epoch` in its view) and sends it with every renew and release. A renew or
+  a release refused with EPOCH_MISMATCH is the register's answer, so the lease
+  is `lost` ("renew refused: EPOCH_MISMATCH: the lease is of an earlier
+  instance of the register (granted under epoch A; the register is at epoch
+  B)"), never `unknown`, and nothing is sent for it again (the keeper stops;
+  the run's release reads residency only). No renew and no release is sent
+  for a lease of an earlier epoch the client already knows of: before a renew
+  or a release of a lease granted under an epoch, the client reads residency
+  first (the courtesy), so a restart it has not seen yet is seen before the
   request would go out. When the run ends, such a lease stays `lost` with its
   error, residency is read, and the journal notes the release as `lost`
-  ("not sent: the register restarted (…)"). Tested against the mock
-  register only (`EpochTest`).
+  ("not sent: the register restarted (…)").
+- **A reused lease id breaks the contract.** The client remembers every lease
+  id it was granted with its epoch (`CustodyClient.ids`, the last 10,000). A
+  grant of an id it already saw under another epoch (or under none, from a
+  register that now sends one) is not used: the claim is refused with
+  CONTRACT ("the register granted lease id L again under epoch B, after
+  epoch A granted it: lease ids must be unique across epochs, so it is not
+  used and nothing more is sent for it"), noted in the history and the
+  journal, and the lease expires at the register. Tested against the mock
+  register only (`EpochTest`, `EpochOnRenewAndReleaseTest`; the mock refuses
+  a renew or release of another epoch, and `ids` makes it reuse an id).
 - Within one epoch, an answer whose generation is older than the highest one
   seen is refused as STALE until the generation passes that one (or the
   harness restarts). The same holds for a register that sends no epoch at
@@ -8211,35 +8363,51 @@ build's other checks (it answers; its model is loaded or a swap is allowed), so
 a denial, an error, a timeout or an unreachable register passes the build over
 exactly like a server that does not answer, and the run follows the configured
 overflow path. Two refusals are told apart (the operator's decision):
-- **HELD waits.** A placement that can wait (a job's run, repo-scout, a chat
-  turn, the lead: the callers with a cancel event) waits out a HELD answer for
-  at most the provider's `overflow_after_seconds` (the setting a busy slot
-  already waits for), asking the register again every 5 seconds
+- **HELD while another card is free: go to the free card at once** (the
+  operator's answer, 26 Oct; until then the builds were asked in order and a
+  HELD first card was waited for even when the next card was free).
+  `routing.choose_build` asks each build's register with `wait=False`
+  (`custody.Claims`): a HELD answer that this placement could wait out is put
+  off (`Claims.put_off_held`), and the later builds are asked at once. The
+  first that can take the run now gets it, and the held build is noted as
+  unavailable ("…: GPU custody: HELD: …"). Only when none of them can (each
+  refused, FULL, LEASED, unreachable, or HELD too) are the put-off builds
+  waited out, in the builds' order (`Claims.wait_for`), before the overflow.
+  The first put-off build's wait starts from the HELD answer it already got
+  (it is not asked again first); a later put-off build is asked again after
+  that wait (a card freed meanwhile is taken), and a HELD answer then gets
+  only what is left of the one wait.
+  Nothing here repeats a request whose outcome is unknown (§40): a put-off
+  build got an answer (HELD), and an OUTCOME_UNKNOWN passes its build over
+  as before.
+- **HELD waits when no other card can take the run.** A placement that can
+  wait (a job's run, repo-scout, a chat turn, the lead: the callers with a
+  cancel event) waits out a HELD answer for at most the provider's
+  `overflow_after_seconds` (the setting a busy slot already waits for),
+  asking the register again every 5 seconds
   (`custody.HELD_RETRY_SECONDS`; residency first each time). It says so once:
   `agent.waiting {provider, overflow_after_seconds, custody: "HELD"}` on the
   run's own log (made before the run starts, so the run that follows has the
   same `run`), and a log line "<agent> waits up to <n>s for <provider>: GPU
   custody: HELD: …". When the register grants, the run goes to that build.
   When the time is up, the build is unavailable ("…; waited <n>s
-  (overflow_after_seconds)") and the placement goes on as for any refusal: the
-  next build, then the overflow. Another answer ends the wait at once (FULL
-  and LEASED among them). A cancel ends it too: the run does not start, and no
-  more is asked of the register. A provider without `overflow_after_seconds`
-  does not wait.
-- **One wait per placement.** The first HELD answer starts the placement's one
-  wait (`Claims.wait_until`). A later HELD answer in the same placement
-  (another build, the overflow, a judge's alternate) waits only for what is
-  left of it, and says "no wait left (the run waited out a HELD answer for up
-  to <n>s already: one wait per placement)" when nothing is. A slot wait that
+  (overflow_after_seconds)") and the placement goes on as for any refusal: a
+  later put-off build (asked again, with no wait left), then the overflow.
+  Another answer ends the wait at once (FULL and LEASED among them). A cancel
+  ends it too: the run does not start, and no more is asked of the register.
+  A provider without `overflow_after_seconds` does not wait.
+- **One wait per placement.** The first HELD answer waited out starts the
+  placement's one wait (`Claims.wait_until`). A later HELD answer in the same
+  placement (another build, the overflow, a judge's alternate) waits only for
+  what is left of it, and says "no wait left (the run waited out a HELD answer
+  for up to <n>s already: one wait per placement)" when nothing is. A slot wait that
   ran out (§23) ends it too (`Claims.stop_waiting`), so the overflow it moves
   to does not wait for custody again. So a run waits for custody at most once
   `overflow_after_seconds` (the first waiting provider's), plus its slot wait.
-- **The builds are asked in order.** A HELD first build is waited for before
-  the next build is asked, even when the next one (another card) is free now:
-  the order of `builds` is the owner's preference, as it is for the slot
-  wait, which also waits for the first build before the overflow. This is how
-  the harness reads the operator's rule; whether HELD should wait while
-  another listed build is free is open (below).
+- **LEASED does not wait** (the operator confirmed it, 26 Oct): a lease of
+  another request covers the card, so two runs of this harness that want
+  different models on one card do not wait for each other; the second goes on
+  to its next build or overflow at once, as before.
 - **FULL does not wait.** The card cannot fit the model now, whoever holds it,
   so waiting cannot help: the placement goes on at once to the model's next
   build (the `builds` list, §23: the first that answers and gets a lease wins,
@@ -8304,10 +8472,11 @@ a time so answers arrive in order):
    released when the run ends. A refusal below 500 (408, 409, 425, 429; an
    error payload without a status of 500 or more) and a connection that was
    never made (the request never wholly written) are retried as usual, under
-   the same lease.
+   the same lease: six tries in all (`providers.MAX_ATTEMPTS`, the first and
+   five retries), as the operator confirmed (26 Oct).
 6. **Renewal.** A refused or stale renewal loses the lease (its calls are
-   refused); an unreachable register leaves it held until its `until` and the
-   next renewal is a new request.
+   refused; EPOCH_MISMATCH among them, never retried); an unreachable register
+   leaves it held until its `until` and the next renewal is a new request.
 7. **Restart.** Leases live in this process only; each process is a new holder
    (`custody.HOLDER`), so a restarted harness holds no lease and assumes none:
    nothing is persisted, an earlier process's lease is neither released nor
@@ -8320,8 +8489,9 @@ a time so answers arrive in order):
 9. **Cancellation while a model loads.** The run ends (its abort handle ends the
    blocked read), the release is attempted and residency is read again.
 
-Lease states: `held`, `lost` (a refused or stale renewal, or a lease of an
-earlier epoch: the register restarted), `unknown` (a renew or
+Lease states: `held`, `lost` (a refused or stale renewal, a renew or a
+release refused with EPOCH_MISMATCH, or a lease of an earlier epoch: the
+register restarted), `unknown` (a renew or
 a release with no answer, or an answer of 500 or more), `released`,
 `unreleased` (the register could not be reached to release it; it expires
 there).
@@ -8377,15 +8547,25 @@ go. `tests/test_custody.py` runs every rule above against
 `tests/mock_custody.py` (simultaneous claims with exactly one granted, a stale
 generation, a new epoch from generation 0, no renew or release of a lease of
 an earlier epoch, a crashed requester, cancellation while a model loads,
-restart recovery, exact restoration after a swap-back, placement, HELD waiting
-(once per placement) and FULL going on to the next build or the overflow, a
-LEASED answer ending a wait, the provider guard, wakes, the Test probe,
-credentials, the views). `tests/test_sandbox.py` shows that an agent's Bash
-under bwrap reads neither the credentials directory nor a token file.
+restart recovery, exact restoration after a swap-back, placement, HELD going
+to a free card at once and waiting only when no other card can take the run
+(once per placement, `HeldWhileAnotherCardIsFreeTest` without sleeping), FULL
+going on to the next build or the overflow, LEASED never waiting and ending a
+wait, renew and release carrying the epoch and an EPOCH_MISMATCH losing the
+lease, a reused lease id refused, a request never sent under a lease tried six
+times, the provider guard, wakes, the Test probe, credentials, the views).
+`tests/test_sandbox.py` shows that an agent's Bash under bwrap reads neither
+the credentials directory nor a token file.
 
 **Open.** The operator accepted the lease contract with three amendments, all
 built here: the FULL code (HELD waits, FULL does not), an epoch from the boot
-id and a kept counter, and credential names for the token. It stays labelled
+id and a kept counter, and credential names for the token. On 26 Oct she
+answered the questions this section left open, also built here: lease ids
+unique across epochs and the epoch on every renew and release (above); HELD
+while another card is free goes to that card at once (above); LEASED does not
+wait (unchanged); no retry through Open WebUI of a call that may have acted,
+and a request never sent under a lease tried again, six tries in all (§12,
+rule 5 above; unchanged, now pinned by tests). It stays labelled
 PROPOSED until a real register answers it: no register runs yet, so everything
 above is checked against `tests/mock_custody.py` only. Custody therefore stays
 off (no provider names a register) on the owner's server, where none runs and
@@ -8401,18 +8581,7 @@ the main model server's `restart: always`, a text-to-speech app, an image
 generator, Strata, a fine-tuning stack, and job containers a broker starts.
 Until the register knows them, a FULL or HELD answer cannot be complete. A CLI driver's own calls
 are outside the harness: its lease is taken for its route's provider, which is
-all the harness can see. Questions for the operator, with what the harness
-does until she answers:
-- Should a HELD answer wait while a later build (another card) is free now?
-  Today it does: the builds are asked in order.
-- Should LEASED (a lease of another request covers the card) wait like HELD,
-  except when the lease is this placement's own? Today it does not: two runs
-  of this harness that want different models on one card do not wait for each
-  other, and the second goes on to its next build or overflow at once.
-- Should a renew and a release carry the epoch (or the holder) of the lease,
-  or should lease ids be unique across epochs, so the register itself refuses
-  a call from an earlier epoch? Today the client never sends one, and reads
-  residency first to see a restart.
+all the harness can see.
 
 ## 38. Drift sources: outside, read-only drift checks the tracker reads (added)
 
@@ -8635,7 +8804,7 @@ reason_codes: {code: words}}`. Show a refused claim's `reason` with `words`
 now", HELD "the card is held by someone else"); op `wait` rows read "waits up
 to <seconds>s: the card is held by someone else", then how the wait ended.
 `held_wait_seconds` is "a HELD answer waits up to <n>s" (null: "does not
-wait"); FULL never waits. A "Read now"
+wait"), when no other card is free; FULL never waits. A "Read now"
 button sends `?refresh=1`. Show `residency: null` as "the register has not been
 read" (or cannot be: the doctor's `custody <provider>` check says why). A row
 whose `custody_from` is set shows "follows <custody_from> (the same server)"
@@ -8660,8 +8829,9 @@ with a token file or name, comes back as `{error}`: show it as is. Say in its
 help that custody is the operator's register, that the harness never mutates
 its state (it asks; the register decides and keeps the ledger), that another
 provider entry on the same server follows it, that with custody a run that
-gets no lease goes to the next build or the overflow, that HELD waits up to
-the provider's `overflow_after_seconds` and FULL goes on at once (so list
+gets no lease goes to the next build or the overflow, that HELD goes at once
+to another card that is free and waits up to the provider's
+`overflow_after_seconds` only when none is, and FULL goes on at once (so list
 another card or a smaller build), that a run waits once in all however many
 builds answer HELD, and that a credential needs a
 `LoadCredential=<name>:<path>` line in the harness's unit (added by whoever
@@ -8755,7 +8925,8 @@ after it, and the
 journal's unanswered `requested` "Asked, with no answer recorded: outcome
 unknown"; anything but a grant, a give-back or an ended wait is amber
 (`SF.custodyPlain`). Each provider under a lease says "a HELD answer waits up
-to <n>s, once per run; FULL never waits" (or "does not wait"), and where its
+to <n>s, once per run, when no other card is free; FULL never waits" (or
+"does not wait"), and where its
 token comes from (the systemd credential, the file or the name; never the
 token). The provider editor gains "Systemd credential name"
 (`token_credential`) and refuses in the form what the save would refuse (a
@@ -8902,7 +9073,7 @@ their source or documentation (Open WebUI: the research of §33), not checked.
 | Telegram getUpdates, ntfy subscription, bot menu | `channels.*.receive`, `_set_menu` | yes (reads by offset or id; a menu set to one value) | retried with backoff | stays (`RETRIED`) |
 | the Notifier's delivery loop | `notify.Notifier._deliver_one` | (per channel, above) | `sending` at a restart becomes unknown; unknown is never resent by itself, only by the owner's Send again (already so). Before: a channel that raised after its request went out (a full disk while it wrote its own state after ntfy's 200) was recorded failed and sent again, to every Telegram account. Now an exception while sending is unknown, and a channel's bookkeeping after an answer (health, the ids it keeps) never fails a send. Before: an unknown did not count toward `channel.down`, so a channel answering 502 for hours raised no alarm; now an unknown counts as not working there (§34), and is still never resent. A snooze sends a notice again on purpose: the owner's act | fixed |
 | event-source snippets | `notify.hook_snippets` | yes (state-setting at the harness: an open incident absorbs a repeat) | curl retries; a repeat is counted as a repeat | stays (`RETRIED`) |
-| custody lease requests: POST acquire, renew, release | `custody.RegisterAdapter`, `CustodyClient` | no: the register adjudicates and records each | no answer after sending: OUTCOME_UNKNOWN, residency read again, never replayed (already so, §37). Before: an answer of 500 or more, 1xx or 3xx was ERROR, recorded as a denial or "unreleased"; now OUTCOME_UNKNOWN (`outcomes.of_status`). Before: a claim or a release was journaled only after its answer, so a crash while it was out left no record; now a `requested` line goes first, and the activity query shows one with no answer as outcome unknown (a renewal extends a lease already on record; after a crash it expires at the register) | fixed |
+| custody lease requests: POST acquire, renew, release | `custody.RegisterAdapter`, `CustodyClient` | no: the register adjudicates and records each | no answer after sending: OUTCOME_UNKNOWN, residency read again, never replayed (already so, §37). Before: an answer of 500 or more, 1xx or 3xx was ERROR, recorded as a denial or "unreleased"; now OUTCOME_UNKNOWN (`outcomes.of_status`). Before: a claim or a release was journaled only after its answer, so a crash while it was out left no record; now a `requested` line goes first, and the activity query shows one with no answer as outcome unknown (a renewal extends a lease already on record; after a crash it expires at the register). A renew or a release refused with EPOCH_MISMATCH (the epoch it carries is not the register's) is an answer: the lease is lost, never unknown, and nothing is sent again (§37) | fixed |
 | custody residency | `custody.RegisterAdapter.residency` | a GET | read again after an unknown | stays |
 | model calls | `harness/providers.Provider.complete` (builtin agents, chats, plans, wakes) | judgement: a completion from a model server generates text; a local server under custody may load a model | retried on 408, 409, 425, 429, 5xx and a lost connection, up to 6 tries. Before: under a lease only a lost connection was unknown, and a 502 or 504 was replayed to the lazy-loading server; now under a lease a call that may have acted (a lost connection after sending, 500 or more) is unknown and not retried (§37). A connection never made is retried for every provider: nothing was sent | stays (`RETRIED`) for model servers; fixed under a lease |
 | Open WebUI: model listing and export (GET), a persona's chat completion | `personas.py`, `providers` (`kind: openwebui`) | the reads are reads; a completion runs the profile's filters (inlet, stream, outlet) and its tools again on every try, and they may write (from Open WebUI's source): not idempotent | before: retried as a model call, so a filter or tool that writes could write twice. Now a call that may have acted is unknown ("Open WebUI: the outcome is unknown (the profile's filters and tools may have run), so the request was not replayed"); a refusal (429) and a connection never made are retried | fixed |
@@ -9000,11 +9171,16 @@ The panel has two routes, chosen on every view (`SnapraidPanel.route()`):
   (phase P1, with P2a's fixes for the owner's current host); the card says so
   ("Seraphina is only watching: nothing is protected by it yet.").
 
+On either route, a whole failed data disk is replaced through **the owner's
+checklist** (phase P4, design §9.4): seven steps with copy blocks he pastes
+himself and a read-only check between them; Seraphina runs none of them.
+
 Off by default (`snapraid.enabled: false`). Modules: `bin/sf-snapraid` (the
 root helper, "the reader" on every novice screen), `bin/sf-snapraidd` (the
 link and the forwarder), `swfactory/snapraidd.py` (the daemon route),
-`swfactory/snapraid.py` (the panel, the route choice, the reader's route); the
-GUI's `Backups` area is `swfactory/web/views/backups.js`.
+`swfactory/snapraid.py` (the panel, the route choice, the reader's route),
+`swfactory/snapraid_rebuild.py` (the disk checklist); the GUI's `Backups` area
+is `swfactory/web/views/backups.js`.
 
 **Where it stands** (checked here, 25 Oct 2026): everything below is built and
 tested against `tests/mock_snapraidd.py`, a mock daemon seeded from 160
@@ -9014,7 +9190,10 @@ no host name and no credential). Nothing was run against a real daemon or the
 owner's server: the labs L14 to L17 and L19 of design §13.2 are listed by the
 card and the doctor as not checked yet, and the link's settings ship allowing
 reading only, so no action can be sent until the owner widens them (design
-§10.4: after L15 passes).
+§10.4: after L15 passes). The disk checklist (P4, 26 Oct 2026) is tested
+against placeholder facts, the mock daemon and the GUI mock; its labs L13 and
+L20 need a server started by systemd and a real protection service, and are
+listed as not checked yet.
 
 ### One scheduler, never Seraphina
 
@@ -9285,7 +9464,135 @@ its own guard as a gate (holds, releases, the after-check, the drill) and its
 scheduler (modes, the skip as its own state, the scrub planner, the adopt
 step), with the setup wizard that would have written SnapRAID's config, and
 the settings `snapraid.schedule`, `restore` and `live_folders` (still accepted
-in an older config, and ignored). The disk rebuild checklist (P4) is not built.
+in an older config, and ignored). The disk rebuild checklist is P4 (below).
+
+### P4: the owner's checklist for a whole failed disk (`swfactory/snapraid_rebuild.py`)
+
+The daemon has no action that rebuilds a disk, and Seraphina runs no SnapRAID
+command that writes, so a rebuild is a checklist (design §9.4, D18). It is
+opened for one **data** disk (a protection disk, a disk being taken out, a
+name or folder Seraphina will not put into a command are refused), needs the
+reader (`state` ready), and keeps one record, `<data_dir>/snapraid/rebuild.json`
+(0600: `R-<n>`, the disk's SnapRAID name, number, label, mount point,
+filesystem type, its recorded filesystem UUID and size, the route, the steps
+done with their times, what the owner ticked, each step's last check, the
+rebuild's two exit codes; never a model, serial or `/dev/disk/by-id` name,
+which reach the cockpit live from the reader's `disks`). One checklist is open
+at a time; it ends `finished` or `cancelled` (closing undoes nothing; a
+checklist closed after step 1 and before step 4 shows `way_back`: how to undo
+steps 1 and 3, only while no new disk is mounted at the folder).
+
+The steps, in order (`STEPS`); each shows what it does in plain words
+(`WHAT`), the facts that matter (`FACT_WORDS`), its copy blocks (only on the
+current step), its check, and what the owner ticks (`CONFIRMS`). **Check and
+go on** (`advance`) records the ticks, runs the check, and marks the step done
+when the check passes, or cannot tell and the owner ticked that he checked
+himself (`SELF_TICKS`: steps 1, 2, 3 and 5; step 4 never passes without the
+reader's answer), and every line is ticked; a step out of order is refused.
+
+1. **Stop changes.** Daemon route: the existing **Skip the next run** go-ahead
+   (P3's `hold_off`) while the service answers and no skip is set, then
+   `sudo systemctl disable --now snapraidd.service` (disable, so the reboot of
+   step 4 does not start it again), and Dockge's **Stop & Inactive** for the
+   apps, with the stacks whose compose file names a protected disk's folder
+   (read from `/opt/stacks` as plain files; "cannot look" when unreadable).
+   Check: no `snapraid` process (`/proc`), no task running, `/metrics` silent
+   and the unit inactive and not enabled (`systemctl show`); tick: the apps
+   (and, when `systemctl` does not answer, that he checked the service).
+   Reader route: the places that start runs (the inventory) are listed, the
+   owner turns them off himself and ticks it; check: no `snapraid` process.
+2. **Name the failed disk.** Its label, name, mount, model, serial number,
+   `/dev/disk/by-id` name and when it was last seen (the reader's `disks`
+   record), its health. Check: Seraphina's record names it (else she cannot
+   tell); more failed data disks than protection disks is a stop ("Nothing
+   here can bring them back"). Tick: "I found this disk in the server."
+3. **Make sure the server can start without it.** `/etc/fstab` read as any
+   user: its active line for the mount point (or the recorded filesystem)
+   has `nofail` and `x-systemd.device-timeout=`, or is turned off; else the
+   block keeps a dated copy, puts a `#` before exactly that line, indented
+   or not (a `sed` whose folder is escaped, tested on real `sed`), runs
+   `findmnt --verify` and `systemctl daemon-reload`, with the copy put back as
+   its "if not". No
+   line found, or the file unreadable: the owner ticks that he checked.
+4. **Fit and prepare the new disk** (cannot be undone). `sudo systemctl
+   poweroff`, then the free disks from the reader's `disks` (`spare`: the
+   whole disks nothing uses at any depth of lsblk's tree: nothing mounted or
+   swap, no LVM, RAID, LUKS or ZFS member, no holders, none of the array's
+   filesystems): blank ones first, ones that hold something apart (a
+   filesystem, a partition or a partition table), smaller than the old one
+   marked; a row whose `/dev/disk/by-id` name or serial number is an array
+   disk's (present or last known) is left out and refused. `POST …/prepare`
+   gives the commands only for a free disk named by `/dev/disk/by-id` with a
+   readable serial number, once the owner typed its last 4 characters (the
+   whole number for a disk that holds something, which also gets `wipefs
+   -a`): `parted` (one GPT partition), `wipefs -a` on `…-part1` (an old
+   partition's filesystem, LVM or RAID signature shows again where the new
+   one starts), `mkfs.<ext4|xfs>` on `…-part1`, a dated copy of
+   `/etc/fstab`, the old line turned off, the new
+   line `UUID=$(blkid …) <mount> <type> defaults,nofail,x-systemd.device-timeout=30s 0 2`,
+   `findmnt --verify`, `daemon-reload`, `mount`; then the reader's settings
+   with the old UUID replaced by the filesystem now mounted at the folder
+   (`findmnt`; install to `.new`, `explain helper-config`, which refuses an
+   empty one, the move as its own step). Nothing of the new disk is stored.
+   Check: the service not back on, the reader answering (no tick stands in
+   for it), the folder mounted, not the old disk again (the reader's recorded
+   UUID still the old one with `uuid_ok`: then the blocks that turn the
+   service on again and put the dated `/etc/fstab` copy back, when step 3
+   turned its line off), the reader told (`uuid_ok`; else the step shows
+   that last block itself, built from the record, because the mounted disk
+   is no longer free), one active fstab line for the folder, and safe, and
+   neither of step 5's units left from an earlier checklist (closed, or
+   finished without its tidy block, in the same boot: else a block that stops
+   and clears them, quiet about the one of the two that is not loaded,
+   because step 5 would read their end as this rebuild's; `systemctl` not
+   answering does not hold the step, but the record keeps that nothing proved
+   them gone, and step 5 then takes no end it reads for this rebuild's
+   without the tick, until it has read both units gone). Once a new disk is
+   mounted at the folder, no free disk is listed and `…/prepare` refuses.
+5. **Rebuild the disk.** The owner's block: `systemd-run
+   --unit=seraphina-disk-rebuild -p RemainAfterExit=yes -p KillSignal=SIGINT
+   -p SendSIGKILL=no` with output and log in the reader's root-only state
+   folder (`/var/lib/seraphina-snapraid/rebuild/`), `snapraid -c <conf> -d
+   <name> -l … fix`, then `seraphina-disk-check` with `-a … check`; "Start it
+   again" (stop, reset-failed, the same run) when one stopped, when the
+   rebuild ended with an error, or when the check started too soon. The
+   power-off time, when the server has one, is named. Check (`systemctl
+   show`): the service still off, the new disk still mounted with the reader
+   knowing it (no block before that, and none that starts the rebuild again
+   while the reader does not answer), the rebuild then the check ended (not
+   running, not stopped by a signal, not systemd's own exit status 200 and
+   up), the check started after the rebuild exited
+   (`ExecMain{Start,Exit}TimestampMonotonic`); their exit codes are kept.
+   `systemctl` not answering, now or at step 4's check (step 4 above): the
+   owner's tick, and no exit codes. The words that send the owner to the
+   check name its block by its title, since the rebuild's own block is not
+   shown while the reader does not answer.
+6. **What could not be brought back.** Everything back (both exit codes 0),
+   or Seraphina cannot tell (any other code, or none: an error code cannot
+   tell files left as `.unrecoverable` from a run that stopped at its start),
+   with a block showing the end of each run's output; files added after the
+   last run gone, "Nothing else on this machine has an older copy", owners
+   lost (a `chown` example); blocks: `find … -name '*.unrecoverable'` (names only in the
+   owner's terminal). Tick: read.
+7. **Finish.** Tidy the two units, `systemctl enable --now snapraidd.service`
+   (daemon route), start the apps; ticks: done with the rebuild, apps back.
+   Check: the service answers and no longer reads the disk `degraded` (that
+   case is not checked on a real server: "ask for help before going on");
+   on the reader's route the ticks alone.
+
+While a checklist is open the light is red `rebuild` ("Disk 2 is being
+replaced: follow the checklist to the end.", note "Until it ends, the other
+disks are less protected than usual."), on either route and before every
+other rule; the card shows the step with **Open the checklist** (and, while
+the light says a disk failed, **Replace a failed disk**); the daemon route
+offers and sends no run (`maintenance`, `accept`, `undelete`, `heal` refused
+`rebuild`, design §9.1) while skip and stop stay; once step 1 is done the
+service's silence raises no `parity.down` and no `snapraid:service` item; the
+doctor warns "Disk 2 is being replaced: the checklist in Backups is at step 3
+of 7 …"; each step done, the opening and the end are journal lines (`kind
+rebuild`: the checklist id, the disk number, the step) and `snapraid.rebuild`
+events. The harness's own process runs only `systemctl show` and reads `/proc`,
+`/etc/fstab` and Dockge's folder; the reader is asked only `info` and `disks`.
 
 ### The reader (`bin/sf-snapraid`)
 
@@ -9563,7 +9870,13 @@ paths?, enabled?}` (201, a preview; 400 with the refusal's words), `GET
 …/<A-n>/cancel`, `GET /api/snapraid/review?disk=&change=&q=&offset=` (a page of
 the last scan's change list, live, never stored), `GET
 /api/snapraid/fixes?offset=`, `GET /api/snapraid/runs` and `GET
-/api/snapraid/runs/<number>` (one step and its messages as text). `POST
+/api/snapraid/runs/<number>` (one step and its messages as text); the disk
+checklist (P4): `GET /api/snapraid/rebuild` (the steps, or the data disks it
+may be opened for), `POST /api/snapraid/rebuild {disk}` (201), `POST
+/api/snapraid/rebuild/step {step, confirm?}` (the page with `result {step,
+done, words, ok, code, missing}`), `POST …/prepare {by_id, typed}` (the new
+disk's blocks, never stored) and `POST …/close`; the card's `rebuild` is the
+checklist's summary (`{id, state, disk, label, step, n, of, title}`). `POST
 /api/hooks/event` with kind `parity.report` comes under the forwarder's own
 hook token, never the master token (§34).
 
@@ -9573,7 +9886,9 @@ daemon's facts and the latest approvals); `snapraid check-now
 reads the daemon, and the reader's info only); `snapraid jobs [J-n]`;
 `snapraid guard [G-n]` (counts and reasons only: file names stay in the
 cockpit); `snapraid helper install|check|remove` and `snapraid link
-install|check|remove` print the copy blocks. There is no action command: an
+install|check|remove` print the copy blocks; `snapraid rebuild` prints the disk
+checklist's steps and the current step's check and blocks (opening it, ticking
+and the new disk's commands are the cockpit's). There is no action command: an
 approval follows seeing what the cockpit shows.
 
 The doctor (design §12.7): with SnapRAID absent, one info line; SnapRAID 13.x
@@ -9610,7 +9925,9 @@ not `info`, `net_config_full_access` on, the window inside the power-off
 warnings; `notify_syslog_level` info or warning and `check_updates` on at
 info); the scheduler count not one a warning (unknown without the reader); a
 link journal line with no approval in the cockpit an error; the harness's user
-in `docker`, `lxd` or `sudo` an error.
+in `docker`, `lxd` or `sudo` an error; an open disk checklist a warning (its
+step). The lab lines name L20 (the checklist on test disks) on both routes and
+L13 on the daemon route too.
 
 ### What was checked where
 
@@ -9654,6 +9971,18 @@ its systemd 259 exited with no output on the build machine, which has only
 cgroup v1, which recent systemd no longer supports: judgement); the
 doctor and the card list them as not checked yet ("Until they are, Seraphina
 only reads."). L9 and L10 tested Seraphina's own job units and are dropped.
+
+The disk checklist (`tests/test_snapraid_rebuild.py`) walks every step's
+check against placeholder facts (each way a step can fail, and the ticks),
+runs the fstab block's `sed` on temporary copies (only that folder's line,
+twice changes nothing), checks the new disk's commands (by-id only, the typed
+serial number, a used disk erased first, xfs, an unknown old UUID), the
+units' states, the order, the record's privacy (a canary serial number found
+nowhere kept), the light, the card, the refused runs and the allowed skip,
+the held-back `parity.down`, the doctor line, the routes and the CLI, with a
+panel on the mock daemon through the real link: the harness ran only
+`systemctl show`, the reader only `info` and `disks`, and nothing but GETs
+reached the service.
 
 The daemon route (`tests/test_snapraidd.py`, `tests/test_snapraidd_link.py`)
 runs the panel, the real link (`bin/sf-snapraidd`, in-process through
@@ -9709,7 +10038,15 @@ the groups of §17, is a precondition of both routes (design §11.7).
 
 ### Not built yet
 
-The owner's disk rebuild checklist (P4, design §9.4). The writable protection
+From the disk checklist (P4): a failed protection disk (the checklist takes
+data disks only); a new disk mounted at another folder than the old one (the
+blocks mount it where the old one was, and SnapRAID's settings are never
+changed); putting owners and permissions back on the rebuilt files (only a
+`chown` example: no record of them is kept, D19); following the rebuild's
+progress (the owner watches its output himself; the page checks when asked);
+the reader's SnapRAID reads while the daemon is stopped for a rebuild (with
+the daemon's unit installed the reader runs only `info` and `disks`, design
+§8.1, so step 5 checks the units instead). The writable protection
 share check and its finding (design §11.2, D15: no Samba configuration is
 read), and its sibling for apps: a Dockge stack that mounts a parity or
 content path writable as a finding of its own (design §11.2). The reader's
@@ -9812,3 +10149,1221 @@ review list (3,000 entries with hostile names), runs and a step;
 `tests/gui/backups.mjs` checks each state, the dialogs, the review page, a
 step, Home and 390 px. U7's list on this route adds daemon, threshold, hold
 off, undelete, heal and engine.
+
+**The disk checklist** (`#/backups/rebuild`): before it is open, "Which disk
+failed?" with each data disk, its folder and health, the failed-looking one
+chosen and marked, and **Start the checklist** (or why it cannot start, with
+**Set it up**); the line on a protection disk; after the end, "The checklist
+is finished." Open: the title with the disk's label, the lab line, then the
+seven steps as cards: done ones folded with their time, later ones with their
+first sentence only, the current one with its sentences, facts, **Skip the
+next run** where offered (the usual go-ahead dialog), its blocks (the setup
+page's block: Copy, Expect, the move as its own step, Note, If not), for step
+4 the free disks (radio buttons, by-id names and serial numbers as text,
+"smaller than the old disk"), the typed serial number and **Show the
+commands**, the check as a callout in its tone, the lines to tick, **Check and
+go on** and **Check again**; **Close the checklist** asks first ("It undoes
+nothing you ran."). Its words come from the module (U7 checks them, with the
+service's own words); the mock (`daemon_failing`, and `failing_disk` on the
+reader's route) answers with the module's own `build`, `advance` and
+`prepare` over placeholder facts, and `rebuild_good` / `rebuild_at` move them;
+`tests/gui/backups.mjs` walks the seven steps (a failed check holds each
+step, the wrong serial number gives no command), the card, Home's Needs you,
+closing, the reader's route, and 1440 and 390 px in light and dark.
+
+## 42. Your server: the Apps launcher, the host strip, the Check buttons and who can act as root, phases P1a to P1c (added)
+
+The design is [docs/seraphina/YOUR_SERVER.md](docs/seraphina/YOUR_SERVER.md)
+("the design"; its sections are "design §n"). Phases P1a, P1b and P1c of its
+§11.10 are built. P1a: the host strip and the summary card without any helper,
+then, with Seraphina's system access (`bin/sf-system`, class `read`), the app
+cards, grouping, old copies, the one review list with addresses and expected
+states, QR codes, health lights, versions, badges and deep links, the Beszel
+watch, "Ask about this app", the maintenance toggle and backup lines, the
+one-paste `setup` and `remove`, the doctor's lines, the mock and the GUI. P1b:
+the Check buttons 1-8 (updates, restart needed, disk use, failed services, disk
+health, what is listening, Tailscale, and one app's logs), Docker's own health
+and the update kinds on the cards, the keep pass with the records of changes and
+How to go back, the refresh of the list of updates, and the Blueprint's helper
+mode. P1c: who can act as root (view only) and logs read through the helper,
+both class `private`, only once Seraphina runs as her own account and her agents
+cannot reach sudo. **It only looks**, with two exceptions the owner switches on
+himself in the helper's root-owned settings, each its own class: `refresh`
+(`apt-get update`, which writes only the package lists and runs apt's own
+hooks) and `keep` (a name under
+`seraphina-keep/` on each app's current and previous image, so a clean-up never
+deletes them; it never removes a name or an image). No button or verb installs,
+removes, starts, stops, restarts, upgrades, vacuums, cleans or edits anything,
+changes a route, a serve entry or a file of any app. The Maintain and Fix
+buttons (P2) and root-access changes (P3) are not built (the owner's D24), and
+the page says on every screen what it only looks at, and the two things it may
+change when allowed.
+
+Off by default (`yourserver.enabled: false`); the host strip and the summary
+card read `/proc` and the cgroup files with no helper whether it is on or not.
+Modules: `bin/sf-system`, `swfactory/yourserver.py`, `swfactory/serverchecks.py`
+(the Check buttons), `swfactory/rootaccess.py` (the root page's marks),
+`swfactory/helpers.py`, `swfactory/qr.py`; the GUI's `Your server` area is
+`swfactory/web/views/yourserver.js`.
+
+**Where it stands** (checked here, 26 Oct 2026): built and tested against
+`tests/sfsystem_rig.py`, a placeholder server written for the tests (Docker
+29's checkpoint shape as the design's lab recorded it, not files from a real
+server; the Docker API's answers, `smartctl -j`, `needrestart -b`, `apt-get -s`,
+`sudo -l`, `sshd -T`, key files with keys made for the tests, `systemctl` JSON
+and the rest recorded or written as placeholders). Nothing ran against the
+owner's server or a systemd-booted machine: labs L1, L2, L3, L4, L5, L7, L15 and
+L16 are listed by the page, the doctor and `tests/test_yourserver_lab.py` as not
+checked yet, and the job units (`systemd-run`, `append:` output, the power hold)
+are L8 and L9's, not run.
+
+### The owner's decisions that apply
+
+D1: the harness runs as its own system user `seraphina` (the install does
+this), and the helper refuses any caller in `docker`, `lxd`, `incus-admin`,
+`disk` or `sudo` (`caller_holds_root`); the page and the doctor check it again
+before logs and the root page are read. D2 (a): only Seraphina's user is a
+caller. D3 (a): a fixed list of read-only Docker API calls (`DOCKER_CALLS`),
+never while `docker.service` is not active, so Docker is never started. D4 (a):
+no upstream version lookups (`updates.registry_checks` accepts only false). D9
+(a): keep 2 previous versions per app, at most 50 GB in all, as keep tags only,
+in the separate class `keep`, off until the owner's setup paste allows it. D10
+(a) and D14 to D16 belong to P2's buttons, which are not built. D5 (a): one review list, **These are right**. D6 (a): a web request for web
+apps, a connection only for GPU and model apps. D7 (a): the read-only Beszel
+login's password lives in the env file, the harness's secret store. D17 (a): one
+sudoers file per helper, `/etc/sudoers.d/seraphina-system`. D19 (a): "Ask about
+this app" goes to a model on this machine only. D20 (a): the doctor warns while
+agents' commands run outside the sandbox. D21 (a): Your server takes Plans'
+place on the phone's bar. D23 (a): an app's name reaches the phone only when
+the owner allows it per app (`services.<app>.phone_name`). D8 (b): no Beszel
+heartbeat. D24: no Maintain, Fix or root-access change exists; the root page
+shows P3's changes as disabled buttons with their reason.
+
+### `sf-system`, the helper
+
+One standard-library file, installed root-owned at
+`/usr/local/libexec/seraphina/sf-system`, never imported by the harness (tests
+load it by path), shaped like `sf-snapraid`: one JSON line in (at most 16 KiB,
+`v` 1, a known verb, only its fields), one out (`{"ok": true, ...}` or
+`{"ok": false, "error", "words"}`; exit 0 answered, 2 refused, 1 its own
+failure). On every call it checks its own installation (the program, its
+folder and parents, its config, and each tool it runs at a fixed root-owned
+path: root-owned, writable by nobody else, else `unsafe_install`) and its
+caller: `SUDO_UID` must name an account in `/etc/passwd`, that uid must be in
+the config's `callers` with the class, never an account in a root-equivalent
+group, and the private classes never a person's login account (a uid at or
+above `UID_MIN`, or a login shell) whatever the config says. Its config,
+`/etc/seraphina/system-helper.json`, is `{v, allow, callers, owners,
+stacks_dir, docker_api, keep, smart_types, pid1?}`; this version accepts the
+classes `read` (required), `private`, `refresh` and `keep`, and refuses
+`maintain`, `fix` and `access` (P2 and P3) as "not in this version";
+`smart_types` maps a disk's serial or WWN to one `-d` type of the fixed list
+`sf-snapraid` accepts.
+
+The P1a verbs (class `read`): `info` (version, config, caller, whether
+`docker.service` is active, power holds, boot id, kernel, which tools exist);
+`containers` (every `<data root>/containers/<id>/config.v2.json` and
+`hostconfig.json`, walked without following links: name, image, Compose
+labels and the image's version labels only, eight environment keys only
+(Tailscale's five, never `TS_AUTHKEY` or `TS_EXTRA_ARGS`; Dockge's two), state,
+restart policy and count, the manually-stopped flag, mounts, published ports,
+networks with addresses, aliases and DNS names, privileges; never `Cmd`,
+`Entrypoint`, other environment values or a log; a file of another shape is
+`docker_format_unknown`; whether each Compose folder and file still exists);
+`compose {dir}` (Compose from its plugin path with an empty Docker config
+folder, `config --format json`, of which only the top-level `name` is kept,
+then `config --hash '*'` and `config --images` for each service's hash and
+image name; standard error is never read; any failure is `compose_parse_failed`); `ports`
+(`ss -Htlnp`/`-Hulnp` with each PID joined to its container or unit through
+`/proc/<pid>/cgroup`, and `systemctl list-sockets --output=json`, so a
+socket-activated service is named while only PID 1 holds its socket);
+`tailscale` (each Tailscale container's state found by its mount at
+`/var/lib/tailscale` or `TS_STATE_DIR`, read without following links, and
+three keys decoded: `_current-profile`, the profile's tailnet in `_profiles`,
+`_serve/<profile>`; a `TS_SERVE_CONFIG` file with `${TS_CERT_DOMAIN}` when the
+state holds no serve config; a host tailscaled through `tailscale status
+--json` and `serve status --json`); `ingress {container?}` (a login gateway's
+nginx config, the file bound at `/etc/nginx/nginx.conf` and the `*.conf` of a
+folder bound at `/etc/nginx/conf.d`, `sites-enabled` or `/etc/nginx`, parsed
+into routes: listen, `server_name`, `location`, the `proxy_pass` target or the
+named `upstream`'s servers and whether `auth_request` asks for the sign-in;
+`include` is never followed and nothing else is kept; a text outside that
+shape is `ingress_parse_failed`); `disks` (`lsblk -J -b` and, as root,
+`statvfs` of every real filesystem a lookup reaches in its namespace: a mount
+point covered there is left out, and `du` refuses it); `gpu` (`nvidia-smi --query-compute-apps`
+with each PID joined to its container).
+
+From P1b, class `read` too: `docker {call, container?}` (one of the calls of
+`DOCKER_CALLS`: the container list, one container's or every health-checked
+container's health, the image list, `GET /system/df`, the engine's version and
+store; while `docker.service` is not active the answer comes from the state
+files alone and says so, and nothing is asked of the socket, which would start
+Docker); `smart` (Check 5: per disk `smartctl -H -A -j -n standby,3`, never
+waking a sleeping disk, keyed by WWN or serial, the `-d` type only from
+`smart_types`); `needrestart` (Check 2: `needrestart -b -r l`, list only);
+`journal` (`journalctl --disk-usage` and the archived journal files' names,
+sizes and times); `du {mount}` (Check 3 on request: `du -x -d 2 -B1` under
+`nice` and `ionice -c3`, one of the server's real filesystems only, 120
+seconds); `job {job}`, `log {job, offset?}` (a job's record and a page of its
+output through the redactor; the `access` job's output stays on the server)
+and `receipts {id? | rid? | cursor?}` (one receipt, what happened to one rid,
+or a page of 20). `info` adds the recent jobs, whether one runs and the newest
+receipts. Class `refresh`: `apt.refresh {rid}`, a job that runs `apt-get
+update` with the network, which writes the package lists in
+`/var/lib/apt/lists` and runs apt's own hooks, as Ubuntu's daily timer does;
+it installs, removes and upgrades nothing, and the design classes it as reading
+because it changes only the package lists. Class `keep`: `keep.images {rid,
+prefixes}`, the keep pass (D9): each running Compose service's current image
+gets the name `seraphina-keep/<project>-<service>:<yyyymmdd>-<12 hex>`
+(`POST /images/<id>/tag`, the one call of the list in class `keep`), and the
+first time its previous image too (one with no name left whose digest names
+the same repository), within `keep.images_per_app` and `keep.max_gib`; images
+under the owner's own `keep_tag_prefixes` count as kept. It only adds names,
+reads Docker's image list again to check them, and writes a receipt whose way
+back is removing those names; a pass Docker refused in all checked nothing
+(`verified` empty) and its way back says nothing was named. Class `private` (P1c): `logs {container | unit,
+lines?, before?}` (one page of one part's logs, at most 500 lines or 256 KiB,
+from Docker's json-file log and its rotated copies, `journalctl
+CONTAINER_ID=<12 hex>` for the journald driver, or `journalctl --unit` for a
+loaded unit; every line through the helper's own copy of the Blueprint's
+redactor, `REDACT_RULES`, before it leaves root) and `access {read?, offset?}`
+(who can act as root, below). Every other verb of the design (`tickets`, the
+P2 buttons' `apt.*`, `journal.vacuum`, `docker.clean`, `restart`, `reboot`,
+`job.cancel`, P3's `access.ticket`) is refused `not_in_this_version`, and a
+config that allows `maintain`, `fix` or `access` is refused as a whole.
+
+A request that changes something (`apt.refresh`, `keep.images`) carries a
+fresh `rid`: `rids/<rid>.json` is created exclusively with fsync and held under
+a lock before anything runs, so a repeated rid returns the first answer and
+starts nothing; when sudo's answer is lost the harness asks `receipts {rid}`
+what happened and never sends it again by itself (design §6.8's outcome rule).
+A job (`apt.refresh`, `access`) is a record `J-n` under
+`/var/lib/seraphina-system/jobs`, one at a time (`/run/seraphina-system/
+job.lock`), run by `systemd-run` in a transient unit `seraphina-system-<verb>-
+<n>` (Nice 10, idle I/O, `ProtectHome=read-only`, `PrivateTmp`, no network for
+`access`) whose output goes to a 0600 file, never the journal; `run <job>`
+refuses outside that unit (it reads `/proc/self/cgroup`) and holds a power hold
+`/run/seraphina/holds/system-<job>.json` while it works. Receipts `R-n`
+(`seraphina-system-receipt/1`) are kept in the helper's state folder; the
+harness mirrors ids, verbs, classes, outcomes and counts only to
+`<data_dir>/yourserver/receipts.jsonl`.
+
+Who can act as root (`AccessScan`, design §8.1, a job with no network): the
+accounts with uid 0 and whether root has a password, sudo rules (`sudo -l -U`
+per account through both programs when sudo-rs and classic sudo disagree, a
+rule only one allows saying so; `visudo -c`; dotted and unread files under
+`sudoers.d`; `cvtsudoers` names it cannot resolve), the root-equivalent groups
+and NSS sources, polkit rules, SSH keys (type, fingerprint and comment's first
+word only, with `sshd -T`'s settings), the Docker socket and who can reach it,
+Dockge, containers that hold the whole server and those that could matter if
+something escapes, root services and timers that run or use a file another
+account can write, cron, setuid files (with `dpkg -S`/`-V` for whether a
+package owns them unchanged), file capabilities, and the gateway. Each row is
+`{id, kind, group, words, why, way, escape}`, its id a hash of kind, subject
+and target; the result stays in `access/last.json` (0600) and is read 100 rows
+at a time; what it cannot check from here (a sudo rule through LDAP, sudo-rs
+and classic sudo both installed, and so on) is listed as such.
+
+Argument modes, for the owner's own sudo in a terminal: `setup <staged
+config>` (it checks its own `.new` copy, reads the staged config without
+following links and checks every field and account, writes the sudoers file
+from its own template, decides sudo-rs or classic sudo from where
+`/usr/bin/sudo` resolves and leaves the `Defaults!` line out under sudo-rs,
+checks it with that implementation's `visudo -cf`, says in its own words what
+will be allowed and asks for `yes`, then moves the helper, its config and the
+sudoers file into place in that order and prints one line; any refusal removes
+its `.new` files and leaves the installed ones), `remove` (the sudoers file
+first, then the config and the helper; the state folder only after a second
+yes), `explain helper-config`, `explain ingress` and `explain access`; `run
+<job>` only inside its own unit. `enrol`, `approve` and `confirm` are refused.
+The harness's sudoers line allows no arguments, so it can reach none of them.
+`setup` says in its own words what each class allows ("refresh Ubuntu's list of
+updates", "keep the previous version of each app", "read app logs and who can act
+as root"), and its one success line names them.
+
+### The harness side (`swfactory/yourserver.py`)
+
+`YourServer`, made by `Factory._yourserver_manager()`, runs one thread while
+`yourserver.enabled` is true: the cgroup numbers every `live_seconds` while
+someone has the page open, else every `idle_minutes`; the helper's map every
+`map_minutes` or when the set of running containers changes (a try the
+helper refuses or does not answer waits the same `map_minutes`, never every
+tick); one probe per app at most every `probe_seconds`; the Beszel watch every 5 minutes; then the
+lights, incidents and findings. Helper answers (names, paths, addresses) stay
+in memory.
+
+- **Host strip** (design §3): free memory of total (`MemAvailable`), swap in
+  use, CPU from two `/proc/stat` reads, uptime, free space per real filesystem
+  keyed by UUID (amber below 15% or 100 GB, red below 5% or 20 GB, whichever
+  is smaller; per-disk numbers and full-on-purpose in `yourserver.host.disks`;
+  a filesystem the harness's user cannot stat comes from the helper's
+  `disks`; one whose mount point the harness's unit covers, by
+  `/proc/self/mountinfo` (`InaccessiblePaths=`, `ProtectHome=` or
+  `TemporaryFileSystem=` put an empty folder over it), is never stat'ed, since
+  the cover would answer: the helper's numbers, else "<label>: cannot be seen
+  from Seraphina's service" with no numbers, and Disk use does not offer it),
+  hwmon temperatures, `nvidia-smi --query-gpu` per card by UUID,
+  `/run/reboot-required`.
+- **Numbers per container**: `memory.current` minus `inactive_file`, CPU from
+  two `usage_usec` reads divided by the CPUs, from every `docker-<id>.scope`
+  under the cgroup root (a custom slice included); before the helper is set
+  up, the summary card ("12 containers are running (postgres, node, nginx and
+  9 more), using 18 GB of memory...") from `/proc/<pid>/comm`.
+- **Apps** (design §2.1): one per Compose folder and project name, per
+  container started by hand, per unit listening beyond loopback that is not
+  plumbing; one-off containers and job runs left out; a renamed predecessor
+  and a stopped container with a running member's image repository proposed
+  as old copies; Tailscale containers joined to the apps their serve entries
+  reach (a shared namespace either way, a name, alias or address on a shared
+  network, a host port), becoming a part of the first. Names: the owner's, a
+  product (Dockge, Beszel, Cockpit), the Dockge folder, the single service, the
+  project, the container. App ids `a-<name>` are made once.
+- **The record** `<data_dir>/yourserver/apps.json` (0600, folder 0700) holds
+  the owner's choices and member identities (hashes, never paths), sealed with
+  a hash chain (`{record, prev, hash}`) whose newest hash the harness keeps in
+  memory; an edit outside its API makes the touched addresses wait ("This
+  address was changed outside Seraphina. Is it still right?"), a wait sealed
+  with the record (`outside_wait`), so the harness's own next write and a
+  restart never make an edited address trusted; after a restart a confirmed
+  address that no candidate matches waits too. The app
+  change log `changes.jsonl` holds kinds and counts with the same chain, never
+  an address or a path. Only the owner's own changes are kept for undo.
+- **Addresses** (design §2.3): candidates from each Tailscale entry, the
+  gateway's routes (for the app the upstream reaches, never the gateway, never
+  ticked in advance), published ports and the owner's typing. Only an `https`
+  name under the confirmed tailnet suffix, a home-network address of this server
+  (the names the gateway serves there count) or loopback may be an Open link.
+  The review list ticks a row in advance only when the Tailscale node's own
+  name is the address's first label and one target joins. "No, it's another
+  one" puts that candidate aside (`apps.<id>.rejected`): the next one is
+  proposed, else "Type the one you use", and a confirmed address stays. Yes to
+  an address that waits saves the address shown, checked again (`confirm` with
+  no candidate named confirms the saved address; a found one with the same URL
+  gives its source), never a found one that differs.
+- **Lights** (design §2.5): expected state from the restart policy, confirmed
+  in the review list (`services.<app>.expect`); red for a non-zero exit without
+  the manually-stopped flag, three restarts in ten minutes or a failed unit;
+  amber for a stop through Docker past `grace_minutes` (a power hold that names
+  the app counts from its end), three failed probes, a 5xx, a part or the
+  Tailscale container down; green only on fresh facts (Docker's containers
+  answer keeps its own time, so a failed read is never green from an old one);
+  grey when stale; off as chosen. A unit started on demand whose socket
+  listens (Cockpit) is green, "Ready: it starts when you open it", never
+  stopped. Probes are one `GET` through `plainhttp` with the confirmed name
+  as `Host` (no cookie, credential or redirect followed), or a TCP connect for
+  an app holding GPU memory, to the local target behind the address: for a
+  gateway route, its upstream. The gateway's own card is red when a part that
+  should run is down (a one-shot part that finished with code 0 is not); the
+  apps behind it keep their own lights.
+- **Notices and findings**: `Notifier.app_event` (new; `service.down` and
+  `service.up` per app, with the app's short name only when
+  `services.<app>.phone_name` is on), on red for three checks in a row or the
+  amber "Stopped at"; Beszel down sends one with the subject `beszel`. Items
+  `yourserver:down:<app>` (with `links.app`, a new link key) and
+  `yourserver:beszel`, closed only by a fresh observation: the first green sends
+  "Working again"; an app kept off closes its incident and item without a
+  notice (`Notifier.app_clear`), and so does one gone from the page when the
+  record says why: hidden, joined with another app, marked an old copy (each
+  part marked or removed, at least one marked), every part removed from
+  Docker's answer (none of it unreadable), or a service whose unit is gone. Only gone from the page it stays open: a failed service stops
+  listening, and a stopped app can show as another's old copy. The open ones
+  are read back from the ledger and the notifier (`Notifier.app_incidents`)
+  after a restart. Events
+  `yourserver.updated` and `yourserver.app` carry ids, tones and codes only.
+- **Beszel** (design §4): the hub's `/api/health` at its upstream, the agent's
+  cgroup, and with the read-only login (`yourserver.beszel.login_email`, the
+  password in the env file under `login_secret`) the systems' `status` and
+  `updated` through PocketBase's password sign-in. The page makes the login's
+  password (shown once, kept in the env file) and checks the login.
+- **Ask about this app**: the typed facts (what it is, whether it is healthy,
+  what changed; no logs, environment, addresses or paths), sent only to a model
+  whose provider is on this machine (`yourserver.ask_model`, else the first
+  local one), labelled "AI, from the facts above".
+- **Setup** (design §6.11): `POST /api/yourserver/setup/stage` writes the
+  helper, a draft config (reading, and the classes the owner ticked,
+  for this harness's uid) and the sudoers
+  file into `<data_dir>/yourserver/setup/`; the page shows the one paste, the
+  same steps one at a time, "Switch it all off with one file" and the remove
+  paste.
+
+From P1b and P1c:
+
+- **Docker's health and the update kinds** (design §2.5, §2.6, D4): with
+  `docker_api` on, the map adds the image list and every health-checked
+  container's health; an `unhealthy` part makes the card amber with Docker's
+  own words. Each card's updates come from what is on the server only: waiting
+  in its folder (Compose's hash or image name differs from the running part's),
+  downloaded and not in use (its tag names another local image now), pinned
+  (the owner's, or a digest), else "No update is waiting on this server".
+- **Kept versions and How to go back** (design §2.6, D9): the keep pass runs on
+  **Keep the current versions now** and by itself, at most every 10 minutes, when a running
+  Compose service's image has no kept name (after a Dockge update) and is not
+  under the owner's `keep_tag_prefixes` (the helper's rule for both, so a pass
+  with nothing to name is never sent again and again), only while the class
+  `keep` is on. The 10 minutes count from every pass, a refused one too; after
+  a pass whose outcome is unknown (no answer, or a helper that ended without
+  one) nothing is sent by itself until the helper's record of that request
+  says it ended or never started (asked again every 10 minutes) or the owner
+  presses the button. The hold is read back after a restart from that
+  request's open `system:unknown:<rid>` item (its source keeps the verb), and
+  the helper is asked about it at the first tick. The owner's press is kept
+  with that item too (its source says `released`, its detail says so in
+  words), so a restart does not hold the automatic pass again; the item stays
+  open, the helper is still asked about that request, and it closes when the
+  record says it ended or never started. The server page says "Last
+  kept" only after a pass that named something, and says so when the last pass
+  kept nothing (Docker refused every name); so does **Keep the current versions
+  now**, from the pass's outcome rather than its words. The answer's words
+  follow the outcome too ("Every app's current version is already kept" only
+  when there was nothing to name), and `keep.kept_at` is the last pass that
+  added a name (`keep.at` is the last pass, whatever it did). The app page lists the
+  previous versions kept per service and,
+  when one is, the How to go back panel: the three steps in Dockge (or the
+  compose file in Cockpit's terminal for a folder outside Dockge), the two
+  `image:` lines to copy, and that it puts back the program, not the data.
+- **The Check buttons** (`swfactory/serverchecks.py`, design §7.2): 1 Updates
+  available (`apt-get -s upgrade` and `dist-upgrade` with `Debug::NoLocking`,
+  the families kernel, GPU, Docker, access and Seraphina, security updates
+  tinted, held packages, a Docker update held to its own step, the list's age,
+  and **Refresh the list** when the class `refresh` is on); 2 Restart needed
+  (`/run/reboot-required` and its packages, `needrestart` through the helper);
+  3 Disk use (free space, Docker's `system/df`, the journal, apt's cache, and
+  per disk **Find the biggest folders**, the helper's `du`); 4 Failed services
+  (`systemctl list-units --failed --output=json`); 5 Disk health (`smart`; grey,
+  never healthy, when no disk could be checked; grey too when some were asleep
+  or could not be read, which counts only the disks read as healthy: "1 of 3
+  disks healthy. 2 could not be read."); 6 What is listening (`ports`,
+  each socket's reach: this server, home, Tailscale, everywhere; Docker's
+  published ports joined to their apps through `PortBindings`); 7 Tailscale
+  (each node's name and serve entries, a host tailscaled's too); and **Check
+  everything**. Results stay in memory; each check runs on its own thread and
+  the page follows `GET /api/yourserver/checks`. Check 8, one app's logs, is on
+  the app page.
+- **Logs and the root page wait** (design §7.1, §10) until `private_state()`
+  holds: Seraphina runs as her own system account (a uid below `UID_MIN` with a
+  no-login shell), in no root-equivalent group, the sandbox is `bwrap`, no agent
+  route uses a command-line agent (the config's, a job's that is not over, the
+  lead of a plan that is not finished, or a chat's), and the helper allows
+  `private`. Until then
+  each says why, with the links to Dockge's and Cockpit's logs, and the root page
+  shows the one line for the owner's own terminal, `sudo sf-system explain
+  access`. Log pages are redacted by the helper and again by the harness, kept
+  nowhere and shown in the cockpit only.
+- **Who can act as root** (`swfactory/rootaccess.py`, design §8.1 to §8.3,
+  view only): **Check now** starts the enumeration; the page groups the rows
+  (People, Programs, Doors, Files, Could matter if something escapes), says how
+  many ways to take full control it found and how many are new, lists what
+  cannot be checked from here, and keeps the owner's "I know about this" with
+  his note in `<data_dir>/yourserver/root.json` (0600: row ids, dates and marks
+  only, no name, key or path). A new way not marked raises the item
+  `yourserver:root:<row>` in Needs you with fixed words; P3's changes show as
+  disabled buttons with their reason.
+- **Records of changes** (design §6.10): `#/server/receipts` lists the
+  helper's receipts and the operator's reported ones, each labelled by where it
+  came from, with its outcome in words, its way back and what was and was not
+  checked; a change whose outcome is still unknown is named above the list (one
+  the helper's record settled as done or never started is not). A helper
+  receipt whose outcome is not Done or Partly done shows the change's name, not
+  its words, and a failed keep pass says none were kept and there is nothing to
+  undo, without the way back and checks about names never added. The API's
+  words count the names a pass added, never those it planned, and follow the
+  outcome ("Kept 2 of 3 …", "Tried to keep 3 … none were kept"); each row
+  states its outcome in `outcome_words` too.
+- **Blueprint helper mode** (`factory snapshot --helper`): the Blueprint's
+  collector takes SMART, the listeners, Docker and Compose from the helper's
+  read verbs instead of running them itself, adds the users section only then,
+  and says so in its scope line.
+- **Tailnet fallback**: `channels.tailnet_status` falls back to the confirmed
+  `yourserver.tailnet.suffix` (a `ts.net` name only) when `tailscale status`
+  cannot be read, so phone links keep the tailnet name.
+- **What reaches whom** (design §10): the class `private` reaches the cockpit
+  only. Events `yourserver.check`, `system.job` and `system.receipt` carry ids,
+  check names, tones, verbs and outcomes; the phone gets no notice from P1b or
+  P1c; no agent token reaches any of these routes, and no log line or root row
+  is written to `<data_dir>`, a run log or an event.
+
+### Settings, routes, CLI, doctor
+
+`yourserver` (enabled, helper, refresh, stale_minutes, tailnet {suffix,
+confirmed_at}, links {dockge, cockpit, beszel}, beszel {watch, login_secret,
+login_email, stale_minutes}, updates {registry_checks: false}, keep_tag_prefixes,
+host, ask_model) and `services.<app id or job id>` {maintenance {mode},
+phone_name, probe, expect, main_member}, both in `UPDATABLE_SECTIONS`; links
+pass the same rule as Open links. Routes (master token only, none an agent's):
+`GET /api/yourserver`, `POST /api/yourserver/refresh` (reads again now),
+`GET /api/yourserver/apps`, `GET|POST /api/yourserver/apps/{app}`, `POST
+.../address`, `GET .../qr`, `POST .../ask`, `GET|POST /api/yourserver/review`,
+`POST /api/yourserver/groups`, `POST /api/yourserver/beszel {action:
+password|check, email?}` (the read-only Beszel login: a password made once and
+kept in the env file as `SERAPHINA_BESZEL_SECRET`, then its check), `GET
+/api/yourserver/setup`, `POST /api/yourserver/setup/{stage|check}` (stage takes
+`{classes}`: any of `refresh`, `keep` and `private`, the last refused while
+Seraphina runs as a person's account), and from P1b and P1c `GET
+/api/yourserver/checks`, `POST /api/yourserver/checks/<check> {refresh?, mount?}`,
+`GET /api/yourserver/apps/<a-id>/logs?member=&lines=&before=`, `POST
+/api/yourserver/keep`, `GET /api/yourserver/jobs[/<J-n>]`, `GET
+/api/yourserver/receipts[?cursor=|/<R-n>]`, `GET /api/yourserver/root`, `POST
+/api/yourserver/root/check` and `POST /api/yourserver/root/<row>/mark {known,
+note?}`; a press the area cannot carry out now is a 409 with its words (the
+helper's own, "busy" while another job runs, for example), a record that does
+not exist a 404. CLI:
+`factory apps [show <app>|qr <app>]`, `factory system [host|helper
+stage|check|remove|check <check>|root|receipts [<R-n>]]` and `factory snapshot
+--helper`. Doctor: one
+`_safely("your server", …)` line: the helper installed and its hash, sudo
+reaching it (NoNewPrivs named), `unsafe_install`, the harness's user in a
+root-equivalent group (error), the harness on a home address other web apps
+share (error, N10), a gateway route to the harness's port (warn, N11), the
+classes beyond reading while the sandbox is off (error for `private`; `read`,
+`refresh` and `keep` alone warn, naming what they allow), `private` given to a
+person's login account (error), whether logs and the root page are read through
+the helper or why they wait (info), Beszel without a login (info), the masks,
+and the lab line.
+`<data_dir>/yourserver` is in `sandbox_masks`.
+
+### GUI
+
+`#/apps`: the looks-only line, the host strip, then the summary card (no
+system access), Turn it on (off), the review card, the app cards (light and
+reason, the address with **Open** (a new tab, `noopener noreferrer`, never at
+Seraphina's own host) and **QR code**, or "Is this the address you use for
+...?" with Yes, No and "I only use it at home", RAM, CPU and GPU, version, what
+manages it as a link, maintenance, the first backup line, exposure), the "Not
+shown" line and Beszel. `#/apps/review`: one row per app with a tick, the
+name, the address (or another one typed), "I only use it at home", "Should it
+run?" and "This is an old copy of", then **These are right**. `#/apps/<id>`:
+the card, the QR code and the Add to Home Screen steps per phone, addresses
+found, It should run / Keep it off, parts with their privileges in words, old
+copies (Retire it, It is an old copy, It is part of this app; a retired copy
+that starts at boot shows the one terminal line), job runs, maintenance (the
+mode toggle, "Planned" until Seraphina updates apps), backups with How to go
+back, the latest log lines (a part to pick, Older lines; or why they wait and the
+links), Ask about this app, the owner's name, note, phone name and hide, what
+changed. `#/server`: the system access's state and what Seraphina may do, the
+seven Check buttons with **Check everything**, Previous versions, Beszel,
+Cockpit's terminal, the links, the lab list. `#/server/root`: who can take full
+control. `#/server/receipts`: the records of changes. `#/server/setup`: the
+classes to tick and the paste blocks. Under the looks-only line the page names
+the two things the owner allowed it to change, when he did. Rail "Your server", order 5, on the
+phone's bar. Home: "All 10 apps working. 1 needs you.", `err` with an app down,
+`human` for the review list, `warn` for Beszel. Every word is in `WORDS`;
+`tests/test_yourserver.py` checks it against the design's internal words (U8).
+The mock (`tests/gui_mock/yourserver.py`) runs the real module over the rig in
+18 states (P1b and P1c add `checks`, `keep`, `root` and `root_before_move`);
+`tests/gui/yourserver.mjs` drives them at 1440 and 390 px, light and dark.
+
+### Not built
+
+Maintain, Fix and their codes and approvals (P2); root-access changes (P3,
+shown disabled); the activity source `system` and the phone notice
+`access.new` (a new way to take full control raises a Needs you item instead);
+the root page's rows for changes made outside Seraphina from `dpkg.log`, for a
+unit created while another account held root (only the unit file's date is
+shown), Tailscale state's age, and snap's `refresh --list`; reusing
+`sf-snapraid`'s SMART answers; the reads of PID 1 and `systemd-run` on a real
+systemd machine (labs L8, L9); `tickets` (refused `not_in_this_version`); a
+probe of a gateway route itself (`probe.target: route` with `ca_file` or
+`pin_sha256`); the comparison of QR codes with reference matrices from a
+well-known encoder (none was installed; `tests/test_qr.py` reads every code
+back with its own reader instead).
+
+## 43. The browser adapter, phase BC1a (added; off by default)
+
+The design is [docs/seraphina/BROWSER_AND_CODEX.md](docs/seraphina/BROWSER_AND_CODEX.md)
+("the design"; its sections are "design §n") with the research note
+[docs/seraphina/research/browser-adapters.md](docs/seraphina/research/browser-adapters.md).
+Phase BC1a of design §4.3 is built: a harness-owned browser MCP server that a
+browsing persona (Kate's `kate-browser`, design §2.11) drives, in a namespace of
+its own with no network, against the harness's own fixture site. The operator
+persona's decisions K1 to K21 (design §6.1) are binding and are followed as
+written; the owner's answers that apply are O5 (the GUI, phone notices later),
+O6 (at most 5 GB and 30 days of screenshots, action logs and receipts), O7 (no
+Windows companion) and O11 (Chrome with `--no-sandbox` inside the harness's own
+namespace, for fixture pages; no root change). Real sites, egress, logins,
+uploads, kept downloads, the long-lived worker, an existing browser worker,
+`select`, `back`, `dialog`, `downloads` and `status` are not in BC1, and neither
+is the Codex job (BC1b) or Codex driving the browser (BC1c).
+
+**Off by default** (`browser.enabled: false`). It also needs the harness's own
+runtime (K1: Node, Playwright MCP and a Chrome build in one directory,
+`browser.runtime.dir`), the `browser` MCP entry (`examples/browser.json`), and a
+browsing persona file with its own Open WebUI preset. Modules:
+`swfactory/browser/` (`rules`, `session_locks`, `shim`, `namespace`, `fixture`,
+`preset`, `runs`, `checks`), `swfactory/framing.py`, `bin/sf-browser`; the GUI is
+`swfactory/web/views/browser.js`.
+
+**Where it stands** (checked here, 26 Oct 2026): built and tested in this
+repository. The unit tests replay responses recorded from the real Playwright
+MCP 0.0.83 (`tests/fixtures/browser/playwright-0.0.83/`, recorded through the
+shim itself), and the live tests run the real 0.0.83 and a real Chrome in the
+real namespace; they skip when the runtime is not installed. The recordings and
+the live runs used chromium-headless-shell **141.0.7390.37**, not the pinned
+155.0.8059.12 (no 155 build was available where they were made); the fixtures'
+README says so and how to record them again, and the doctor's `browser pins`
+line reports the difference. Nothing ran on the owner's server (design §4.7).
+
+### The shape (design §2.1, §2.9)
+
+The harness starts `bin/sf-browser mcp <grant>` as a stdio MCP server
+(`mcp_servers.browser` with `sandbox: "self"`, which config accepts only for
+the installed `bin/sf-browser`, and `required: true`, so a turn whose browser
+cannot start fails with the reason instead of running without it). The
+launcher reads the grant, takes the profile's session lock and the grant's own
+lock (`flock`, non-blocking; the descriptors stay open across the exec), raises
+the profile's lock number, settles what an earlier run left (an intent without
+an outcome becomes `unknown`), makes the session folder, starts a job's preview
+in a sibling namespace when the grant has one, and replaces itself with bwrap
+over the shim. A launcher that cannot lock or read its grant still speaks MCP
+and answers every call with `session_lock_busy` (with `locked_by_kind`) or
+`no_grant`.
+
+The namespace (`sandbox.minimal_args`, `namespace.namespace_argv`):
+`--unshare-net --unshare-pid --unshare-ipc --die-with-parent --clearenv`, an
+environment of `PATH`, `LANG`, `HOME` and `TMPDIR` only, `/usr` (with a merged
+host's `/bin`, `/lib`, `/lib64`, `/sbin` as the same symlinks) and a few files
+under `/etc` (fonts, `passwd`, `group`, `nsswitch.conf`, `localtime`,
+`ld.so.cache`, `hosts`, `alternatives`) read-only, empty private tmpfs `HOME`
+and `/tmp`, `/dev` and `/proc`, then read-only: the Python the launcher runs on
+(when outside `/usr`), the `swfactory` package, the grant, the profile's lock
+number, the Node binary, the `node_modules` holding Playwright MCP, the Chrome
+build's folder and the fixture site; writable: the session folder only; and
+Playwright's output on a `--size`-capped tmpfs (`/downloads`, 50 MB). The
+harness's data directory, its config, the chats, other sessions and every key
+file are not in it. When the shim exits, the namespace's init exits and the
+kernel ends every process in it; when the harness dies, `--die-with-parent`
+ends it; either way the lock descriptor goes with it (`tests/test_browser_live.py`
+checks SIGTERM, SIGKILL, stdin EOF and `kill -9` of the harness, by the
+process table).
+
+Inside, the shim (`shim.py`) starts the fixture (`fixture.py`, on
+`127.0.0.1:18937`, logging what it acts on into the session folder's
+`fixture.jsonl`) and Playwright MCP through `McpClient`:
+`--headless --isolated --no-webmcp --image-responses allow --output-dir
+/downloads --timeout-action 5000 --timeout-navigation 15000 --allowed-origins
+<the grant's origins> --executable-path <the grant's Chrome> --caps testing
+--config <launch args: --no-proxy-server> --no-sandbox` (O11), with
+`--storage-state` for a profile whose cookie code seeds. The shim is a reader
+thread (the handshake, `notifications/cancelled`) and one worker thread (the
+calls, in order); stdin EOF and SIGTERM cancel the call in flight, which is
+recorded before Playwright is closed.
+
+### The tools (design §2.2) and the observations (§2.3)
+
+`observe {scope?, depth?, find?}`, `read {observation, ref, max_chars?}`,
+`navigate {url}`, `click {observation, ref, expect?, again?}`, `fill
+{observation, fields}`, `press {observation, key, ref?, again?}`, `wait_for
+{text? | gone?, seconds}`, `screenshot {name, full_page?}`, `close`: 3,170
+characters of schemas (a test keeps them under 4,000). Underneath, only the ten
+Playwright tools of design §2.2 with refs (never a selector, `modifiers`,
+`doubleClick` or `submit`), and three internally with fixed arguments:
+`browser_tabs`, `browser_network_requests {static: true}` and
+`browser_verify_text_visible`. Every observation has an id (`O-n`), the session
+lock and its lock number, the time, the origin (parsed by the shim), whether it
+is allowed, the modal state, typed events (popup, dialog, download), the tab
+count and the ref count outside the data block; the URL, title, event texts and
+the ARIA snapshot inside one `<factory-data source="browser-page"
+taint="untrusted">` block, cleaned (`framing.clean_text`: format characters and
+chat-template control tokens removed, markers escaped) and capped (URL 300,
+title 200, dialog 300, file name 120, the page 8,000: over it, the tree to depth
+3 with `truncated` and a hint). `find` is a literal, case-insensitive substring.
+The shim takes the observation itself after every action.
+
+**Refs (K16).** A read or an input may cite an older observation while the ref
+still names the same role and name on the same URL; a click, and a submitting
+key, need the latest observation; otherwise `stale_ref` with the current
+observation, and nothing is sent.
+
+**Classes (K15) and the effect check.** A link click is `navigate`, any other
+click a `commit`; `fill` and keys are `input`, except Enter and Space, which are
+commits whatever has the focus (judgement: a focused button submits on Enter).
+After every action the shim compares the browser's request list before and
+after (Playwright numbers requests per page load, so a list that is not a
+continuation counts whole): any request other than a GET or HEAD makes a link
+click or an input a commit after the fact (`reclassified`), and the origin goes
+on hold. 0.0.83 refuses the list while a dialog is open, and a dismissed
+dialog's handler can send something itself, so the list is read again once the
+observation has dismissed a dialog; a list that still cannot be read after a
+call that left counts as sent (`requests_unread`, never `requests: []`). A link
+reclassified this way is a commit on that page from then on, so a click on it
+again meets the duplicate rule. 0.0.83's list gives each request's method and
+the status the site answered, but not whether it had a body (pinned by the
+recordings).
+
+**The action log** (`session_locks.ActionLog`, `action-log.jsonl` in the
+session folder): an intent line before every non-read action is sent
+(`action_id`, class, tool, the target's ref, role, keyed hash of its name and
+the observation it came from, the cleaned name inside a data block for the GUI,
+the origin, a keyed hash of the URL, a keyed hash of the values), then an
+outcome line (`ok`, `tool_error`, `unknown`, `not_sent`, `cancelled`; the
+final class, `reclassified`, the observation after, and the response: the
+Playwright call's status and each request the action sent with the status the
+site answered). Values and URLs are HMACs under a per-session key held in the
+shim's memory only; no value, query or fragment is written. Every write carries
+the lock number and is refused when the profile's current one is another.
+Refusals, screenshots, cancelled reads and login pages add lines of their own.
+A commit whose Playwright call failed or was stopped (`tool_error`,
+`cancelled`) while the effect check saw it send, or could not read the list, is
+`unknown`, not failed: it is held and counted for the duplicate rule. The
+internal calls after an action (the request list, tabs, the snapshot) end at
+once when the session closes, so the shim writes the outcome line within the
+harness's close grace. A check the close cut short or never let start is a list
+not read: a link or an input whose call left is then a commit with outcome
+`unknown` (an action after which neither the list nor a page could be read is
+`unknown` even when its call answered `ok`), so the owner's Stop during a link
+click lands in Needs you and never as `cancelled` with nothing sent. A typed
+`navigate {url}` the close stopped keeps its outcome (`cancelled`, or `ok`),
+its list recorded as not read: it is the model's own load of a URL the shim
+checked, not a disguised commit, so a Stop while a page loads is no commit. A
+call still waiting in the shim's queue when the session closes is answered
+`cancelled` and never run. At run end the core settles any intent still without
+one as `unknown` (`settled_at_end`).
+
+**Outcomes (DESIGN §40).** `McpClient.call_result` (below) tells a call that
+never left (`not_sent`) from one that may have acted (`unknown`: a timeout
+after sending, a server that died). After an unknown or reclassified commit,
+every further action on that origin that may send (a click of any role, an
+input, a key; the link or field may be the disguised commit itself) gets
+`commit_hold` until the caller cites an observation it took after the action's
+own (a repeat citing the action's observation is held). A second commit on the same page (origin and path, query
+and fragment ignored, so a renamed button changes nothing) is
+`duplicate_commit` unless the call cites the latest observation and says
+`again: true`. The shim's per-call limit is 20 s (Playwright's 15 s navigation
+plus 5), a commit's may be lower (`limits.commit_seconds`), and the doctor
+checks that it stays below the harness's MCP timeout, so the shim records the
+unknown, not the harness.
+
+**URLs and tabs.** http and https only, plus `about:blank`; userinfo refused;
+the host normalized (IDNA, lowercase, no trailing dot) and the port explicit,
+and the origin must equal a read origin exactly (`url_refused`,
+`origin_not_allowed`). After every action the page's URL is checked again, so a
+redirect off the origin set answers `origin_not_allowed` with the origin inside
+a data block and no page content, until the model navigates back. Inputs and
+commits need a write origin (`write_origin_required`). Every observation closes
+any tab but the session's and reports a `popup` event; 0.0.83 keeps the current
+tab on the page that opened the popup (pinned). Dialogs are dismissed at once
+(their text inside the block; a message of several lines, or one holding lines
+that look like sections, is one dialog: its type comes from Playwright's own
+prefix, and a modal it cannot read is dismissed once); an error's reason never
+carries Playwright's text. Downloads are recorded with the size the capped
+tmpfs holds, never kept. A profile with a login rule (`fixture-login`: a cookie
+code seeds with a 2-second life) answers `login_required` with the origin and
+never the login page, and refuses every read, click, fill and key on it before
+anything is sent (the owner logs in himself); navigating away stays allowed.
+
+**Screenshots** come back to the shim as an image part; the shim checks the PNG
+header, writes it into the session's `artifacts/` under a name it chooses
+(`O_EXCL`), hashes it, and returns `{artifact, sha256, bytes}`. No image part
+reaches a model (K5).
+
+### The harness side (design §2.6, §2.10, §2.13; `swfactory/browser/runs.py`)
+
+- **The browser: line** of an agent or persona file names its profile; it is
+  refused in a repository's `.factory/agents` (`discover_agents` raises).
+- **The session rule (design §2.10 rule 2),** at chat start and on every turn:
+  an agent that names the browser has `tools: none`, no other MCP server, no
+  Wake and no memory line; a browsing chat has no repository, runs on the
+  builtin harness only (a CLI driver never starts the browser server, so such a
+  turn is refused before a grant is written), and has no Items tool (a journal
+  in its folder is never applied). A chat that browsed (chat.json's `browser`
+  list) stays a browsing chat when its agent's file no longer names the
+  browser: its session holds page text, so its turns run without a grant but
+  under the same rules (no Items tool, the builtin harness only, the agent with
+  nothing else, an Open WebUI persona's preset checked); the turn and the
+  ingest read the same list, so no Items call is answered and then dropped.
+  Line agents and jobs get no grant in BC1, so
+  their browser server is skipped (a required one fails the run).
+- **The browsing preset (rule 7, K13),** for an Open WebUI persona, at chat start
+  and on every turn, and in the doctor: the preset's export, the global function
+  list and the Pipelines list (GETs only) must show no tool, filter (on the
+  preset, global or always-on), action (on the preset or global), skill,
+  knowledge, memory, built-in tool or feature, terminal, custom `tools`
+  parameter, Pipelines server or base connection off this machine; a list the
+  key cannot read refuses unless `browser.preset_checked_by_hand` records the
+  operator's own check. The reason names each part found. A browsing agent that
+  is not an Open WebUI persona never reaches Open WebUI (its preset would never
+  be read): its chat is refused at start and on every turn, on the model the
+  turn really runs on, and the doctor's `browser preset <agent>` line names it.
+- **The grant** (`grants/<G>.json`, 0600), written by the core when a browsing
+  turn starts: the locking run (`{kind: chat, ref: chat:<id>, run: NN-turn,
+  agent}`), the profile and its origins from config (loopback origins inside
+  the namespace only), the runtime's paths (never from `PATH`, and refused when
+  missing), the limits, and the worker versions for the receipt. Before it, the
+  caps (O6: 5 GB, 30 days) prune the oldest session folders.
+- **Revoke** (rule 3): `POST /api/browser/grants/<grant>/revoke` sets `revoked`
+  in the grant and closes the locking run's `McpClient`; the namespace ends, and
+  a commit in flight is recorded `unknown` and never sent again. A revoke that
+  lands before the run's client is registered closes that client when it
+  registers. The shim also reads the grant on every call
+  (`session_lock_revoked`), which works because the core changes the grant in
+  place (the namespace binds that one file, so a renamed new file would never
+  reach it), and measures `max_minutes` on the monotonic clock
+  (`session_lock_expired`).
+- **At run end** the grant is marked ended, an action still without an outcome
+  becomes `unknown` (`settled_at_end`), but only once the shim is gone, so it
+  never writes an outcome after that one: the run's client is closed by then,
+  but a revoke closes it on a thread of its own (the run's own close then
+  returns at once), so while the grant was revoked or an intent has no outcome,
+  the core first waits for the grant's lock (`grants/<G>.lock`, which the shim
+  inherits and holds until it exits; 9 s at most, the client's close steps and
+  a second, then it settles anyway). Then the receipt (`receipt.json` in the
+  session folder, 0600: ids, classes, outcomes, responses, expect, keyed hashes,
+  artifacts, refusals, the worker versions, taint `untrusted`; names only as
+  keyed hashes) is written, a `login_required` opens one proposed system item
+  ("Log in to <origin> again", tainted untrusted), and the turn's record (counts,
+  artifacts, the transcript's rows) goes into chat.json's `browser` list.
+- **Taint (rule 1).** A browsing chat's swept suggestions are `untrusted` (with
+  the persona's `private`), proposals, with code-written titles ("Check a
+  suggestion from a turn that read the web"); the model's words stay in the
+  detail. Carry-forward to the system scope keeps the taint (tested).
+- `<data_dir>/browser` is in `sandbox_masks`, and each session folder holds a
+  `README.untrusted` (rule 8). The session folder is writable inside the
+  namespace, so the core reads its files without following a symlink or
+  blocking on a FIFO (a size cap too), writes there only through new files of
+  its own, and finds a grant's folder from its own index
+  (`grants/<G>.session`), never from the folder's files.
+
+### `McpClient.call_result`, cancel, and `framing.py` (design §2.5, §2.3)
+
+`McpClient.call_result(tool, arguments, timeout=None, cancel=None)` returns a
+`CallResult` with `status` (`ok`, `tool_error`, `timeout_sent`,
+`timeout_unsent`, `transport_failed`, `cancelled`), the text, the structured
+content, the raw content parts (image data included) and whether the request
+had wholly left (`sent`); it waits on the answer or the cancel event and sends
+`notifications/cancelled` for a request that left. `call()` is a wrapper, so
+every other caller is unchanged; the Toolset passes the run's cancel event to
+MCP calls, so Stop ends a turn during an MCP call within 5 seconds
+(`tests/test_mcp_cancel.py`). Wake's S38 cleaning moved to
+`swfactory/framing.py` (`clean_text`, `escape_markers`, `inline`, `frame`, and a
+new `cap`), which `wakes.py` imports under the same names and the shim imports
+inside its namespace.
+
+### Settings, routes, doctor
+
+`browser` (in `UPDATABLE_SECTIONS`): `enabled`, `runtime {dir, node,
+playwright_mcp, chrome}` (relative paths inside `dir`), `pins {node {version,
+sha256}, playwright_mcp {version: 0.0.83, integrity}, chrome {version:
+155.0.8059.12, sha256}}`, `profiles` (`fixture` and `fixture-login`: `site`,
+`origins {read, write}`, `save: never`, `login {path}`, `seed_cookie_seconds`,
+`shop_delay`), `preset` (`kate-browse`), `preset_checked_by_hand {export,
+functions, pipelines}`, `limits {max_minutes 60, call_seconds 20,
+commit_seconds 20, page_chars 8000, download_bytes 50 MB}`, `caps {max_gb 5,
+max_days 30}`. `McpServerConfig` gains `required` and `sandbox` (`run`,
+`self`). Routes (master token only): `GET /api/browser` (the card and the newest
+sessions' counts), `POST /api/browser/grants/<grant>/revoke`, `GET
+/api/chats/<chat>/browser/<session lock>/<name>.png` (image/png, nosniff, the
+sandboxing CSP; only a session of that chat). Events: `browser.grant`,
+`browser.receipt` (ids and counts) and `browser.revoked`. Doctor:
+`browser` (one line while off), `browser pins` (K1, T26: Node, Playwright MCP
+and Chrome inside the runtime directory, their versions, sha256 and the npm
+integrity in the install's lock file), `browser sandbox` (bubblewrap and
+`--size`; Chrome starting with the minimal binds while the host's loopback, a
+tailnet address and a public host fail), `browser preview sibling`, `browser
+nested sandbox` (a named limitation, never a failure of `harness.sandbox`),
+`browser timeouts`, `browser preset <persona>` (K13, T23). K14's Open WebUI pin
+(T25) is the existing `openwebui <provider> build` line (§33).
+
+### The session lock's own words (K6)
+
+A session lock (`SL-…`), its lock number, the locking run (`locked_by`), the
+action log, the session folder, and the error codes `session_lock_busy`,
+`session_lock_expired`, `session_lock_revoked`. No name in the browser's
+records, files, events or GUI words is a word of a GPU custody record (lease,
+holder, generation, epoch, journal, granted, reason code, residency, the lease
+states), and custody's code names none of the browser's
+(`tests/test_browser_session_locks.py`, T22).
+
+### Tests (design §4.6)
+
+`tests/test_mcp_cancel.py` (the statuses, cancel, Stop within 5 s; T7's unit
+half), `tests/test_framing.py`, `tests/test_browser_session_locks.py` (grants,
+locks, lock numbers, the kernel freeing a lock, racing launchers, dangling
+intents, caps, T22), `tests/test_browser_shim.py` (T1 to T6, T8, T9, T11, T12,
+T18 and the shim's rules against the recordings), `tests/test_browser_harness.py`
+(Kate's browsing turn through the mock Open WebUI and the real `sf-browser` over
+the fake Playwright: the receipt, the transcript without images, untrusted
+proposals, carry-forward, T21's Open WebUI side; the session rule; T23; the
+config rules; the preview's sibling), `tests/test_browser_live.py` (the same
+scenarios live with the fixture's own log; T7 live, T10, T20, the namespace's
+binds and network, and the contract test between the recordings and the real
+server), `tests/test_doctor.py` (`BrowserDoctorTest`: T26 with stand-in
+binaries, the timeouts rule). The GUI: `tests/gui_mock/browser.py` and
+`tests/gui/browser.mjs`.
+
+### Differences from the design, kept on purpose
+
+- `request_id` in the receipt is the MCP request's id the shim received, not
+  the harness's tool call id (the shim never sees that one).
+- Enter and Space are commits whatever has the focus (the design says "in an
+  editable role"): a focused button submits on Enter, and the effect check
+  catches the rest.
+- A hold is cleared only by an observation the caller took after the action's
+  own; the design's "an observation taken after it" would let the observation
+  the unknown commit itself returned clear its hold.
+- The hold applies to every action on the origin that may send, not only to
+  commits (design §2.5 says "every further commit"): after a disguised link,
+  the next harmful step is that same link or field, which its role calls
+  `navigate` or `input`.
+- `read` reads the latest observation the shim holds and takes no new one, so a
+  read never makes the model's last observation stale for a commit.
+- Fixture pages live in `tests/fixtures/browser/site/` (design §4.3's table),
+  so `browser.profiles.<name>.site` defaults there.
+
+### Not built in BC1a
+
+BC0's supervised run with Kate's real model (it is hers, design §4.2 and §4.7),
+the persona model test through the dedicated preset (§2.11), T13 to T17, T19
+and T24 (BC1b and BC1c), T14's job page button ("Verify in the browser", BC1b;
+its mechanism, the preview's sibling namespace and relay, is built and tested
+with a stand-in preview), the morning summary's list of unknown commits (Wake &
+Messages' digest; Home's Needs you, with the browser on or off, and the Browser page list them), enforced taint
+gating for readers (BC2), and recordings made with the pinned Chrome 155.
+
+## 44. The Codex worker, phase BC1b (added; off by default)
+
+The design is [docs/seraphina/BROWSER_AND_CODEX.md](docs/seraphina/BROWSER_AND_CODEX.md) §3 and §4.4 ("the
+design"; its sections are "design §n") with the research note
+[docs/seraphina/research/codex-runtime.md](docs/seraphina/research/codex-runtime.md). Phase BC1b is built: a factory
+job whose builder runs on Codex. Codex edits under its own sandbox, the harness commits and re-runs the repository's
+tests, and every Codex run has a receipt written by code outside every directory Codex can write. The operator
+persona's decisions K7 to K11 and K20 (design §6.1) are followed as written. The owner's answers that apply:
+O3 (a separate Codex user, `ai-codex`, the worktree group with default ACLs and one sudoers rule for the launcher:
+supported by the code and the doctor, created later by the owner from the blocks `factory codex setup` prints),
+O4 (no hosted model and no sign-in: the builder's route must be on this machine's loopback), O5 (the GUI), O6 (the
+receipts are pruned within the browser's caps, 5 GB and 30 days), O8 (server trials only in windows the operator
+proposes and the owner agrees: documentation, not code), O9 as the owner changed it (the uid nftables rule is on,
+supplied as a block and never applied by the harness; the host-wide `/etc/codex/requirements.toml` is off, because
+the operator runs her own Codex on the host and from a Windows PC on the LAN and the harness never gates the
+operator's own tools) and O10 (only a repository entry with `"personal_data": false` is free of personal data).
+Codex driving the browser (BC1c), the app-server driver (BC3) and hosted models are not in BC1b.
+
+**Off by default** (`codex.enabled: false`, and no agent routed to the `codex-worker` driver). Modules:
+`swfactory/codex/` (`settings`, `launch`, `work`, `checks`, `setup`), `bin/sf-codex-launch`, the `codex-worker`
+preset in `swfactory/drivers/cli.py`; the GUI is `swfactory/web/views/codex.js`.
+
+**Where it stands** (checked here, 26 Oct 2026): built and tested in this repository. The live tests ran the real
+pinned Codex 0.163.0 (`@openai/codex@0.163.0` from npm, its linux-x64 native binary, installed outside the
+repository; `SF_CODEX_BIN`) under `exec` against `tests/mock_responses.py`, as root and, for the containment
+probes, as a non-root user (nobody, through setpriv), with the live browser runtime of §43 for "Verify in the
+browser". No hosted model was reached and nothing signed in. Nothing ran on the owner's server (design §4.7).
+
+### The shape (design §3.3)
+
+The builder's route names a driver whose preset is `codex-worker`. That preset is exactly
+`exec --json --strict-config --ignore-rules --skip-git-repo-check -m {model} -C {cwd} --add-dir {out_dir}` (and
+`resume {session_id}`), then `-`: the prompt, the system text first, goes on stdin from a writer thread (the 128 KiB
+argv limit is gone; both Codex presets do this now, design A7). The driver never runs Codex itself: it makes the
+run's folders, `<work_root>/runs/<repo>--<job>/<run>/{out,tmp,shell}` (never inside the job folder; `out` is Codex's
+`--add-dir` and where it writes build.md, which the driver copies into the job folder afterwards as a regular file
+only, opened from the work root down with no symlink on the way and never a FIFO; with a worktree group only `out`,
+`tmp` and `shell` are the group's to write (2770), the folders above them stay the harness's (2750), so none of
+them can be swapped for a symlink before the harness deletes `tmp` and `shell` at the run's end), works out the deny
+list, gives the job's own folder read access for the group for that run only (taken back when it ends), and starts `bin/sf-codex-launch run …` directly (no Codex user), through
+`sudo -n -u <codex user>` (the server; the harness's unit must not set NoNewPrivileges) or through setpriv (a harness
+running as root, the test suite). On Stop or the wall clock the group gets SIGINT first (the preset's `interrupt`
+key; exec answers with exit 1 in milliseconds), then SIGTERM and SIGKILL (design A7). The no-network note is added
+to the harness note: no servers, no browsers, no commit, build.md in the out folder, no ignored file it made or
+changed left behind (the ignored files that were there before its run, such as what the repository's setup
+installed, stay: no `git clean -X`, since without network they cannot be put back). A resume gets no system text, so its prompt ends with its own out folder (each run has a new one; the earlier
+one is not writable). The driver runs Codex only for a run the orchestrator cleared (`ctx.codex_job`, set after the
+routing check, the codex model blocker and the lease check below) and only while `codex.enabled` holds: a chat, a
+plan's lead or any other caller of a `codex-worker` route is refused before anything is made, and a chat refuses
+such a route at its start and on every turn (K20).
+
+**The data folder stays the harness's.** Block c2 lets the Codex user's group pass through the data folder (a
+traverse entry only), so that folder is only as private as what is in it. `factory serve` and `factory run` run with
+umask 077 from the moment they take the data folder's lock (`factory_lock`), so chats, job folders and their logs are
+created 0700 and 0600; at the first start of this version `work.seal_data_dir` takes the group and other bits off
+what older versions left there under umask 022 (once per version of the sweep: the `.private-modes` marker holds
+it, and an older marker sweeps again; folders keep their group x, where block c2's traverse entries live; the
+worktrees and the work root are block c2's and stay as they are). Below each job folder it takes the extended ACLs
+off first: an older version shared a job folder with the group and never took the share back, and its default
+entries would hand every log the harness writes there later to the group whatever the umask, while a chmod alone
+changes only the mask. The sweep keeps its own stack (`os.walk` recursed before Python 3.12), so a tree deeper
+than the recursion limit never stops the start. The folders above the data folder that other users cannot enter
+(a 0750 home) get a traverse entry from block c2 too; that lists nothing, but it opens by path whatever other users
+may read below them (other checkouts, personal folders, dotfiles), so block c2's note names what is there now and
+says to move `data_dir` and `codex.work_root` out of such a folder or make those entries private, the doctor's
+`codex reads` line probes each entry directly below such a folder (one that holds a configured repository aside:
+a Codex job reads its own repository's git folder), and every Codex run's profile denies every other configured
+repository's checkout. A
+job's own folder is the group's to read only during its Codex run (`work.share_job`, with a traverse entry on
+`jobs/<repo>/`; `work.unshare_job` takes it back when the run ends, and for a run the harness was killed during, at
+the restart's recovery and again at job end; the doctor's `codex reads` line probes the folder of every job Codex
+ran in, but not one with a run in flight). The umask is the process's: what it writes elsewhere (a merge into a
+repository's own checkout, the folders of a folder delivery outside the data folder) is private too, so a checkout or
+an output folder other users read needs shared permissions of its own (a group folder with default ACLs, or git's
+`core.sharedRepository`).
+
+**The launcher** (`swfactory/codex/launch.py`, self-contained so root can install it as
+`/usr/local/libexec/seraphina/sf-codex-launch`; `bin/sf-codex-launch` runs this checkout's copy) reads its own
+settings (under sudo only the root-owned `/etc/seraphina/codex-launch.json`; otherwise the file the harness writes
+into the work root), checks every argument against fixed patterns (the job and run names, the worktree is
+`<worktrees>/<repo>/<job>`, the out folder is the run's, the Codex arguments are the preset's shape only: no `-s`,
+`-c`, profile, bypass or other flag), builds or checks the job's `CODEX_HOME` (`<work_root>/homes/<repo>--<job>`),
+writes its `config.toml`, reads the provider's key from its key file (one it cannot read, or that lacks the key's
+name, refuses the run; without one, from its own environment, and under sudo the run is refused), sets Codex's whole environment (`PATH` with `/usr/bin` first so Codex uses `/usr/bin/bwrap`, `HOME` and
+`TMPDIR` in the run's folder, `CODEX_HOME`, the one key), sets no-new-privileges and a parent-death SIGKILL, and
+execs the pinned binary. Its other verbs: `verify` (the repository's verify command under bwrap, as the Codex user),
+`share-worktree` (after every run, also one that raised; at a restart's recovery of a run in flight, before its
+reconcile; and before the harness removes a Codex job's worktree: what the Codex user created in the worktree made
+the group's to read and write, its own entries only, no symlink followed, so the harness can commit, reconcile and
+remove a file Codex wrote 0600 or a folder it made 0700),
+`report` (the home's check again, `config.toml` against the launcher's record of it, and the rollouts' hash: a `config.toml` changed during the run leaves the home unverified in the receipt), `check-home`, `remove-home` (at job end), `version`, and four
+read-only probes: `sandbox-probe`, `can-read`, `key-check` (whether each provider's key, read as `run` reads it, is
+there: names and yes or no only) and `egress-probe` (which also says how a connect that failed ended: `refused`,
+the loopback stack answered, or `dropped`, as the uid rule makes it). `share-worktree` keeps its own stack too.
+
+**The home** holds `config.toml`, the launcher's record of it (`.sf-home.json`) and Codex's own state only
+(`sessions/` with rollouts, its `*_N.sqlite` databases, `installation_id`, `log/`, `shell_snapshots/`,
+`thread-writer-locks/`, `tmp/`, and the system skills Codex installs itself under `skills/.system`, which the
+launcher removes before every spawn so Codex writes them again from its binary). Anything else refuses the start
+and is named: `rules/` (an execpolicy allow rule would skip the sandbox), `AGENTS.md`, another skill, hooks,
+prompts, plugins, a profile, `auth.json`, a symlink; and so does a `config.toml` that is not what the launcher last
+wrote. **`config.toml`** comes from one template whose sha256 is pinned (`launch.TEMPLATE_PIN`; a change is a
+reviewed change with the containment probes run again): the local provider `factory_local` (loopback `base_url`,
+`wire_api = "responses"`, the key's name, small retries), `web_search = "disabled"`, no update check, analytics,
+feedback, memories or history, `approval_policy = "never"` (K9), an ephemeral credential store, the features a
+bounded job does not use off, `shell_environment_policy.inherit = "core"` with `PATH`, `HOME`, `LANG` and
+`TMPDIR` only, the `factory_worker` permissions profile (`extends = ":workspace"`, `":slash_tmp" = "read"`, one
+`deny` entry per denied path) selected by `default_permissions`, and the worktree and its repository's root as
+**untrusted projects**. There is no `sandbox_mode` anywhere.
+
+What the live runs pinned (Codex 0.163.0, under `exec`):
+
+- the profile holds: a denied file or folder fails a sandboxed `cat` ("Permission denied", or "No such file or
+  directory" for a denied folder's contents), `/tmp` is read-only, the workspace and `TMPDIR` are writable,
+  `socket()` is refused, `.git` is read-only, and none of `OPENAI_API_KEY`, `CODEX_API_KEY`, `SF_BROWSER_TOKEN` or
+  the provider key reaches a command's environment;
+- a `read` entry below a denied folder does not open it again, while a writable root below a denied folder stays
+  writable; so the deny list (`work.deny_paths`) names, one by one, every top-level entry of the data directory but
+  `jobs/` and `worktrees/`, every other repository's and every other job's folder and worktree, every other job's
+  home and run folders, every other configured repository's checkout, the config directory, `~/.config/software-factory`, every provider key file, and what the
+  harness user keeps in its home (`~/.ssh`, `~/.gnupg`, `~/.codex` (the operator's own Codex), …); the job's own
+  `auth.json` is always denied (a deny entry for a missing path is accepted). A job created during a run is not on
+  that run's list (judgement: the next run's list has it);
+- **exec in a git repository appends `[projects."<repository root>"] trust_level = "trusted"` to `config.toml`**,
+  which would load the repository's own `.codex/config.toml` (servers, hooks, providers) on a later run and changed
+  the home under the launcher's check; with the root and the worktree written as untrusted first, Codex leaves the
+  file alone (tested across a corrective resume);
+- `--ignore-rules` and `--strict-config` are accepted with this template; a CODEX_HOME under `/tmp` gets a warning
+  (Codex will not create its helper aliases there) and runs.
+
+### The harness commits, the harness re-runs the tests (design §3.3, A1, A8, A11)
+
+`commits: harness` is a property of the preset. After every builder run on such a driver whose outcome is
+`completed` and whose write-policy check passed, corrective resumes included, the orchestrator calls
+`gitops.commit_all`: `git add -A`, the staged paths checked (`.gitattributes`, `.gitmodules`, `.codex/**`,
+`.agents/**`, `.github/workflows/**` refused unless the job's spec names the path), the staged diff (read with
+`--text`, so a file git takes for binary is scanned as its bytes; a secret inside a compressed or encoded file is
+not found) and build.md scanned for every value of `Factory.secret_values()`, then `git commit --no-verify` with
+`HARDENING`, an explicit
+author (`Software Factory <factory@localhost>`), `commit.gpgsign=false`, `GIT_CONFIG_GLOBAL=/dev/null` and
+`GIT_CONFIG_NOSYSTEM=1`; the message is fixed (`factory: <job> build round N (builder on codex-worker)`). The receipt
+records git's exit status, the id it printed and a hash of its output, and the sha read back afterwards (which must
+start with that id). A refusal puts the index back and fails the step with the reason. git stages, lists and
+reports status past a folder it cannot open with only a warning and exit 0, so `commit_all` refuses when `git add
+-A` warned "could not open directory" (a folder the Codex user left closed to the harness's group would be missing
+from the commit), `gitops.ignored_files` and `reconcile_diff` fail then too (verify fails closed, the reconcile says
+it could not read the worktree), and the run is not committed at all when `collect`'s share-worktree answered with
+an error (a `share_worktree` check record in the receipt). A repository's `verify`
+then runs on that commit, always under bwrap (`launch.verify_argv`: own PID, IPC and network namespaces, the system
+and the worktree read-only, private `HOME` and `/tmp`, a clear environment with `PYTHONDONTWRITEBYTECODE=1` and
+`PYTHONPYCACHEPREFIX` in that `/tmp`, so no `.pyc` in the worktree is read (one is valid by its source's mtime, which
+a commit does not hold), `--die-with-parent`; as the Codex user through the launcher when there is one, started with
+the launcher's own environment only, `PATH` and `LANG`); without a usable bwrap it does not run and the check fails
+with that reason. The job's Stop ends it at once (failed, "stopped", never kept as the commit's result). The worktree
+is checked clean afterwards. verify runs in the worktree, which can hold what the commit does not: the files git
+ignores that the job's Codex runs made or changed, whatever a run's outcome (completed, refused commit, write-policy
+breach, unknown, failed, timed out, cancelled, or cut off by a harness restart), fail the check without running it,
+with their names (`job.codex_ignored`, the receipt's `artifacts.ignored_left`), until they are gone; such a result is
+about the worktree, so verify runs again on the same commit afterwards. They are listed before and after each run
+and compared by size, mtime and ctime (the one time no process can set back, so a rewrite to the same size that
+puts the mtime back counts too); a run without that snapshot (a harness restart mid-run, or git could not list them)
+is counted by time instead, every ignored file whose mtime or ctime is at or after the run's start, and
+`job.codex_ignored_since` keeps that time while git cannot list them or they are more than the 200 the job keeps.
+With a worktree group, the harness's own share of the worktree (`work.open_worktree`: setfacl, which changes the
+ctime of every file whose ACL it changes, such as what the repository's setup made) comes before the run's start
+and the snapshot, and a second's wait (the count by time's slack) after it, so it never counts as the run's; the
+run's share of the job folder (`work.share_job`, in the driver) leaves the worktree alone. The caches among them
+(`__pycache__` and `.pytest_cache`) the harness removes after the run, so verify never reads one; one it cannot
+remove counts like any other. The build check reads the result for the branch's head (or runs `verify` itself for
+a builder on another driver): a failure gives the builder one corrective resume with the output's tail, a second is
+needs-human. The result is code-written `check` evidence beside every criterion of the job (`verify@<sha>`,
+`check: ok` or `failed`).
+
+### Outcomes, reconcile, receipts (design §3.6, §3.7, A10, A14, DESIGN §40)
+
+`AgentRun.outcome` is typed for every CLI run: `cancelled` (the harness's Stop), `timed_out` (its wall clock),
+`failed` (a `turn.failed`, an unreachable model, a launcher refusal), `completed` (exit 0, and for exec a
+`turn.completed`), `unknown` (killed by a signal the harness did not send, or exec ended with no terminal event, an
+exit 0 too). Every outcome but `completed` makes the run not ok, so the step fails: no corrective resume continues
+it and nothing is committed.
+`agent.start` of a Codex run carries `codex {version, surface, permissions_profile, approval_policy}`; every
+`agent.end` and every `job.runs[]` entry carry the outcome. Before a Codex run job.json records `codex_run` (its
+intent); a restart that finds one records the run `unknown`, whatever the job's stage (Stop sets `cancelled` at
+once, and a harness killed before the run's wind-down leaves the intent on a cancelled job: the restart records it
+the same way, shares what Codex wrote before it counts the run's ignored files and reconciles, takes the job
+folder's share back and gives the job the end its run never reached). Every ending that is not `completed` is reconciled:
+`gitops.reconcile_diff` (git status, the changed and untracked paths, one sha256 over the diff against HEAD and the
+untracked files, with global and system config off), kept in the receipt and as `job.reconcile` with a summary
+("the previous run left changes in app.py; the retry starts from them") that Retry's detail and the GUI show.
+Nothing is committed and nothing is sent again: a retry is a fresh run on the worktree as it is, in a new session
+(the thread of a Codex run that did not complete is never resumed), whose prompt is the hand-over (the spec,
+build.md, the CHANGES reviews, the diff so far) led by how that run ended and the reconcile's summary.
+
+**Receipts** (`work.Receipts`): `<data_dir>/receipts/<repo>/<job>/<run>.json` in the shape of design §3.7
+(`swf.receipt.run/1`: the request, Codex's version, surface, thread id, model asked, provider, profile, approval
+policy, the home's template and config hashes and check, the rollouts' hash, the exit status, the outcome, the
+artifacts (paths, diff hash, build.md and final message hashes), the checks, the commit with git's response, the
+reconcile and the result), opened with `O_NOFOLLOW | O_EXCL`, mode 0600, hash-chained per job (`previous_sha256`;
+`verify_chain` checks it). Each `job.runs[]` entry gains `{receipt, sha256, outcome}`. At job end the job's home
+and run folders are deleted (each receipt already holds the rollouts' hash) and old receipt folders are pruned
+within `browser.caps`; the threads lived in that home, so none is resumed again: a delivered job that comes back (a
+conflicting merge, then rework) starts its builder in a new session with the full system text and a hand-over. Items: `check` joins `EVIDENCE_KINDS` and `CODE_EVIDENCE`; `check` and `receipt` need an
+explicit check from their writer (the four existing code-written receipt callers now say `ok`), and `_code_rule`
+closes an item with them only when that check is `ok` (design A9). `Ledger.add_evidence` puts code evidence beside
+an item without changing its status.
+
+### The routing check and the codex model blocker (design §3.3 (c), (d), (e), K20, A12)
+
+At submit, and again before each Codex run: `work.routing_problem` refuses a job where codex-worker runs any agent
+but the builder, where the builder's route (its builds, rungs or overflow) is not on loopback (O4), or, on a
+repository not marked `personal_data: false`, where any other route is hosted (a URL off loopback, or a CLI driver
+other than codex-worker, which reaches an endpoint of its own: fail closed). `work.model_blocker` is the doctor's
+`codex model` line as a blocker: the worker is off; the route's provider is not on loopback; no custody request
+lease would cover it (no register, or neither `lazy_load` nor `allow_model_swap`: such a server gets no POST at
+all); its server has no passing Responses check on record; the register's residency (a GET) does not list the
+model as loaded. `work.containment_blocker` (with a Codex user; at submit and before every run, after the lease
+check) refuses while the installed launcher is not this version's or the uid egress rule is not loaded: a loopback
+connect from the Codex user to a port the rule does not allow must be dropped (refused or connected means no rule
+dropped it; nothing leaves the machine for the check), and one to the route's own model port must not be. The rule
+lasts until the next boot unless block c6's unit loads it, so this runs every time. **The Responses check** (`work.responses_check`, from `factory codex check` or
+`factory doctor --probe`) takes a custody request lease (`custody.leased`) and sends one minimal non-streaming
+`POST <base_url>/responses`; the answer's status and body hash are recorded in
+`<data_dir>/receipts/_codex/responses-check.json` per server; a 404 or a malformed body keeps the blocker, and a
+denied lease sends nothing. A Codex run itself is a CLI route: the placement takes its custody request lease first;
+the run starts only while that lease is valid (`custody.lease_problem`, after the blocker), and the driver looks at
+it on every poll of the run: a lease lost or run out (a refused renew, a register that restarted) stops Codex
+(SIGINT first; `failed`, reconciled, never replayed) before it sends another request outside it (K20 (d)). A
+re-route of a stopped job (`set_routing`) passes the routing check too, and once a job ran Codex no route of it (the
+builder's too, once off codex-worker) may be hosted on a repository not marked `personal_data: false`; every later
+run of that job checks its placed route again.
+
+### "Verify in the browser" (design §4.4, T14)
+
+On a job whose repository has a `preview` (`{command, port, startup_seconds}`), while its worktree exists and the
+job is in review, approved or needs-human, the job's head offers **Verify in the browser**:
+`POST /api/jobs/<repo>/<job>/verify-in-browser` opens a chat for the persona of `codex.verify_persona`
+(`kate-browser`) and writes `verify {repo, job, branch, preview}` into its chat.json (the core, never a model). Each
+browsing turn's grant is built from that record (`browser.runs.preview_of`): the preview's origin
+(`http://127.0.0.1:<port>`, the relay's port inside the namespace) as the only origin, no fixture, and the preview
+from the repository's config run in the job's worktree in its sibling namespace (§43). At the end of the turn the
+chat manager hands the browser record to `Factory.attach_browser_receipt`, which puts `receipt` evidence beside the
+job's criteria: `ok` only when the turn checked an expected text and every check matched. It is never a merge gate.
+The page is the preview of what Codex wrote, so on a repository not marked `personal_data: false` the chat's model
+stays on this machine (the routing check's rule, a CLI driver counting as hosted): `set_verify` refuses a persona
+whose route, its builds or its overflow could leave it (the chat is not kept), and each turn checks where it was
+placed before it runs.
+
+### Settings, routes, doctor, CLI, GUI
+
+`codex` (in `UPDATABLE_SECTIONS`): `enabled`, `binary`, `pin` (0.163.0), `user`, `via` (`sudo` or `setpriv`),
+`group`, `launcher`, `launch_settings`, `work_root`, `key_file`, `verify_persona`, `retries {request_max_retries,
+stream_max_retries}`, `private_roots`. A Codex user under sudo needs `launch_settings` (the root-owned file); its
+launcher reads the route's key from `key_file` (null: `/etc/seraphina/codex-key.env`, which block c4 installs
+`<codex user>:root` 0400 from the staged copy: the Codex user's alone, never the worktree group's, which the
+harness's user is in, so neither the harness nor an agent it runs reads it, and the harness never needs to; the
+provider's own key file is the harness's), and a key file it cannot read, or one without the key's name, refuses
+the run (never a placeholder key). A key the harness has no value for is staged as a comment, and block c4's note
+and `--stage` say to write it into the installed file with sudo, never into the staged copy.
+Repository entries: `verify`, `verify_seconds` (600), `verify_binds`, `preview`, `personal_data` (true). The default
+drivers gain `codex-worker`. `<data_dir>/receipts`, `<data_dir>/codex` and `<data_dir>/codex-setup` (the staged
+files, the route's key among them until block c4 removes it) are in `sandbox_masks`, and so is the Codex route's
+key file (`/etc/seraphina/codex-key.env` and `codex.key_file`, whatever their modes). Routes (master
+token only): `GET /api/jobs/<repo>/<job>/receipts` (the summaries, the chain, the reconcile, the last verify, the
+preview offer), `GET …/receipts/<run>`, `POST …/verify-in-browser`, `GET /api/codex` (settings, Responses checks,
+setup blocks, the residual risk). Doctor: `codex` (one line while off and unused), `codex version` (the pinned
+binary, run as the launcher starts it), `codex launcher` (this checkout's launcher; with a Codex user, the installed
+copy's sha256 against this version's and `sudo -n -l` for the rule, "not checked" when sudo wants a password),
+`codex home` (the template pin; the launcher's settings installed and equal to what this configuration stages, or
+"stage again and repeat block c4"), `codex model <agent>` (the blocker; `--probe` runs the Responses check first),
+`codex sandbox` (a sandboxed probe as the Codex user through `codex sandbox`: a denied canary, `/tmp`, the
+workspace, the key; which bwrap), `codex reads` (the Codex user cannot read the data directory nor what is below it,
+each top-level entry but `jobs/`, the worktrees and the work root with one file found inside it, each
+`jobs/<repo>/`, and the folder, `job.json` and one log of each job Codex ran in that has no run in flight, so a
+share a harness killed mid-run, or an older version, left is found; the config directory, the env file, every
+other key file and `codex.private_roots`; what block c2's traverse entries above the data folder open; the route's
+own key file is the launcher's to read), `codex key` (the launcher's `key-check`, as the Codex user: the route's key
+file is readable to it and defines the key's name; none, one it cannot read, or one of comments only would refuse
+every run; the harness itself never reads it) and `codex egress` (a connect from the Codex user to a public address
+and to every other configured loopback port, keyed or keyless, fails, and the unit that loads the rule at boot is
+enabled, or a warning; the uid rule allows only the Codex routes' providers).
+CLI: `factory codex setup [--stage]` (the owner's blocks c0 to c8: c0 stages the files the others install into
+`<data_dir>/codex-setup/`, printed with this install's own `factory` as the harness's user (`sudo -u <user> env
+HOME=… FACTORY_CONFIG=… <release>/bin/factory`; the server has no `factory` on PATH), and `--stage` refuses a user
+who does not own the data folder; then the user and group, the ACLs (with a traverse entry on each folder above the data
+folder that other users cannot enter, such as a 0750 home), the launcher, its settings and the route's key, the
+sudoers rule (written for the sudo `/usr/bin/sudo` is, and checked with each installed sudo program's own visudo by
+its path), the uid nftables rule (a file that replaces its table whole, so loading it again after a provider change
+leaves only the new port, and a oneshot unit, `seraphina-codex-egress.service`, that loads it at every boot before
+the network; never `nftables.service`, whose `/etc/nftables.conf` flushes every rule), the pinned Codex (the release's standalone binary for this machine, by curl, its
+sha256 printed for the owner to compare with the one GitHub shows: the harness carries no checked copy of it; no
+Node or npm), the check) and `factory codex check`. The GUI (`views/codex.js`): a **Receipts** tab in the job
+drawer, a "Codex" chip and the outcome on a Codex run's header, the reconcile under the job's head, the Verify
+button, and `#/codex` (on or off, the pin, the user, the Responses checks, the setup blocks, the residual risk).
+
+### The residual risk the owner accepted (O9, design §3.11 item 5)
+
+There is no `/etc/codex/requirements.toml`, so nothing host-wide constrains Codex: the per-job `config.toml`, the
+template check before every spawn, `--ignore-rules`, the separate Codex user and the uid egress rule hold it. A Codex
+process that ignored its own configuration (a bug, or a behaviour change at an upgrade) would be held only by the
+Codex user's file permissions and the egress rule. Every upgrade of the pin runs the containment probes (T19) again
+before use. The owner accepted this; the operator's own Codex on this host and on her Windows PC is never gated by
+the harness.
+
+### Tests (design §4.6)
+
+`tests/test_codex_worker.py` (T13 with the stand-in Codex and live; T15: Stop sends SIGINT first and is
+`cancelled`, the wall clock is `timed_out`, a server stop leaves the job failed and retryable, Retry's summary; T16:
+`kill -9` of Codex and a harness restart in another process are `unknown` with a reconcile and nothing re-sent;
+T24: the Responses check and the blocker, only GETs outside a lease, a 404, a denied lease, routes no lease covers,
+an endpoint not loaded, off by default; the routing check; the evidence rules; T14: the button's record, the grant
+built from it, the preview in its sibling namespace, the receipt beside the criteria, and live Kate's scripted turn
+on the preview with a decoy variant; the routes), `tests/test_codex_containment.py` (T19 live as a non-root user:
+the sandboxed environment, a cat of every denied path, `/tmp`, the worktree and `TMPDIR`, what Codex wrote as
+nobody committed by the harness, the sandbox probe (its egress probe refused: the suite never connects out where the
+owner's rule is not installed), never a trusted project across a resume, the egress probe where the owner's rule is
+installed; as root with real users and without Codex: block c2 applied exactly as printed lets nobody reach its
+worktree, its run folders and, during the run, its job's folder, and nothing else of the data folder, and the
+mixed-ownership worktree (a 0600 file through a temporary name and a 0700 folder, written as nobody) is reconciled,
+committed and removed by the harness's own git as a non-root member of the group (daemon) after `share-worktree`,
+also after a harness killed mid-run restarts (its recovery shares the worktree before the reconcile, and the user
+nobody can then read nothing of the job folder);
+and with the stand-in or none: a planted rule refuses the start, planted receipts are never read, a secret or a
+`.codex` change is refused at commit, the launcher's argument checks and key file, the home check and its report, a
+FIFO as build.md, a swapped run folder, the job folder's share ending with the run, at a restart and at job end, the
+worktree shared before a restart's reconcile, before its removal and after a run that raised, the data folder made
+private under the lock and sealed once, the template pin, the deny list, the setup blocks and the doctor's lines), `tests/mock_responses.py`
+(the Responses-API stub), `tests/fake_codex.py` (the stand-in), `tests/codex_rig.py`, `tests/fixtures/fixture-app/`
+(the app whose greeting drops the name, with a failing test and a hidden decoy). The GUI: `tests/gui_mock/codex.py`
+and `tests/gui/codex.mjs`.
+
+### Differences from the design, kept on purpose
+
+- Stop on a job is the job's Cancel: the job ends `cancelled` (§6), with the run `cancelled`, reconciled and never
+  replayed; Reject cleans it up. The design's "failed and retryable" holds for a run the harness stops (its wall
+  clock, a server stop) and for an unknown end.
+- `verify` runs for a builder on any driver when the repository names one (the receipt only for Codex runs).
+- codex-worker runs the builder only in BC1b: a reviewer or approver on it is refused at submit.
+- The launcher reads the route's provider key from its key file as the Codex user, so that one key file is the
+  Codex user's to read (the profile still denies it to every command); the doctor's read check leaves it out.
+- The launcher writes the worktree and its repository's root as untrusted projects (not in the design; found live).
+- The Responses check record lives in `<data_dir>/receipts/_codex/` (a name no repository can take).
+
+### Not built in BC1b
+
+BC1c (Codex driving the browser over MCP, T17), the app-server driver and approvals (BC3), hosted models and
+sign-in, the run on the owner's server (the owner's setup blocks, the swap window and T13 to T16 there, design
+§4.7 steps 7 to 9), the power-off rule for long Codex jobs (Wake & Messages' schedule; the wall-clock limit stands
+until then), phone notices for a Codex job (Wake & Messages), and a test of the sudo path itself (the test suite
+uses setpriv; the doctor's `codex launcher` line checks the sudoers rule on the server).

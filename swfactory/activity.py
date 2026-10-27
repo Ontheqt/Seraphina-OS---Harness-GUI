@@ -183,7 +183,10 @@ def _receipt_entries(receipts: Receipts | None, bare: str, lowered: set[str], op
     out = []
     for entry, others in _one_per_receipt(index["files"]):
         read = entry.get("status") == "read"
-        mine = read and (entry.get("operator") == bare or str(entry.get("actor") or "").lower() in lowered)
+        # hers when its actor names her: the one-operator fallback (operator without operator_named) decides who
+        # owns another agent's receipt items, never that she made that change
+        mine = read and ((entry.get("operator") == bare and entry.get("operator_named"))
+                         or str(entry.get("actor") or "").lower() in lowered)
         if not (mine or (operator and not read)):
             continue
         at = entry.get("time") if read else entry.get("mtime")

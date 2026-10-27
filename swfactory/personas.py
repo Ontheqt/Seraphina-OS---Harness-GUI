@@ -2099,6 +2099,7 @@ _LOG_RE = re.compile(r"^(\d+)-wake\.jsonl$")
 LEDGER_FILE = "external-reads.jsonl"        # one manifest per read: names, sha256, bytes, mtime; the rows' sha256
 LEDGER_VERSIONS = "external-versions"       # <sha256>.txt: a private copy of each file version read
 LEDGER_META = "external-ledger.json"        # {erased: {sha256: at}, evicted, trimmed, not_kept, *_at}
+# The two caps are defaults: memory.external.ledger_mib and ledger_copies set them per persona (external_caps).
 EXTERNAL_LEDGER_BYTES = 32 * 1024 * 1024    # all the ledger keeps per persona: the copies and the manifests
 EXTERNAL_MANIFEST_BYTES = 4 * 1024 * 1024   # the manifests' share; past it the oldest manifests go
 EXTERNAL_LEDGER_COPIES = 2000               # the copies kept at most (one file each)
@@ -2696,11 +2697,13 @@ class PersonaStore:
                             out[Path(item.path)] = item.stat(follow_symlinks=False).st_size
         return out
 
-    def external_read(self, name: str, *, wake: str | None = None, via: str = "context") -> "ExternalRead":
+    def external_read(self, name: str, *, wake: str | None = None, via: str = "context",
+                      spec: dict | None = None) -> "ExternalRead":
         """A recorder for one read of the persona's external memory (read_external_memory(record=), or one Read of
-        a wake's tools): see ExternalRead."""
+        a wake's tools): see ExternalRead. spec: her memory.external, whose ledger_mib and ledger_copies cap the
+        ledger (external_caps)."""
         self.dir(name)
-        return ExternalRead(self, name, wake, via)
+        return ExternalRead(self, name, wake, via, external_caps(spec))
 
     def _ledger_file(self, read: "ExternalRead", file_name: str, data: bytes, size: int, mtime: Any) -> dict:
         """One file of a read: its manifest entry {name, sha256, bytes, read_bytes, mtime, truncated?, kept,
@@ -2736,7 +2739,7 @@ class PersonaStore:
             if not self._ledger_room(read, len(body)):
                 self._count_in_meta(read.name, "not_kept", 1)
                 return {**entry, "kept": False, "why": f"it does not fit the ledger's cap "
-                                                       f"({EXTERNAL_LEDGER_BYTES // (1024 * 1024)} MiB)"}
+                                                       f"({read.caps['ledger_bytes'] // MIB} MiB)"}
             path = versions / f"{digest}{'.redacted.txt' if clean != text else '.txt'}"
             _write_private_text(path, clean)
             read.written.append(path)
@@ -2745,8 +2748,8 @@ class PersonaStore:
             return {**entry, "kept": True, "redacted": clean != text}
 
     def _ledger_room(self, read: "ExternalRead", need: int) -> bool:
-        """Whether a copy of need bytes fits under EXTERNAL_LEDGER_BYTES (the copies and the manifests together)
-        and EXTERNAL_LEDGER_COPIES. When it does not, the oldest copies go first: every older version of a file
+        """Whether a copy of need bytes fits under the ledger's caps (read.caps: ledger_bytes for the copies and
+        the manifests together, ledger_copies). When it does not, the oldest copies go first: every older version of a file
         before the newest version of any file, the least recently read first, and never one this read holds. The
         newest version of each file is so kept the longest; the doctor says when copies went. When even that would
         not make room, nothing goes. The copies are listed once per read (ExternalRead.copies)."""
@@ -2757,14 +2760,15 @@ class PersonaStore:
             read.manifests = reads.stat().st_size if reads.is_file() else 0
         copies, manifests = read.copies, read.manifests
         used = sum(copies.values()) + manifests
+        cap_bytes, cap_copies = read.caps["ledger_bytes"], read.caps["ledger_copies"]
 
         def fits() -> bool:
-            return used + need <= EXTERNAL_LEDGER_BYTES and len(copies) < EXTERNAL_LEDGER_COPIES
+            return used + need <= cap_bytes and len(copies) < cap_copies
         if fits():
             return True
         candidates = [path for path in copies if path.name.split(".", 1)[0] not in protect]
         held = {path: size for path, size in copies.items() if path.name.split(".", 1)[0] in protect}
-        if sum(held.values()) + manifests + need > EXTERNAL_LEDGER_BYTES or len(held) >= EXTERNAL_LEDGER_COPIES:
+        if sum(held.values()) + manifests + need > cap_bytes or len(held) >= cap_copies:
             return False
         rank, last = self._version_ranks(_read_lines(reads))
         order = sorted(candidates, key=lambda path: (-rank.get(path.name.split(".", 1)[0], 1 << 30),
@@ -2803,9 +2807,14 @@ class PersonaStore:
     def _ledger_commit(self, read: "ExternalRead") -> dict:
         """Append the read's manifest {at, wake, via, files, sqlite, label: "private"} to external-reads.jsonl. Past
         EXTERNAL_MANIFEST_BYTES the oldest manifests go first (down to three quarters of it), and so does every
-        copy no remaining manifest names (the doctor says when)."""
+        copy no remaining manifest names (the doctor says when). A version the owner erased after this read took
+        it (between file() and commit()) is entered as {sha256, erased} only, like one erased before."""
         with self._lock:
             reads, versions = self._ledger_paths(read.name)
+            erased = _erased(self._ledger_meta(read.name))
+            read.files = [{"sha256": entry["sha256"], "erased": erased[entry["sha256"]]}
+                          if isinstance(entry, dict) and entry.get("sha256") in erased else entry
+                          for entry in read.files]
             record = {"at": self.now(), "wake": read.wake, "via": read.via, "files": read.files,
                       "sqlite": read.sqlite, "label": "private"}
             line = json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
@@ -2867,11 +2876,12 @@ class PersonaStore:
             out.append({"name": file_name, "versions": rows})
         return out, sorted(erased.values(), key=lambda row: str(row.get("erased_at") or ""))
 
-    def external_versions(self, name: str) -> dict:
+    def external_versions(self, name: str, spec: dict | None = None) -> dict:
         """Every file version the ledger saw, per file, newest first: {files: [{name, versions: [{sha256, bytes,
         read_bytes, mtime, first_read_at, last_read_at, reads, kept, redacted, truncated}]}], erased: [{sha256,
         erased_at, reads}], sqlite: [{at, rows, sha256, error?, detail?}] (the newest 20 reads of the database),
-        reads, kept_bytes, manifest_bytes, cap_bytes, caps: {evicted, trimmed, not_kept, and when}, label:
+        reads, kept_bytes, kept_copies, manifest_bytes, cap_bytes, cap_copies, max_files, read_bytes (the caps
+        her memory.external sets now: spec, external_caps), caps: {evicted, trimmed, not_kept, and when}, label:
         "private"}."""
         with self._lock:
             path, versions = self._ledger_paths(name)
@@ -2882,10 +2892,14 @@ class PersonaStore:
             meta = self._ledger_meta(name)
             caps = {key: meta.get(key) for key in ("evicted", "evicted_at", "trimmed", "trimmed_at", "not_kept",
                                                     "not_kept_at") if meta.get(key)}
+            copies = self._copies(versions) if versions.is_dir() else {}
+            limits = external_caps(spec)
             return {"files": files, "erased": erased, "sqlite": sqlite[-20:][::-1], "reads": len(lines),
-                    "kept_bytes": sum(self._copies(versions).values()) if versions.is_dir() else 0,
+                    "kept_bytes": sum(copies.values()), "kept_copies": len(copies),
                     "manifest_bytes": path.stat().st_size if path.is_file() else 0,
-                    "cap_bytes": EXTERNAL_LEDGER_BYTES, "caps": caps, "label": "private"}
+                    "cap_bytes": limits["ledger_bytes"], "cap_copies": limits["ledger_copies"],
+                    "max_files": limits["max_files"], "read_bytes": limits["read_bytes"], "caps": caps,
+                    "label": "private"}
 
     def _kept_version(self, name: str, digest: str, lines: list[dict]) -> dict:
         if not SHA256_RE.fullmatch(str(digest or "")):
@@ -2964,11 +2978,18 @@ class PersonaStore:
                 "warnings": warnings, "apply": RESTORE_APPLY, "label": "private"}
 
     def external_erase(self, name: str, digest: str) -> dict:
-        """The owner erases one version (consent to keep a detail withdrawn): its copy is deleted, every manifest
-        entry of it keeps only {sha256, erased} (the file's name, size and time go too), and the ledger never
-        keeps a copy of it again. The persona's own store is not touched: while the file there still holds that
-        text, wakes read it as before. {sha256, erased, copies, entries}. KeyError for a version the ledger never
-        saw."""
+        """The owner erases one version (consent to keep a detail withdrawn): its copy file is deleted from disk
+        (unlinked, never marked), every manifest entry of it keeps only {sha256, erased} (the file's name, size and
+        time go too), every run log whose prompt held it loses its text (erase_from_run_log), and the ledger never
+        keeps a copy of it again. The run logs are found two ways: each prompt block names the version it holds
+        (memory_source), so every log that holds one is found whatever became of its wake's manifest (pruned by
+        retention, forgotten, trimmed past the cap); and the log of each wake whose manifest names it, also one
+        already marked erased (a wake that read the version again after an earlier erase). Every file is rewritten
+        whole, through a temporary file that replaces it, so no other copy is left in the persona's directory. The
+        persona's own store is not touched: while the file there still holds that text, wakes read it as before
+        (and take it out of their own logs: write_run_log). Erasing again is safe and cleans what is left. {sha256,
+        erased, copies, entries, run_logs}. KeyError for a version the ledger never saw (no manifest, copy or run
+        log holds it)."""
         if not SHA256_RE.fullmatch(str(digest or "")):
             raise ValueError("a version is named by its sha256 (64 hex characters)")
         with self._lock:
@@ -2976,9 +2997,16 @@ class PersonaStore:
             lines = _read_lines(reads)
             at = self.now()
             entries = 0
+            # {wake: the names its prompt read the version under}: a wake's Read tool output is never in its log
+            read_by: dict[str, set[str]] = {}
             for line in lines:
                 for entry in line.get("files") or []:
-                    if isinstance(entry, dict) and entry.get("sha256") == digest and not entry.get("erased"):
+                    if not isinstance(entry, dict) or entry.get("sha256") != digest:
+                        continue
+                    if line.get("wake") and line.get("via") == "context":   # an erased entry has no name left
+                        read_by.setdefault(str(line["wake"]), set()).update(
+                            [] if entry.get("erased") else [str(entry.get("name") or "")])
+                    if not entry.get("erased"):
                         entry.clear()
                         entry.update(sha256=digest, erased=at)
                         entries += 1
@@ -2987,15 +3015,51 @@ class PersonaStore:
                 with contextlib.suppress(FileNotFoundError):
                     (versions / f"{digest}{suffix}").unlink()
                     copies += 1
+            cleaned: list[tuple[Path, list[dict]]] = []
+            logs = self.dir(name) / "logs"
+            block = memory_source("", digest)
+            for path in sorted(logs.glob("*-wake.jsonl")) if logs.is_dir() else []:
+                with contextlib.suppress(OSError):
+                    if not read_by and block not in path.read_text(encoding="utf-8", errors="replace"):
+                        continue   # no block of it, and no wake whose manifest names it: parsed only when it may
+                rows = _read_lines(path)
+                wake = next((str(row.get("wake")) for row in rows if row.get("type") == "trigger"), None)
+                holds = any(row.get("type") == "request" and _versioned_block(str(row.get("user") or ""), digest)
+                            for row in rows)
+                if (holds or wake in read_by) and erase_from_run_log(rows, read_by.get(str(wake), ()), digest):
+                    cleaned.append((path, rows))
             meta = self._ledger_meta(name)
             erased = _erased(meta)
-            if not entries and not copies and digest not in erased:
+            if not entries and not copies and not cleaned and digest not in erased:
                 raise KeyError(f"the ledger never read version {digest[:12]}")
             if entries:
                 _write_lines(reads, lines)
             meta["erased"] = {**erased, digest: erased.get(digest) or at}
             self._save_ledger_meta(name, meta)
-            return {"sha256": digest, "erased": meta["erased"][digest], "copies": copies, "entries": entries}
+            for path, rows in cleaned:
+                _write_lines(path, rows)
+            return {"sha256": digest, "erased": meta["erased"][digest], "copies": copies, "entries": entries,
+                    "run_logs": len(cleaned)}
+
+    def write_run_log(self, name: str, path: Path, lines: list[dict], encode: Callable[[dict], str]) -> None:
+        """Append a finished wake's run log (encode: one line as text), with every version the owner erased that
+        its prompt holds taken out first (erase_from_run_log), whenever it was erased: while the wake ran, or
+        before it began (her store still holds the text, so the wake read it again). The prompt's blocks name
+        the version they hold (memory_source), so only those blocks go: a version its manifests name that never
+        reached the prompt (a file that is not UTF-8 or holds only spaces, or the version a first render read
+        when the look-alike re-render read a newer one) takes nothing from it, and the rest of the prompt stays.
+        Under the store's lock, the one external_erase holds, so an erase lands either before (and is taken out
+        here) or after (and finds this log)."""
+        with self._lock:
+            with contextlib.suppress(OSError, ValueError):
+                erased = _erased(self._ledger_meta(name))
+                prompts = [str(line.get("user") or "") for line in lines if line.get("type") == "request"]
+                for digest in sorted(erased):
+                    if any(_versioned_block(text, digest) for text in prompts):
+                        erase_from_run_log(lines, (), digest)
+            with open(path, "a", encoding="utf-8") as handle:
+                for line in lines:
+                    handle.write(encode(line) + "\n")
 
     def ledger_health(self, name: str) -> dict:
         """What the ledger's caps did, for the doctor: {evicted, trimmed, not_kept, and when (the *_at keys)}; {}
@@ -3007,7 +3071,8 @@ class PersonaStore:
 
     def _prune_ledger(self, name: str, cutoff: str) -> int:
         """Retention for the read ledger: manifests older than cutoff go, and so does every kept copy no remaining
-        manifest names. The number of copies removed."""
+        manifest names. The number of copies removed. The run logs of those wakes stay (run_log_days); an erase
+        still finds the versions in them by their prompt blocks (memory_source)."""
         reads, versions = self._ledger_paths(name)
         lines = _read_lines(reads)
         keep = [line for line in lines if str(line.get("at") or "") >= cutoff]
@@ -3104,8 +3169,9 @@ class ExternalRead:
     fails, removes the copies this read wrote, so no copy is left that no manifest names; a failure is a
     LedgerError."""
 
-    def __init__(self, store: PersonaStore, name: str, wake: str | None, via: str) -> None:
+    def __init__(self, store: PersonaStore, name: str, wake: str | None, via: str, caps: dict | None = None) -> None:
         self.store, self.name, self.wake, self.via = store, name, wake, via
+        self.caps = caps or external_caps(None)   # the ledger's caps for this read (memory.external)
         self.files: list[dict] = []
         self.sqlite: dict | None = None
         self.written: list[Path] = []
@@ -3169,13 +3235,89 @@ def _unified(older: str, newer: str, a: str, b: str) -> str:
     return "\n".join(difflib.unified_diff(older.splitlines(), newer.splitlines(), a, b, lineterm=""))
 
 
+# One data block of a wake's prompt (wakes.frame): the body never holds </factory-data> (its markers are escaped)
+_DATA_BLOCK_RE = re.compile(r'<factory-data source="([^"\n]*)" taint="[^"\n]*">\n.*?\n</factory-data>', re.DOTALL)
+# A wake's request line carries blocks: VERSIONED_BLOCKS (wakes write it): each file its prompt holds is in a block
+# named by its version (memory_source). A line without it (a log written before) is never judged by its blocks'
+# names: an older log framed 202610261200 someone.md as memory-202610261200-someone.md, which looks versioned.
+VERSIONED_BLOCKS = "versioned"
+ERASED_BLOCK = "(a version of her memory the owner erased)"
+
+
+def memory_source(name: str, digest: str) -> str:
+    """The source of the prompt block holding one file version of her external memory: memory-<the first 12 hex
+    digits of its sha256>-<name>. The version leads, so frame's cut to 40 characters never takes it, and two
+    notes whose names begin alike are never one block to an erase."""
+    return f"memory-{str(digest)[:12]}-{name}"
+
+
+def _versioned_block(text: str, digest: str) -> bool:
+    """Whether a prompt holds a block of that version (memory_source, as wakes.frame writes it)."""
+    return f'<factory-data source="{memory_source("", digest)}' in text
+
+
+def erase_from_run_log(lines: list[dict], names: Iterable[str], digest: str) -> bool:
+    """Take an erased version out of one wake's run log, in place: in each request line, the prompt's data block
+    of that version (memory_source: its source names the version) becomes ERASED_BLOCK. A block of any other
+    version stays. A line marked blocks: VERSIONED_BLOCKS (as wakes write it: each file its prompt holds is in a
+    block named by its version) that holds no block of this version never held it: it is left as it is. In a
+    line without that mark (a log written before blocks named their version), whatever its blocks' names look
+    like, the block of each name it was read under (source memory-<name>) goes too, and when no block of it is
+    found (a name written otherwise, or none known) the whole prompt goes. The line keeps erased: [sha256, ...].
+    True when a line changed."""
+    mine = memory_source("", digest)
+    sources = {re.sub(r"[^a-z0-9._-]", "-", f"memory-{name}".lower())[:40] for name in names}
+
+    def block(match: re.Match, versioned: bool) -> str:
+        source = match.group(1)   # by name in an unmarked line only: there each block is memory-<name>
+        return ERASED_BLOCK if source.startswith(mine) or (not versioned and source in sources) else match.group(0)
+    changed = False
+    for line in lines:
+        if line.get("type") != "request" or digest in (line.get("erased") or []):
+            continue
+        text = str(line.get("user") or "")
+        versioned = line.get("blocks") == VERSIONED_BLOCKS   # the line's own mark, never read from block names
+        out = _DATA_BLOCK_RE.sub(lambda match: block(match, versioned), text)
+        if out == text and versioned:
+            continue   # each file it holds is in a block named by its version, and none is this one
+        line["user"] = out if out != text else ""
+        line["erased"] = sorted({*(line.get("erased") or []), digest})
+        changed = True
+    return changed
+
+
 # ---------------------------------------------------------------- external canonical memory (operator decision b)
 
 EXTERNAL_FILE_SUFFIXES = (".md", ".txt")
 EXTERNAL_FILE_BYTES = 64 * 1024               # of one file
-EXTERNAL_FILES = 100                          # files one read opens at most, newest first, whatever they hold
-EXTERNAL_READ_BYTES = 1024 * 1024             # bytes one read takes at most, over all its files
+# The caps below are the defaults of settings (the operator's ruling: settings, not constants), memory.external's
+# max_files, read_mib, ledger_mib and ledger_copies, read by external_caps. 200 files of her largest note (22,513
+# bytes) are 4.3 MiB, so a read takes 8 MiB at most, not 1.
+EXTERNAL_FILES = 200                          # files one read opens at most, newest first, whatever they hold
+EXTERNAL_READ_BYTES = 8 * 1024 * 1024         # bytes one read takes at most, over all its files
 EXTERNAL_ROWS = 200
+MIB = 1024 * 1024
+# memory.external's caps and their bounds (settings refuses a value outside them)
+EXTERNAL_CAP_BOUNDS = {"max_files": (1, 2000), "read_mib": (1, 64), "ledger_mib": (1, 1024),
+                       "ledger_copies": (10, 100000)}
+
+
+def external_caps(spec: Any) -> dict:
+    """memory.external's caps as set, each else its default: {max_files, read_bytes, ledger_bytes, ledger_copies,
+    ledger_mib}. A value the settings would refuse (a hand edit) counts as unset."""
+    spec = spec if isinstance(spec, dict) else {}
+
+    def given(key: str) -> int | None:
+        value = spec.get(key)
+        low, high = EXTERNAL_CAP_BOUNDS[key]
+        return value if isinstance(value, int) and not isinstance(value, bool) and low <= value <= high else None
+    read, ledger = given("read_mib"), given("ledger_mib")
+    caps = {"max_files": given("max_files") or EXTERNAL_FILES,
+            "read_bytes": read * MIB if read else EXTERNAL_READ_BYTES,
+            "ledger_bytes": ledger * MIB if ledger else EXTERNAL_LEDGER_BYTES,
+            "ledger_copies": given("ledger_copies") or EXTERNAL_LEDGER_COPIES}
+    caps["ledger_mib"] = caps["ledger_bytes"] // MIB
+    return caps
 _SELECT_RE = re.compile(r"^\s*(select|with)\b", re.IGNORECASE)
 
 
@@ -3321,18 +3463,22 @@ def read_external_memory(spec: dict, limit: int, *, roots: list[Path] | None = N
     folder: its *.md and *.txt files, newest first, read through a folder fd reached from the root with
     O_NOFOLLOW at each step, each file opened with O_NOFOLLOW and checked with fstat (a regular file with one
     link: a symlink, a FIFO or a hard link is skipped, and so is a name that is not UTF-8). One read opens at
-    most EXTERNAL_FILES files and takes at most EXTERNAL_READ_BYTES in all (EXTERNAL_FILE_BYTES of one file),
-    whatever they hold, so empty or whitespace files that use none of limit still end the walk. sqlite: {path,
+    most max_files files and takes at most read_mib in all (external_caps: EXTERNAL_FILES and
+    EXTERNAL_READ_BYTES unless set; EXTERNAL_FILE_BYTES of one file), whatever they hold, so empty or whitespace
+    files that use none of limit still end the walk. sqlite: {path,
     query}: the database (a regular file, not a symlink, just before it is opened) opened read-only (mode=ro,
     query_only, an authorizer that allows nothing but reading), the query's first column as text (a second
     column, when present, as its time). The query is the persona's own: nothing here assumes a table or a
     column. When the database cannot be read (no file, cannot be opened, the query failed) problems gets one
     line written by code saying so: an aborted read is never an empty memory. The harness never writes these.
-    record, when given (the read ledger), gets each file as it is read and the database's rows or its error."""
+    record, when given (the read ledger), gets each file as it is read and the database's rows or its error. A
+    file's row also carries the sha256 of the bytes read ({source, sha256, text}: the version the ledger names),
+    which its prompt block names (memory_source)."""
     rows: list[dict] = []
     left = max(0, int(limit))
     denied = list(denied)
     folder = spec.get("folder")
+    caps = external_caps(spec)
     if folder and left:
         root, parts, _ = _external_anchor("folder", folder, roots, denied, leaf=False)
         dir_fd = _open_dir_under(root, parts, f"memory.external.folder {folder}")
@@ -3347,10 +3493,10 @@ def read_external_memory(spec: dict, limit: int, *, roots: list[Path] | None = N
                         listed.append((info.st_mtime, name))
             opened = taken = 0
             for _mtime, name in sorted(listed, reverse=True):
-                if left <= 0 or opened >= EXTERNAL_FILES or taken >= EXTERNAL_READ_BYTES:
+                if left <= 0 or opened >= caps["max_files"] or taken >= caps["read_bytes"]:
                     break
                 opened += 1
-                read = _read_plain(dir_fd, name, min(EXTERNAL_FILE_BYTES, EXTERNAL_READ_BYTES - taken))
+                read = _read_plain(dir_fd, name, min(EXTERNAL_FILE_BYTES, caps["read_bytes"] - taken))
                 if read is None:
                     continue
                 taken += len(read[1])
@@ -3359,7 +3505,7 @@ def read_external_memory(spec: dict, limit: int, *, roots: list[Path] | None = N
                 with contextlib.suppress(UnicodeDecodeError):
                     text = read[1].decode("utf-8").strip()[:left]
                     if text:
-                        rows.append({"source": name, "text": text})
+                        rows.append({"source": name, "sha256": hashlib.sha256(read[1]).hexdigest(), "text": text})
                         left -= len(text)
         finally:
             os.close(dir_fd)

@@ -33,6 +33,7 @@ const DAEMON = {
   daemon_beyond: ['warn', 'beyond_loopback'], daemon_down: ['warn', 'down'], daemon_frozen: ['warn', 'frozen'], daemon_running: ['ok', 'ok'],
   daemon_unknown: ['warn', 'unknown_outcome'], daemon_lapsed: ['warn', 'lapsed'], daemon_two: ['warn', 'two_schedulers'],
   daemon_report_failed: ['warn', 'report_failed'], daemon_engine_old: ['err', 'engine_old'], daemon_damage: ['err', 'bad_blocks'], daemon_skip: ['ok', 'ok'],
+  daemon_failing: ['err', 'degraded'],
 };
 // The words that never reach a novice screen on this route (§12.5, U7's list grown)
 const SERVICE_TERMS = /\b(daemon|threshold|hold[ -]off|undelete|heal|engine)\b/i;
@@ -343,7 +344,7 @@ export async function run(t) {
       await openCard(page, t.url);
       await page.click('[data-action="details"]');
       await page.waitForSelector('.bk-runs [data-run="J-41"] a');
-      assert(await page.locator('.bk-lab-list [data-lab]').count() === 3, 'Details lists the three lab checks with their ids');
+      assert(await page.locator('.bk-lab-list [data-lab]').count() === 4, 'Details lists the four lab checks with their ids');
       assert(/L8: .*not run: needs a server started by systemd/.test(await page.textContent('.bk-lab-list')), 'each says why it was not run');
       await page.evaluate(() => document.querySelector('[data-part="details"]').scrollIntoView()); // the card may re-render meanwhile
       await t.areaShot(page, AREA, 'details-desktop');
@@ -440,6 +441,167 @@ export async function run(t) {
       if (more) {
         await page.click('[data-action="needs-more"]');
         await page.waitForSelector('.needs-item[data-need="backups:stale"][data-tone="warn"]');
+      }
+      await setState(t, page, 'healthy');
+    });
+
+    await step(AREA + ': the checklist for a failed disk (§9.4, P4): opened from the card, seven steps in order, each check holds until the owner ran its blocks, the new disk’s commands only after its serial number, then finished', async () => {
+      const words = () => page.$eval('#backups-root', (root) => { const c = root.cloneNode(true); c.querySelectorAll('pre, code, .tag-mono, .check-detail').forEach((e) => e.remove()); return c.innerText; });
+      const current = (id) => page.waitForSelector('.bk-rb-step[data-step="' + id + '"][data-state="current"]', { timeout: 8000 });
+      const goOn = async (id, expectCode) => {
+        await t.waitPost(page, /\/api\/snapraid\/rebuild\/step$/, () => page.click('.bk-rb-step[data-step="' + id + '"] [data-action="rb-step"]'));
+        if (expectCode) await page.waitForSelector('.bk-rb-step[data-step="' + id + '"] .bk-rb-check[data-code="' + expectCode + '"]');
+      };
+      const good = () => page.request.post(t.url + '/__mock/backups/rebuild_good', { data: {} });
+      await setState(t, page, 'daemon_failing');
+      await page.goto(t.url + '/#/backups');
+      await page.reload();
+      await page.waitForSelector('[data-part="rebuild"] [data-action="open-rebuild"].btn');
+      assert(await page.$eval('.bk-light', (e) => e.dataset.code) === 'degraded', 'a missing disk is red');
+      await page.click('[data-part="rebuild"] [data-action="open-rebuild"]');
+      await page.waitForSelector('.bk-rb-choices [data-disk="d2"]');
+      assert(await page.isChecked('.bk-rb-choices [data-pick-disk="d2"]'), 'the failed disk is chosen for you');
+      assert(/this one looks failed/.test(await page.textContent('.bk-rb-choices [data-disk="d2"]')), 'and marked');
+      await t.areaShot(page, AREA, 'rebuild-start-desktop');
+      await t.waitPost(page, /\/api\/snapraid\/rebuild$/, () => page.click('[data-action="rb-start"]'));
+      await current('stop');
+      assert(await page.locator('.bk-rb-step').count() === 7 && await page.locator('.bk-rb-step[data-state="later"]').count() === 6, 'seven steps, one at a time');
+      assert(await page.locator('.bk-rb-step[data-state="later"] pre').count() === 0, 'later steps show no commands');
+      assert(/sudo systemctl disable --now snapraidd\.service/.test(await page.textContent('.bk-rb-step[data-step="stop"] .bk-rb-blocks')), 'the block that turns the service off');
+      assert(await page.locator('.bk-rb-step[data-step="stop"] [data-action="act-hold_off"]').count() === 1, 'the skip of the next run, through its go-ahead');
+      assert(/Stop & Inactive/.test(await page.textContent('.bk-rb-step[data-step="stop"]')), 'how to stop the apps');
+      let text = await words();
+      assert(!INTERNAL.test(text) && !SERVICE_TERMS.test(text), 'an internal term on the checklist: ' + ((text.match(INTERNAL) || text.match(SERVICE_TERMS) || [])[0]));
+      await t.areaShot(page, AREA, 'rebuild-stop-desktop');
+      await page.check('.bk-rb-step[data-step="stop"] [data-confirm="apps"]');
+      await goOn('stop', 'service_up');
+      assert(await page.locator('.bk-rb-step[data-step="stop"][data-state="current"]').count() === 1, 'a failed check keeps the step open');
+      await good();
+      await goOn('stop');
+      await current('name');
+      assert(/serial number SN-EXAMPLE-2/.test(await page.textContent('.bk-rb-step[data-step="name"]')), 'the disk named with its serial number, in the cockpit');
+      await page.check('.bk-rb-step[data-step="name"] [data-confirm="found"]');
+      await goOn('name');
+      await current('boot');
+      assert(/sudo sed -i/.test(await page.textContent('.bk-rb-step[data-step="boot"] .bk-rb-blocks')) && /if not/i.test(await page.textContent('.bk-rb-step[data-step="boot"] .bk-rb-blocks')), 'the fstab block, with its way back');
+      await good();
+      await goOn('boot');
+      await current('disk');
+      assert(await page.locator('.bk-rb-step[data-step="disk"] .tag-err').count() === 1, 'marked as one that cannot be undone');
+      await page.check('[data-pick-new="/dev/disk/by-id/ata-Example_Disk_8TB_SN-EXAMPLE-NEW1"]');
+      t.allowHttp(true);
+      await page.fill('[data-focus="rb-typed"]', 'XXXX');
+      await page.click('[data-action="rb-prepare"]');
+      await page.waitForFunction(() => /not this disk/.test(document.querySelector('.bk-rb-spare').textContent));
+      assert(await page.locator('.bk-rb-prepared').count() === 0, 'no command before the right serial number');
+      t.allowHttp(false);
+      await page.fill('[data-focus="rb-typed"]', 'NEW1');
+      await page.click('[data-action="rb-prepare"]');
+      await page.waitForSelector('.bk-rb-prepared');
+      const prepared = await page.textContent('.bk-rb-prepared');
+      assert(/mkfs\.ext4 \/dev\/disk\/by-id\/ata-Example_Disk_8TB_SN-EXAMPLE-NEW1-part1/.test(prepared) && !/\/dev\/sd[a-z]/.test(prepared), 'commands named by /dev/disk/by-id only');
+      assert(/sudo wipefs -a \/dev\/disk\/by-id\/ata-Example_Disk_8TB_SN-EXAMPLE-NEW1-part1\s+sudo mkfs\.ext4 /.test(prepared), 'what an old partition held is erased from the new one before mkfs');
+      await noOverflow(page, 'rebuild disk 1440');
+      await t.areaShot(page, AREA, 'rebuild-disk-desktop');
+      await goOn('disk', 'not_mounted');
+      // block 4d ran: the new disk is mounted, so no longer free, and the reader is still to be told (4e); the page
+      // itself shows that block now, so a reload (which loses the commands shown after the serial number) keeps it
+      await page.request.post(t.url + '/__mock/backups/rebuild_mounted', { data: {} });
+      await goOn('disk', 'reader_old');
+      assert(await page.locator('.bk-rb-step[data-step="disk"] li.bk-block[data-block="4e"]').count() === 1, 'the reader’s block, once');
+      assert(await page.locator('.bk-rb-step[data-step="disk"] .bk-rb-spare').count() === 0, 'no other disk’s commands once the new disk is mounted');
+      await page.reload();
+      await current('disk');
+      const told = await page.textContent('.bk-rb-step[data-step="disk"] li.bk-block[data-block="4e"]');
+      assert(/findmnt -n -o UUID --mountpoint \/mnt\/disk2/.test(told) && /explain helper-config/.test(told), 'after a reload the reader’s block is still there: ' + told);
+      await noOverflow(page, 'rebuild reader 1440');
+      await good();
+      await goOn('disk');
+      await current('rebuild');
+      assert(/seraphina-disk-rebuild/.test(await page.textContent('.bk-rb-step[data-step="rebuild"] .bk-rb-blocks')), 'the owner starts the rebuild himself');
+      assert(/23:30/.test(await page.textContent('.bk-rb-step[data-step="rebuild"]')), 'the nightly power-off is named');
+      await goOn('rebuild', 'not_started');
+      await good();
+      await goOn('rebuild');
+      await current('lost');
+      assert(/could not be brought back/.test(await page.textContent('.bk-rb-step[data-step="lost"]')) && /Nothing else on this machine has an older copy/.test(await page.textContent('.bk-rb-step[data-step="lost"]')), 'what did not come back, and that nothing else has it');
+      assert(/cannot tell whether every file came back/.test(await page.textContent('.bk-rb-step[data-step="lost"]')) && /sudo tail -n 20 /.test(await page.textContent('.bk-rb-step[data-step="lost"] .bk-rb-blocks')), 'error codes: Seraphina cannot tell, and shows how each one ended');
+      await t.areaShot(page, AREA, 'rebuild-lost-desktop');
+      await page.check('.bk-rb-step[data-step="lost"] [data-confirm="read"]');
+      await goOn('lost');
+      await current('done');
+      await page.check('.bk-rb-step[data-step="done"] [data-confirm="ready"]');
+      await page.check('.bk-rb-step[data-step="done"] [data-confirm="apps_back"]');
+      await goOn('done', 'not_answering');
+      await good();
+      await goOn('done');
+      await page.waitForFunction(() => /The checklist is finished\./.test(document.querySelector('#backups-root').textContent));
+      text = await words();
+      assert(!INTERNAL.test(text), 'an internal term after the end: ' + (text.match(INTERNAL) || [])[0]);
+    });
+
+    await step(AREA + ': the checklist on the card, on Home, closed before the end, on the reader’s route, and at 390 px, light and dark (P4, U13)', async () => {
+      await setState(t, page, 'daemon_failing');
+      await page.request.post(t.url + '/__mock/backups/rebuild_at', { data: { step: 'boot' } });
+      await page.goto(t.url + '/#/backups');
+      await page.reload();
+      await page.waitForSelector('[data-part="rebuild"].callout');
+      assert(await page.$eval('.bk-light', (e) => e.dataset.code) === 'rebuild', 'the light says a disk is being replaced');
+      assert(/Disk 2 is being replaced: step 3 of 7, make sure the server can start without it\./.test(await page.textContent('[data-part="rebuild"]')), 'the card names the step: ' + await page.textContent('[data-part="rebuild"]'));
+      await t.areaShot(page, AREA, 'rebuild-card-desktop');
+      await page.goto(t.url + '/#/home');
+      await page.reload();
+      await page.waitForSelector('.needs-item[data-need="backups:rebuild"][data-tone="err"]', { timeout: 8000 });
+      await page.goto(t.url + '/#/backups/rebuild');
+      await page.waitForSelector('.bk-rb-step[data-step="boot"][data-state="current"]');
+      await page.click('[data-action="rb-close"]');
+      await page.waitForSelector('dialog.modal[open]');
+      assert(/It undoes nothing you ran/.test(await page.textContent('dialog.modal[open]')), 'closing says it undoes nothing');
+      await t.waitPost(page, /\/api\/snapraid\/rebuild\/close$/, () => page.click('dialog.modal[open] .modal-foot .btn-primary, dialog.modal[open] .modal-foot .btn-danger'));
+      await page.waitForFunction(() => /closed before the end/.test(document.querySelector('#backups-root').textContent));
+      const back = await page.textContent('.bk-rb-way-back');
+      assert(/sudo systemctl enable --now snapraidd\.service/.test(back) && /only while no new disk is mounted at \/mnt\/disk2/.test(back), 'closed after step 1: how to turn the service on again, and when not to: ' + back);
+      await noOverflow(page, 'rebuild closed 1440');
+      await t.areaShot(page, AREA, 'rebuild-closed-desktop');
+      await setState(t, page, 'failing_disk');
+      await openCard(page, t.url);
+      await page.click('[data-part="rebuild"] [data-action="open-rebuild"]');
+      await page.waitForSelector('.bk-rb-choices [data-disk="d2"]');
+      await t.waitPost(page, /\/api\/snapraid\/rebuild$/, () => page.click('[data-action="rb-start"]'));
+      await page.waitForSelector('.bk-rb-step[data-step="stop"][data-state="current"]');
+      assert(/What starts protection runs here: \/etc\/cron\.d\/snapraid\./.test(await page.textContent('.bk-rb-step[data-step="stop"]')), 'the reader’s route lists what starts runs');
+      assert(await page.locator('.bk-rb-step[data-step="stop"] [data-confirm="schedulers"]').count() === 1, 'and asks the owner to say he turned it off');
+      const shots = [['phone-light', p.page]];
+      const dark = await t.newPage(AREA + '-phone-dark', { phone: true, colorScheme: 'dark' });
+      const light = await t.newPage(AREA + '-desktop-light', { colorScheme: 'light' });
+      shots.push(['phone-dark', dark.page], ['desktop-light', light.page]);
+      try {
+        for (const [name, m] of shots) {
+          for (const at of ['stop', 'disk', 'lost']) {
+            await setState(t, m, 'daemon_failing');
+            await m.request.post(t.url + '/__mock/backups/rebuild_at', { data: { step: at } });
+            await m.goto(t.url + '/#/backups/rebuild');
+            await m.reload();
+            await m.waitForSelector('.bk-rb-step[data-step="' + at + '"][data-state="current"]');
+            if (at === 'disk') {
+              await m.check('[data-pick-new="/dev/disk/by-id/ata-Example_Disk_8TB_SN-EXAMPLE-NEW1"]');
+              await m.fill('[data-focus="rb-typed"]', 'NEW1');
+              await m.click('[data-action="rb-prepare"]');
+              await m.waitForSelector('.bk-rb-prepared');
+            }
+            await noOverflow(m, 'rebuild ' + at + ' ' + name);
+            await t.areaShot(m, AREA, 'rebuild-' + at + '-' + name);
+          }
+          await setState(t, m, 'daemon_failing');
+          await m.goto(t.url + '/#/backups/rebuild');
+          await m.reload();
+          await m.waitForSelector('.bk-rb-choices [data-disk="d2"]');
+          await noOverflow(m, 'rebuild start ' + name);
+          await t.areaShot(m, AREA, 'rebuild-start-' + name);
+        }
+      } finally {
+        await dark.ctx.close();
+        await light.ctx.close();
       }
       await setState(t, page, 'healthy');
     });

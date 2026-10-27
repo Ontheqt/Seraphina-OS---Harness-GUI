@@ -1,0 +1,2 @@
+No journal files were found.
+Archived and active journals take up 0B in the file system.

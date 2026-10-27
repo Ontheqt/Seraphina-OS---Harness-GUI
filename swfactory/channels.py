@@ -293,8 +293,11 @@ def channel_privacy(entry: Mapping[str, Any], tailnet: Mapping[str, Any] | None,
     return PRIVACY_TAILNET
 
 
-def tailnet_status(run: Callable[[list[str]], str] | None = None) -> dict | None:
-    """{suffix, addresses, funnel} from `tailscale status --json`, or None when Tailscale cannot be asked."""
+def tailnet_status(run: Callable[[list[str]], str] | None = None, confirmed: str | None = None) -> dict | None:
+    """{suffix, addresses, funnel} from `tailscale status --json`, or None when Tailscale cannot be asked. On a server
+    whose Tailscale runs only in containers there is no tailscale command to ask; then confirmed, the tailnet suffix
+    the owner confirmed in Your server (yourserver.tailnet.suffix), is the suffix, with no addresses and Funnel
+    unknown (YOUR_SERVER.md Appendix A11): {suffix, addresses: [], funnel: None, source: "confirmed"}."""
     runner = run or _run
     text = runner(["tailscale", "status", "--json"])
     try:
@@ -302,6 +305,9 @@ def tailnet_status(run: Callable[[list[str]], str] | None = None) -> dict | None
     except ValueError:
         data = None
     if not isinstance(data, dict):
+        suffix = str(confirmed or "").strip(".").lower()
+        if suffix and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}(\.[a-z0-9][a-z0-9-]{0,62})*\.ts\.net", suffix):
+            return {"suffix": suffix, "addresses": [], "funnel": None, "source": "confirmed"}
         return None
     addresses: list[str] = []
     self_node = data.get("Self") if isinstance(data.get("Self"), dict) else {}

@@ -1,0 +1,5 @@
+Hit:1 http://archive.ubuntu.example/ubuntu resolute InRelease
+Get:2 http://archive.ubuntu.example/ubuntu resolute-updates InRelease [126 kB]
+Get:3 http://security.ubuntu.example/ubuntu resolute-security InRelease [126 kB]
+Fetched 252 kB in 1s (210 kB/s)
+Reading package lists...

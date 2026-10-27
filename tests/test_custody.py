@@ -485,6 +485,30 @@ class ProviderGuardTest(RegisterTestCase):
                 answer = provider.complete(leased_model, "", [{"role": "user", "content": "x"}], [])
                 self.assertEqual((answer.text, len(llm.requests)), ("second", 2))
 
+    def test_a_request_never_sent_under_a_lease_is_tried_six_times(self) -> None:
+        """The operator confirmed (26 Oct): a connection that was never made sent nothing, so under a lease it is
+        tried again as for any provider: six tries in all (MAX_ATTEMPTS: the first and five retries, after 2, 4,
+        8, 16 and 32 s), each under the same lease, and nothing reads as outcome unknown."""
+        from swfactory.harness import providers
+        from tests.test_providers import FakeSleep, closed_port
+        self.install(self.client())
+        errors: list[dict] = []
+        cfg = provider_cfg(f"http://127.0.0.1:{closed_port()}/v1", self.register, lazy_load=True)
+        with custody.leased(model_cfg(cfg), "test") as leased_model:
+            before = len(self.register.requests)
+            sleep = FakeSleep()
+            provider = make_provider(leased_model.provider)
+            provider._sleep = sleep
+            with self.assertRaises(ProviderError) as caught:
+                provider.complete(leased_model, "", [{"role": "user", "content": "x"}], [], on_error=errors.append)
+            self.assertFalse(caught.exception.sent)
+            self.assertNotIn("outcome is unknown", str(caught.exception))
+            self.assertEqual(providers.MAX_ATTEMPTS, 6)
+            self.assertEqual([error["will_retry"] for error in errors], [True] * 5 + [False])
+            self.assertEqual(sleep.total, 62)
+            self.assertEqual(self.register.requests[before:], [], "no residency read: nothing was sent")
+            self.assertIsNone(leased_model.provider.lease.problem(), "the same lease throughout")
+
     def test_cancellation_while_a_model_loads_releases_and_reads_residency_again(self) -> None:
         self.install(self.client())
         cancel, abort = threading.Event(), AbortHandle()   # a cancel ends a read blocked on a loading server
@@ -948,8 +972,8 @@ class OneServerManyEntriesTest(RegisterTestCase):
         out = io.StringIO()
         with mock.patch.object(cli, "Client", client), mock.patch.object(cli, "load_config"), redirect_stdout(out):
             self.assertEqual(cli.cmd_custody(argparse.Namespace(refresh=False, json=False)), 0)
-        self.assertIn("HELD (the card is held by someone else): waits up to 120s; FULL (the card cannot fit the "
-                      "model now): the next build at once", out.getvalue())
+        self.assertIn("HELD (the card is held by someone else): another free card at once, else waits up to 120s; "
+                      "FULL (the card cannot fit the model now): the next build at once", out.getvalue())
         self.assertIn("refused 2026-10-22T09:00:00.000Z  big  FULL (the card cannot fit this model now)  "
                       "(job demo/001 builder)", out.getvalue())
         self.assertNotIn("small", out.getvalue(), "only refusals are listed")
@@ -1294,9 +1318,106 @@ class HeldAndFullClaimTest(RegisterTestCase):
         self.assertTrue(outcomes[1][2].startswith("LEASED: "), outcomes[1][2])
 
 
+class NeverWaits(threading.Event):
+    """A cancel event that fails the test if anything waits on it: a placement that never sleeps."""
+
+    def wait(self, timeout: float | None = None) -> bool:
+        raise AssertionError(f"the placement waited ({timeout}s)")
+
+
+class HeldWhileAnotherCardIsFreeTest(RegisterTestCase):
+    """The operator (26 Oct): HELD while another card is free does not wait, the run goes to the free card at
+    once; only when no other build can take the run now is the HELD answer waited out, as before. LEASED is
+    unchanged: never waited for."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.install(self.client())
+        patcher = mock.patch.object(custody, "HELD_RETRY_SECONDS", 0.05)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.cards = [provider_cfg(f"http://127.0.0.1:5912{i}/v1", self.register, name=f"card{i}", lazy_load=True,
+                                   overflow_after_seconds=600) for i in range(2)]
+        self.builds = [Build(card, "flash") for card in self.cards]
+
+    def asked(self) -> list[str]:
+        return [body["provider"] for _, path, _, body in self.register.requests if path == "/leases"]
+
+    def test_held_on_the_first_card_with_the_second_free_goes_there_without_waiting(self) -> None:
+        self.register.held["card0"] = "operator"
+        claims = Claims("job demo/020 builder", keep=False, cancel=NeverWaits())
+        index, _, notes = routing.choose_build(self.builds, FakeReach(), claims)
+        self.assertEqual(index, 1)
+        self.assertEqual(self.asked(), ["card0", "card1"], "card0 asked once, then card1 at once")
+        self.assertFalse(claims.waited)
+        self.assertEqual(notes, ["build card0/flash is unavailable: GPU custody: HELD: no lease for flash on card0: "
+                                 "the card is held by someone else (held by operator)"])
+        self.assertEqual(claims.info()["custody_refused"][0]["code"], "HELD")
+        self.assertNotIn("wait", [entry["op"] for entry in custody.client_for(self.cards[0].custody).history])
+        claims.release()
+
+    def test_held_on_every_card_waits_for_the_first_as_before(self) -> None:
+        self.register.held.update({"card0": "operator", "card1": "operator"})
+        threading.Timer(0.3, lambda: self.register.held.pop("card0", None)).start()
+        waits: list = []
+        claims = Claims("job demo/021 builder", keep=False, cancel=threading.Event(),
+                        on_wait=lambda *args: waits.append(args[:2]))
+        index, _, notes = routing.choose_build(self.builds, FakeReach(), claims)
+        self.assertEqual(index, 0, "the first card, waited for")
+        self.assertEqual(waits, [("card0", 600.0)])
+        asked = self.asked()
+        self.assertEqual(asked[:2], ["card0", "card1"], "both asked before the wait")
+        self.assertEqual(set(asked[2:]), {"card0"}, "the wait asks the first card again")
+        self.assertEqual(len(notes), 1)
+        self.assertIn("card1/flash is unavailable: GPU custody: HELD", notes[0])
+        claims.release()
+
+    def test_held_with_the_other_card_full_or_leased_still_waits(self) -> None:
+        for other in ("FULL", "LEASED"):
+            with self.subTest(other=other):
+                self.register.held = {"card0": "operator"}
+                self.register.full, self.register.leases = set(), {}
+                if other == "FULL":
+                    self.register.full.add(("card1", "flash"))
+                else:
+                    self.register.leases["x"] = {"id": "x", "provider": "card1", "model": "pro", "holder": "another",
+                                                 "purpose": "job", "until": self.register.now + 3600}
+                threading.Timer(0.3, self.register.held.clear).start()
+                claims = Claims("job demo/022 builder", keep=False, cancel=threading.Event())
+                index, _, notes = routing.choose_build(self.builds, FakeReach(), claims)
+                self.assertEqual(index, 0, "no other card could take the run now: card0 was waited for")
+                self.assertTrue(claims.waited)
+                self.assertIn(f"GPU custody: {other}", notes[0])
+                claims.release()
+
+    def test_leased_is_unchanged_it_never_waits(self) -> None:
+        for card in self.cards:
+            self.register.leases[card.name] = {"id": card.name, "provider": card.name, "model": "pro",
+                                               "holder": "another", "purpose": "job", "until": self.register.now + 3600}
+        claims = Claims("job demo/023 builder", keep=False, cancel=NeverWaits())
+        index, _, notes = routing.choose_build(self.builds, FakeReach(), claims)
+        self.assertIsNone(index)
+        self.assertEqual(self.asked(), ["card0", "card1"], "each asked once")
+        self.assertTrue(all("GPU custody: LEASED" in note for note in notes), notes)
+        del self.register.leases["card1"]
+        claims = Claims("job demo/024 builder", keep=False, cancel=NeverWaits())
+        self.assertEqual(routing.choose_build(self.builds, FakeReach(), claims)[0], 1, "LEASED: the next card")
+        self.assertFalse(claims.waited)
+        claims.release()
+
+    def test_without_a_cancel_event_a_held_card_is_passed_over_at_once(self) -> None:
+        """A placement that cannot wait (a wake turn, a Test probe) puts nothing off: HELD is refused at once."""
+        self.register.held.update({"card0": "operator", "card1": "operator"})
+        claims = Claims("wake kate W-1", keep=False)
+        self.assertEqual(routing.choose_build(self.builds, FakeReach(), claims)[0], None)
+        self.assertEqual(self.asked(), ["card0", "card1"])
+        self.assertEqual(claims.put_off, {})
+
+
 class HeldAndFullPlacementTest(PlacementTestCase):
-    """The operator's decision on a job's run: HELD waits (overflow_after_seconds), FULL goes on at once to the
-    next build (another card, or a smaller build), then the overflow."""
+    """The operator's decisions on a job's run: HELD while another card is free goes to the free card at once;
+    HELD with no other card free waits (overflow_after_seconds); FULL goes on at once to the next build (another
+    card, or a smaller build), then the overflow."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -1319,10 +1440,10 @@ class HeldAndFullPlacementTest(PlacementTestCase):
         return sum(1 for _, path, _, body in self.register.requests if path == "/leases"
                    and body.get("provider") == provider)
 
-    def test_held_waits_and_the_run_goes_to_the_card_it_waited_for(self) -> None:
-        self.register.held[self.tabby] = "operator"
-        threading.Timer(0.4, self.register.held.clear).start()
-        job = self.run_job(self.start_placed(self.custody_config(overflow_after_seconds=20)))
+    def test_held_on_every_card_waits_and_the_run_goes_to_the_first_card_it_waited_for(self) -> None:
+        self.register.held.update({self.tabby: "operator", self.strata: "operator"})
+        threading.Timer(0.4, lambda: self.register.held.pop(self.tabby, None)).start()
+        job = self.run_job(self.start_placed(self.both_config(seconds=20)))
         self.assertEqual(job["stage"], "merged", job.get("reason"))
         self.assertEqual(self.recorder.of("builder")[0].ctx.model.provider.name, self.tabby, "it waited for tabby")
         waiting = [e for e in self.events(job, "agent.waiting") if e.agent == "builder"]
@@ -1332,16 +1453,40 @@ class HeldAndFullPlacementTest(PlacementTestCase):
         self.assertEqual(waiting[0].data["run"], start.data["run"], "the wait is the run's own event")
         self.assertIn(f"builder waits up to 20s for {self.tabby}: GPU custody: HELD", self.logs(job))
         self.assertGreater(self.acquires(self.tabby), 1)
-        self.assertNotIn("custody_refused", start.data, "the build it ran on was granted in the end")
+        self.assertEqual(self.acquires(self.strata), 1, "strata was asked before the wait, and not waited for")
+        self.assertEqual([(r["provider"], r["code"]) for r in start.data["custody_refused"]], [(self.strata, "HELD")],
+                         "the build it ran on was granted in the end")
 
-    def test_held_past_overflow_after_seconds_goes_on_to_the_next_build(self) -> None:
+    def test_held_with_another_card_free_goes_to_the_free_card_at_once(self) -> None:
+        """The operator (26 Oct): HELD while another card is free does not wait; the run goes to the free card at
+        once, however long overflow_after_seconds is."""
         self.register.held[self.tabby] = "operator"
-        job = self.run_job(self.start_placed(self.custody_config(overflow_after_seconds=0.4)))
+        job = self.run_job(self.start_placed(self.custody_config(overflow_after_seconds=600)))
         self.assertEqual(job["stage"], "merged", job.get("reason"))
         self.assertEqual(self.recorder.of("builder")[0].ctx.model.provider.name, self.strata)
+        self.assertEqual(self.acquires(self.tabby), 1, "asked once, not waited for")
+        self.assertFalse([e for e in self.events(job, "agent.waiting") if e.data.get("custody")])
+        self.assertNotIn("waits up to", self.logs(job))
+        self.assertIn(f"build {self.tabby}/flash-exl3 is unavailable: GPU custody: HELD: no lease for flash-exl3 on "
+                      f"{self.tabby}: the card is held by someone else", self.logs(job))
+        start = self.start_event(job, "builder")
+        self.assertEqual([(r["provider"], r["code"]) for r in start.data["custody_refused"]], [(self.tabby, "HELD")])
+        self.assertEqual(start.data["build"]["index"], 1)
+
+    def test_held_on_every_card_past_overflow_after_seconds_waits_once_then_overflows(self) -> None:
+        self.register.held.update({self.tabby: "operator", self.strata: "operator"})
+        started = time.monotonic()
+        job = self.run_job(self.start_placed(self.both_config(seconds=0.4)))
+        self.assertEqual(job["stage"], "merged", job.get("reason"))
+        self.assertGreaterEqual(time.monotonic() - started, 0.35)
+        ctx = self.recorder.of("builder")[0].ctx
+        self.assertEqual((ctx.model.key, ctx.model.provider.name), ("cheap", "api"))
         self.assertIn("waited 0.4s (overflow_after_seconds)", self.logs(job))
-        refused = self.start_event(job, "builder").data["custody_refused"]
-        self.assertEqual([(r["provider"], r["code"]) for r in refused], [(self.tabby, "HELD")])
+        self.assertIn("no wait left (the run waited out a HELD answer for up to 0.4s already", self.logs(job))
+        waiting = [e.data["provider"] for e in self.events(job, "agent.waiting") if e.data.get("custody")]
+        self.assertEqual(waiting, [self.tabby], "one wait, for the first card")
+        self.assertTrue(self.start_event(job, "builder").data["overflow"]["why"].startswith(
+            "the card is held by someone else ("), "every card refused with HELD: the overflow says so")
 
     def test_full_skips_to_the_next_build_without_waiting(self) -> None:
         self.register.full.add((self.tabby, "flash-exl3"))
@@ -1415,8 +1560,8 @@ class HeldAndFullPlacementTest(PlacementTestCase):
         self.assertFalse([e for e in self.events(job, "agent.waiting") if e.data.get("custody")])
 
     def test_cancelling_a_run_while_it_waits_out_a_hold(self) -> None:
-        self.register.held[self.tabby] = "operator"
-        factory = self.start_placed(self.custody_config(overflow_after_seconds=60))
+        self.register.held.update({self.tabby: "operator", self.strata: "operator"})
+        factory = self.start_placed(self.both_config(seconds=60))
         job = factory.submit(REPO, "x")
         until(lambda: [e for e in self.events(job, "agent.waiting") if e.data.get("custody") == "HELD"])
         factory.cancel(REPO, job["id"])
@@ -1488,7 +1633,8 @@ class CustodyViewAndDoctorTest(RegisterTestCase):
                        "remote": {"provider": "api", "model": "remote-1"}}})
         checks = doctor._custody_check(config, "gpu")
         self.assertEqual((checks[0]["ok"], checks[0]["level"]), (True, "info"))
-        self.assertIn("a HELD answer (the card is held by someone else) waits up to 45s", checks[0]["detail"])
+        self.assertIn("a HELD answer (the card is held by someone else) goes at once to another build that is free, "
+                      "else waits up to 45s", checks[0]["detail"])
         self.assertIn("a FULL answer (the card cannot fit the model now) goes straight to the next build",
                       checks[0]["detail"])
         [fallback] = [entry for entry in checks if entry["name"] == "custody gpu fallback"]
@@ -1606,6 +1752,109 @@ class EpochTest(RegisterTestCase):
         self.assertEqual((found.generation, client.epoch, client.fenced), (1, "boot-b:1", None))
         self.assertIn(("epoch", "it now sends epoch boot-b:1"),
                       [(entry["op"], entry.get("reason")) for entry in client.history])
+
+
+class EpochOnRenewAndReleaseTest(RegisterTestCase):
+    """The operator's answer (26 Oct): lease ids are unique across epochs, and a renew and a release carry the
+    epoch the lease was granted in, so the register refuses a mismatch (EPOCH_MISMATCH). Reading residency first
+    is a courtesy; the refusal is the enforcement."""
+
+    def bodies(self, action: str) -> list:
+        return [body for verb, path, _, body in self.register.requests if path.endswith("/" + action)]
+
+    def test_renew_and_release_carry_the_epoch_and_none_without_one(self) -> None:
+        self.register.epoch = "boot-a:1"
+        client = self.client()
+        lease = client.claim("gpu", "flash", "job a", "me")
+        self.assertTrue(client.renew(lease))
+        self.assertEqual(client.release(lease)["state"], "released")
+        self.assertEqual((self.bodies("renew"), self.bodies("release")),
+                         ([{"epoch": "boot-a:1"}], [{"epoch": "boot-a:1"}]))
+        self.register.requests.clear()
+        self.register.epoch = None                     # a register that sends no epoch: none is sent
+        unnamed = self.client()
+        lease = unnamed.claim("gpu", "flash", "job b", "me")
+        self.assertTrue(unnamed.renew(lease))
+        unnamed.release(lease)
+        self.assertEqual((self.bodies("renew"), self.bodies("release")), ([{}], [{}]))
+
+    def test_the_mock_register_refuses_a_renew_or_release_of_another_epoch(self) -> None:
+        self.register.epoch = "boot-a:2"
+        adapter = RegisterAdapter(settings_for(self.register))
+        for epoch in ("boot-a:1", None):
+            with self.subTest(epoch=epoch):
+                answer = adapter.renew("l-1", epoch)
+                self.assertEqual((answer.granted, answer.reason_code, answer.epoch),
+                                 (False, "EPOCH_MISMATCH", "boot-a:2"))
+                self.assertEqual(adapter.release("l-1", epoch).reason_code, "EPOCH_MISMATCH")
+        self.assertEqual(custody.parse_answer({"granted": False, "generation": 1,
+                                               "reason_code": "epoch_mismatch"}).reason_code, "EPOCH_MISMATCH")
+
+    def test_a_refused_epoch_loses_the_lease_and_nothing_is_sent_again(self) -> None:
+        """The courtesy read left out (a restart in the moment between it and the request): the register's
+        refusal alone loses the lease. Lost, never "unknown", and no renew or release is sent again."""
+        self.register.epoch = "boot-a:1"
+        client = self.client()
+        renewed = client.claim("gpu", "flash", "job a", "me")
+        released = client.claim("gpu2", "pro", "job b", "me")
+        self.register.restart("boot-a:2")
+        with mock.patch.object(client, "_granted_earlier", return_value=(False, None)):
+            self.assertFalse(client.renew(renewed))
+            self.assertEqual(renewed.state, "lost")
+            self.assertTrue(renewed.problem().startswith("the lease was lost (renew refused: EPOCH_MISMATCH"))
+            self.assertIn("EPOCH_MISMATCH: the lease is of an earlier instance of the register (granted under "
+                          "epoch boot-a:1; the register is at epoch boot-a:2)", renewed.error)
+            self.assertFalse(client.renew(renewed), "a lost lease is never renewed again")
+            before = len(self.register.requests)
+            view = client.release(released, "the run ended")
+            self.assertEqual(self.register.ops()[before:], ["release", "residency"], "refused once, not sent again")
+        self.assertEqual(self.register.ops().count("renew"), 1)
+        self.assertEqual(view["state"], "lost", "the register answered: lost, not unknown")
+        self.assertIn("release refused: EPOCH_MISMATCH", view["error"])
+        last = client.history[-1]
+        self.assertEqual((last["op"], last["outcome"]), ("release", "lost"))
+        self.assertIn("EPOCH_MISMATCH", last["reason"])
+        self.assertIn("the run ended", last["reason"])
+
+    def test_the_keeper_stops_after_an_epoch_refusal(self) -> None:
+        self.register.ttl = 2.0
+        self.register.epoch = "boot-a:1"
+        client = self.client()
+        lease = client.claim("gpu", "flash", "job a", "me")
+        self.register.restart("boot-a:2")
+        with mock.patch.object(client, "_granted_earlier", return_value=(False, None)):
+            lease.keep()
+            until(lambda: lease.state == "lost", timeout=5)
+            lease._keeper.join(5)
+        self.assertFalse(lease._keeper.is_alive(), "no retry: the keeper ended")
+        self.assertEqual(self.register.ops().count("renew"), 1)
+
+    def test_a_lease_id_granted_again_under_another_epoch_is_not_used(self) -> None:
+        """Lease ids are unique across epochs (the contract): a register that hands out an id it gave under an
+        earlier epoch breaks it, and the grant is refused with why; nothing more is sent for that id."""
+        self.register.epoch = "boot-a:1"
+        self.register.ids = ["L-7"]
+        client = self.client()
+        client.release(client.claim("gpu", "flash", "job a", "me"))
+        self.register.restart("boot-a:2")
+        self.register.ids = ["L-7"]
+        with self.assertRaises(CustodyDenied) as caught:
+            client.claim("gpu", "flash", "job b", "me")
+        self.assertEqual(caught.exception.code, "CONTRACT")
+        self.assertIn("granted lease id L-7 again under epoch boot-a:2, after epoch boot-a:1 granted it: lease ids "
+                      "must be unique across epochs", caught.exception.detail)
+        last = client.history[-1]
+        self.assertEqual((last["op"], last["outcome"], last["reason"], last["lease_id"]),
+                         ("claim", "denied", "CONTRACT", "L-7"))
+        self.assertEqual(client.leases, {}, "not used")
+        before = len(self.register.requests)
+        self.assertEqual(Claims("job demo/x builder", keep=False).release(), [])
+        self.assertIn("L-7", self.register.leases, "nothing was released for it: it expires at the register")
+        self.assertEqual(self.register.ops()[before:], [])
+        self.assertEqual(custody.refusal_words("CONTRACT"), "the custody register broke its contract")
+        self.register.ids = ["L-8"]                    # a fresh id in the new epoch is used as ever
+        self.register.leases.clear()
+        self.assertIsNone(client.claim("gpu", "flash", "job c", "me").problem())
 
 
 # ---------------------------------------------------------------- systemd credentials

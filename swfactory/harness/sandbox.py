@@ -520,3 +520,78 @@ def _kill_groups(pgids: list[int]) -> None:
     for pgid in survivors:
         _signal_group(pgid, signal.SIGKILL)
     _wait_settled(survivors, KILL_SETTLE_SECONDS)
+
+
+# ---------------------------------------------------------------- the minimal base (BROWSER_AND_CODEX.md §2.9)
+
+# What every minimal namespace binds read-only, when it exists: the system's programs and libraries (a merged-/usr
+# host's /bin, /lib, /lib64 and /sbin become the same symlinks) and the few files under /etc a browser needs. Not
+# --ro-bind / /: the harness's data and config, the home folders and every key file are simply not there.
+MINIMAL_SYSTEM = ("/usr", "/bin", "/lib", "/lib64", "/lib32", "/sbin")
+MINIMAL_ETC = ("/etc/fonts", "/etc/passwd", "/etc/group", "/etc/nsswitch.conf", "/etc/localtime", "/etc/ld.so.cache",
+               "/etc/hosts", "/etc/alternatives")
+MINIMAL_HOME = "/home/sandbox"
+MINIMAL_PATH = "/usr/local/bin:/usr/bin:/bin"
+
+
+def minimal_args(*, ro: Iterable[Path | str] = (), rw: Iterable[Path | str] = (), sized: Iterable[tuple[str, int]] = (),
+                 env: Mapping[str, str] | None = None, chdir: str = "/", network: bool = False,
+                 die_with_parent: bool = True, clearenv: bool = True, unshare_ipc: bool = True,
+                 home: str = MINIMAL_HOME, system: Iterable[str] = MINIMAL_SYSTEM,
+                 etc: Iterable[str] = MINIMAL_ETC) -> list[str]:
+    """The bwrap argv (bwrap and its options, without the program) of a minimal namespace: its own PID, IPC and (unless network) network
+    namespaces, an empty private tmpfs HOME and /tmp, /dev and /proc, the system directories and MINIMAL_ETC
+    read-only, then ro read-only and rw writable (each at its own path, only those that exist), each (path, bytes)
+    of sized as a tmpfs capped with --size, --clearenv and exactly env (PATH, LANG, HOME and TMPDIR unless env sets
+    them), and --die-with-parent. Nothing else of the host is in it."""
+    args = ["bwrap", "--unshare-pid"]
+    if unshare_ipc:
+        args.append("--unshare-ipc")
+    if not network:
+        args.append("--unshare-net")
+    if die_with_parent:
+        args.append("--die-with-parent")
+    if clearenv:
+        args.append("--clearenv")
+    for path in system:
+        if os.path.islink(path):
+            args += ["--symlink", os.readlink(path), path]
+        elif os.path.isdir(path):
+            args += ["--ro-bind", path, path]
+    for path in etc:
+        if os.path.exists(path):
+            args += ["--ro-bind", path, path]
+    args += ["--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--tmpfs", home]
+    for path in dict.fromkeys(str(p) for p in ro):
+        if os.path.exists(path):
+            args += ["--ro-bind", path, path]
+    for path in dict.fromkeys(str(p) for p in rw):
+        if os.path.exists(path):
+            args += ["--bind", path, path]
+    for path, size in sized:
+        args += ["--size", str(int(size)), "--tmpfs", str(path)]
+    environment = {"PATH": MINIMAL_PATH, "LANG": "C.UTF-8", "HOME": home, "TMPDIR": "/tmp", **dict(env or {})}
+    for key, value in environment.items():
+        args += ["--setenv", str(key), str(value)]
+    return args + ["--chdir", chdir]
+
+
+@functools.lru_cache(maxsize=None)
+def bwrap_size_supported() -> bool:
+    """Whether this bubblewrap caps a tmpfs with --size (0.9.0 and later; §2.8's download tmpfs needs it)."""
+    try:
+        done = subprocess.run([*minimal_args(sized=[("/capped", 1 << 20)]), "true"], stdin=subprocess.DEVNULL,
+                              capture_output=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0
+
+
+def bwrap_version() -> str | None:
+    """bubblewrap's version ("0.9.0"), or None when it does not run."""
+    try:
+        done = subprocess.run(["bwrap", "--version"], stdin=subprocess.DEVNULL, capture_output=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    words = (done.stdout or b"").decode("utf-8", "replace").split()
+    return words[-1] if done.returncode == 0 and words else None

@@ -512,7 +512,7 @@ class PanelTests(PanelCase):
         view = self.panel.refresh("status")
         self.assertEqual(self.runner.verbs()[:2], ["info", "status"])
         self.assertEqual(view["state"], "ready")
-        self.assertEqual((view["phase"], view["route"]), ("P3", "reader"))
+        self.assertEqual((view["phase"], view["route"]), ("P4", "reader"))
         self.assertEqual(view["undo_line"], snapraid.WATCHING)
         self.assertEqual(view["sentences"], list(snapraid.SENTENCES))
         self.assertEqual(view["light"]["tone"], "warn", view["light"])   # health not read yet → amber
@@ -522,7 +522,7 @@ class PanelTests(PanelCase):
         self.assertIn("list", self.runner.verbs(), "the first refresh takes the file list once")
         self.assertEqual(view["allowed"], ["read"])
         self.assertEqual(view["schedule"], None)
-        self.assertEqual([check["id"] for check in view["lab"]], ["L8", "L13", "L19"])
+        self.assertEqual([check["id"] for check in view["lab"]], ["L8", "L13", "L19", "L20"])
         self.assertTrue(all(check["status"] == "not_run" for check in view["lab"]))
         events = [event.type for event in self.drain()]
         self.assertIn("snapraid.updated", events)
@@ -1194,7 +1194,7 @@ class RouteTests(ServerTestCase):
         from swfactory import server
 
         handlers = [handler for _, pattern, handler in server._ROUTES if "snapraid" in pattern.pattern]
-        self.assertEqual(len(handlers), 17)
+        self.assertEqual(len(handlers), 20)
         self.assertFalse(set(handlers) & server.AGENT_TOKEN_ROUTES)
 
 

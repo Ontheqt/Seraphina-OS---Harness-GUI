@@ -427,7 +427,9 @@
     if (k === 'commit') main = [h('span', { class: 'tr-ev-kind' }, 'commit'), h('code', { class: 'tr-mono' }, String(ev.ref || '').slice(0, 12)), checkMark(ev)];
     else if (k === 'file') main = [h('span', { class: 'tr-ev-kind' }, 'file'), h('code', { class: 'tr-mono' }, String(ev.ref || '') + (ev.line ? ':' + ev.line : '')), checkMark(ev)];
     else if (k === 'command') main = [h('span', { class: 'tr-ev-kind' }, 'command'), h('code', { class: 'tr-mono' }, String(ev.ref || '')), tag('claimed, not re-run', 'tag-outline tr-claimed', 'The agent says it ran this; nobody ran it again')];
+    else if (k === 'receipt' && (ev.check === 'ok' || ev.check === 'failed')) main = [h('span', { class: 'tr-ev-kind' }, 'receipt'), h('code', { class: 'tr-mono' }, String(ev.ref || '')), checkMark(ev), tag('written by code', 'tag-outline', 'A receipt the harness wrote (a fresh observation, a browser check): its check is set by code, never by a model')];
     else if (k === 'receipt') main = [h('span', { class: 'tr-ev-kind' }, 'receipt'), h('code', { class: 'tr-mono' }, String(ev.ref || '')), tag('reported', 'tag-outline', 'What the operator reported: never re-checked by the harness')];
+    else if (k === 'check') main = [h('span', { class: 'tr-ev-kind' }, 'check'), h('code', { class: 'tr-mono' }, String(ev.ref || '')), checkMark(ev), tag('run by the harness', 'tag-outline', 'The harness ran the repository\u2019s verify command itself, under bwrap (DESIGN §44)')];
     else if (k === 'job' || k === 'wake' || k === 'drift') main = [h('span', { class: 'tr-ev-kind' }, k), h('code', { class: 'tr-mono' }, String(ev.ref || '')), tag('written by code', 'tag-outline')];
     else main = [h('span', { class: 'tr-ev-kind' }, k === 'human' ? 'a person’s check' : k === 'review' ? 'a reviewer’s check' : k)];
     const detail = ev.detail ? h('div', { class: 'tr-ev-detail' }, String(ev.detail)) : null;
@@ -1302,7 +1304,9 @@
     ];
     SF.rebuild(panel, nodes);
     if (had && (!document.activeElement || document.activeElement === document.body)) {   // the control went away
-      const el = panel.querySelector('[data-focus="' + CSS.escape(had) + '"]') || rowFallback(panel, had, 'j');
+      // A control of that key that shows; one inside the folded Closed group cannot take focus, so rowFallback unfolds it.
+      const shown = (x) => x.getClientRects().length > 0;
+      const el = Array.from(panel.querySelectorAll('[data-focus="' + CSS.escape(had) + '"]')).find(shown) || rowFallback(panel, had, 'j');
       if (el) el.focus({ preventScroll: true });
     }
   }

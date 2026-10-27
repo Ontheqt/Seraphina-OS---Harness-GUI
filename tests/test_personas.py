@@ -4,10 +4,12 @@ what the harness assumes about Open WebUI, against tests/mock_openwebui.py (no n
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import tempfile
@@ -1525,7 +1527,8 @@ class PersonaStoreTest(unittest.TestCase):
         self.assertTrue(personas.check_external_paths(spec, [self.tmp / "elsewhere"], []))
         self.assertTrue(personas.check_external_paths(spec, [root], [root / "notes"]), "a masked folder is refused")
         rows = personas.read_external_memory(spec, 1000)
-        self.assertEqual(rows, [{"source": "a.md", "text": "She likes tea."},
+        tea = hashlib.sha256(b"She likes tea.").hexdigest()   # a file's row names the version read
+        self.assertEqual(rows, [{"source": "a.md", "sha256": tea, "text": "She likes tea."},
                                 {"source": "sqlite 2026-10-20", "text": "Prefers mornings"}])
         for query in ("DELETE FROM facts", "SELECT 1; DROP TABLE facts", "INSERT INTO facts VALUES ('x', 'y')"):
             self.assertIsNotNone(personas.check_sqlite_query(query))
@@ -1629,7 +1632,8 @@ class PersonaStoreTest(unittest.TestCase):
         os.mkfifo(root / "notes" / "pipe.md")
         spec = {"folder": str(root / "notes")}
         self.assertEqual(personas.read_external_memory(spec, 1000, roots=[root], denied=[secret]),
-                         [{"source": "a.md", "text": "She likes tea."}], "a hard link and a FIFO are skipped")
+                         [{"source": "a.md", "sha256": hashlib.sha256(b"She likes tea.").hexdigest(),
+                           "text": "She likes tea."}], "a hard link and a FIFO are skipped")
         (root / "notes").rename(root / "notes-old")
         (root / "notes").symlink_to(secret)
         with self.assertRaises(personas.ExternalPathError, msg="re-checked at read time"):
@@ -1759,6 +1763,35 @@ class ReadLedgerTest(unittest.TestCase):
         self.assertTrue(record["files"][-1]["truncated"], "the budget's last file is read in part, and says so")
         self.note("binary.md", b"\xff\xfe" * 50, age=-1)
         self.assertEqual(self.read({"folder": str(self.root / "notes")})["files"][0]["why"], "not UTF-8 text")
+
+    def test_the_caps_are_her_settings(self) -> None:
+        """The operator's ruling (26 Oct): one read opens 200 files by default, and memory.external's max_files,
+        read_mib, ledger_mib and ledger_copies set the caps per persona. 200 notes of her largest size (22,513
+        bytes) fit one read's default budget whole."""
+        for number in range(205):
+            self.note(f"n-{number:03d}.md", f"note {number}\n" + "x" * 22_500, age=number)
+        spec = {"folder": str(self.root / "notes")}
+        record = self.read(spec, limit=10_000_000)
+        self.assertEqual(len(record["files"]), 200, "200 files by default")
+        self.assertFalse(any(f.get("truncated") for f in record["files"]), "none cut short by the bytes budget")
+        record = self.store.external_read("kate", wake="W-000002", spec={**spec, "max_files": 3})
+        personas.read_external_memory({**spec, "max_files": 3}, 10_000_000, roots=[self.root], record=record)
+        self.assertEqual([f["name"] for f in record.commit()["files"]], ["n-000.md", "n-001.md", "n-002.md"])
+        rows = personas.read_external_memory({**spec, "read_mib": 1}, 10_000_000, roots=[self.root])
+        self.assertEqual(len(rows), 47, "1 MiB of 22,513-byte notes: 46 whole and the 47th in part")
+        shutil.rmtree(self.versions)
+        tight = {**spec, "max_files": 5, "ledger_copies": 10}
+        for wake in range(3):   # 15 versions read, at most 10 copies kept: the oldest go
+            for number in range(5):
+                self.note(f"n-{number:03d}.md", f"note {number}, version {wake}\n", age=number)
+            record = self.store.external_read("kate", wake=f"W-00001{wake}", spec=tight)
+            personas.read_external_memory(tight, 10_000_000, roots=[self.root], record=record)
+            record.commit()
+        self.assertEqual(len(list(self.versions.iterdir())), 10)
+        listing = self.store.external_versions("kate", tight)
+        self.assertEqual((listing["cap_copies"], listing["kept_copies"], listing["max_files"]), (10, 10, 5))
+        self.assertEqual(listing["cap_bytes"], personas.EXTERNAL_LEDGER_BYTES, "ledger_mib unset: the default")
+        self.assertEqual(self.store.external_versions("kate", {"ledger_mib": 64})["cap_bytes"], 64 << 20)
 
     def test_at_the_cap_the_oldest_copies_go_and_the_newest_of_each_file_stays(self) -> None:
         """Past EXTERNAL_LEDGER_COPIES (or the bytes cap) the ledger never refuses a new version: older versions
@@ -1896,6 +1929,286 @@ class ReadLedgerTest(unittest.TestCase):
             self.store.external_erase("kate", "1" * 64)
         with self.assertRaises(ValueError):
             self.store.external_erase("kate", "x")
+
+    def test_an_erased_version_s_bytes_are_nowhere_on_disk(self) -> None:
+        """The operator's condition (26 Oct): the erase deletes, it does not mark. A version holding a unique marker
+        is read several times (with a secret, so its copy is the redacted one), the manifests are trimmed and copies
+        evicted along the way, a wake's run log holds the prompt that read it; after the erase the copy file is gone
+        and the marker's bytes are in no file anywhere under the persona's directory. In a log written before
+        blocks named their version, with no name known, the whole prompt goes."""
+        marker = "MARKER-erase-4b1d0c77"
+        self.note("someone.md", f"About a person: {marker}, token {self.SECRET}.\n")
+        tight = {"folder": str(self.root / "notes"), "ledger_copies": 10}
+        with mock.patch.object(personas, "EXTERNAL_MANIFEST_BYTES", 6000):
+            for number in range(16):   # the oldest manifests are trimmed and older copies of pad.md evicted
+                self.note("pad.md", f"pad version {number}\n", age=5)
+                record = self.store.external_read("kate", wake=f"W-{number:06d}", spec=tight)
+                personas.read_external_memory(tight, 100000, roots=[self.root], record=record)
+                record.commit()
+        caps = self.store.external_versions("kate")["caps"]
+        self.assertTrue(caps.get("trimmed") and caps.get("evicted"), caps)
+        digest = hashlib.sha256(f"About a person: {marker}, token {self.SECRET}.\n".encode()).hexdigest()
+        copy = self.versions / f"{digest}.redacted.txt"
+        self.assertTrue(copy.is_file())
+        directory = self.tmp / "data" / "wakes" / "personas" / "kate"
+        logs = directory / "logs"
+        logs.mkdir()
+        prompt = (f'<wake>\n<factory-data source="memory-someone.md" taint="private untrusted">\nAbout a person: '
+                  f'{marker}, token ***.\n</factory-data>\n<factory-data source="memory-pad.md" taint="private '
+                  'untrusted">\npad version 15\n</factory-data>\n</wake>')
+        for number in (15, 99):   # W-000015 read it; W-000099 never did (its log is left as it is)
+            (logs / f"{number:02d}-wake.jsonl").write_text(
+                json.dumps({"type": "trigger", "wake": f"W-{number:06d}"}) + "\n"
+                + json.dumps({"type": "request", "system": "s", "user": prompt}) + "\n")
+        erased = self.store.external_erase("kate", digest)
+        self.assertEqual((erased["copies"], erased["run_logs"]), (1, 1))
+        self.assertFalse(copy.exists(), "unlinked, not marked")
+        self.assertFalse(any(path.name.startswith(digest) for path in directory.rglob("*")))
+        for path in directory.rglob("*"):
+            if path.is_file() and path.name != "99-wake.jsonl":
+                self.assertNotIn(marker.encode(), path.read_bytes(), path)
+        self.assertIn(marker, (logs / "99-wake.jsonl").read_text(), "a log no read of it names is not touched")
+        request = personas._read_lines(logs / "15-wake.jsonl")[1]
+        self.assertEqual((request["erased"], "pad version 15" in request["user"]), ([digest], True))
+        self.assertEqual(stat.S_IMODE((logs / "15-wake.jsonl").stat().st_mode), 0o600)
+        log = [{"type": "trigger"}, {"type": "request", "user": prompt}]
+        self.assertTrue(personas.erase_from_run_log(log, (), digest))
+        self.assertEqual(log[1]["user"], "", "no name known: the whole prompt goes")
+
+    # -- the erase finds every copy (the operator's round-4 condition) ------------------------------------------
+
+    @property
+    def persona_dir(self) -> Path:
+        return self.tmp / "data" / "wakes" / "personas" / "kate"
+
+    def context_read(self, wake: str) -> list[dict]:
+        """One wake's context read of her folder through the ledger: the rows its prompt frames."""
+        record = self.store.external_read("kate", wake=wake)
+        rows = personas.read_external_memory({"folder": str(self.root / "notes")}, 100000, roots=[self.root],
+                                             record=record)
+        record.commit()
+        return rows
+
+    def wake_log(self, wake: str, rows: list[dict], *, clean: bool = True, versioned: bool = True) -> Path:
+        """The run log a wake writes: its trigger, and a request line whose prompt frames each row as
+        wakes._context does (a file's block named by its version, personas.memory_source; the line marked blocks:
+        personas.VERSIONED_BLOCKS). clean: written as the wake writes it (PersonaStore.write_run_log); False:
+        written whole, as a wake did before that. versioned False: as the released code wrote it, each block
+        named memory-<name> and the line unmarked."""
+        from swfactory.framing import frame
+
+        blocks = [frame(personas.memory_source(row["source"], row["sha256"]) if versioned
+                        else f"memory-{row['source']}", row["text"], 4000, ["private", "untrusted"]) for row in rows]
+        request = {"type": "request", "system": "s", "user": "<wake>\n" + "\n".join(blocks) + "\n</wake>",
+                   **({"blocks": personas.VERSIONED_BLOCKS} if versioned else {})}
+        lines = [{"type": "trigger", "wake": wake}, request]
+        path = self.store.run_log_path("kate")
+        if clean:
+            self.store.write_run_log("kate", path, lines, json.dumps)
+        else:
+            path.write_text("".join(json.dumps(line) + "\n" for line in lines))
+        return path
+
+    def assert_nowhere(self, marker: str) -> None:
+        for path in self.persona_dir.rglob("*"):
+            if path.is_file():
+                self.assertNotIn(marker.encode(), path.read_bytes(), path)
+
+    def test_a_wake_that_reads_an_erased_version_again_keeps_none_of_it_and_erasing_again_cleans_what_is_left(
+            self) -> None:
+        """Her store still holds an erased note, so later wakes read it again. Whenever it was erased, such a wake
+        takes it out of its own run log (write_run_log; only that version's block goes), and a later erase also
+        cleans a log that still holds it (one a wake wrote whole before this was so, its manifest entry already
+        {sha256, erased}): found by its block, or, in a log whose blocks do not name their version, by the
+        wake's manifest (the whole prompt goes: no name is left). Erasing again is idempotent."""
+        marker = "MARKER-read-again-61c2"
+        self.note("someone.md", f"About a person: {marker}.\n")
+        self.note("pets.md", "Pip is 3.\n", age=5)
+        rows = self.context_read("W-000001")
+        digest = next(row["sha256"] for row in rows if row["source"] == "someone.md")
+        self.wake_log("W-000001", rows)
+        self.assertEqual(self.store.external_erase("kate", digest)["run_logs"], 1)
+        self.assert_nowhere(marker)
+        again = self.wake_log("W-000002", self.context_read("W-000002"))   # an hour later: read again
+        (request,) = [line for line in personas._read_lines(again) if line["type"] == "request"]
+        self.assertEqual((request["erased"], request["user"].count(personas.ERASED_BLOCK)), ([digest], 1))
+        self.assertIn("Pip is 3.", request["user"], "only that version's block goes")
+        self.assert_nowhere(marker)
+        whole = self.wake_log("W-000003", self.context_read("W-000003"), clean=False)
+        old = self.wake_log("W-000004", self.context_read("W-000004"), clean=False, versioned=False)
+        self.assertIn(marker, whole.read_text())
+        erased = self.store.external_erase("kate", digest)
+        self.assertEqual((erased["copies"], erased["entries"], erased["run_logs"]), (0, 0, 2))
+        self.assert_nowhere(marker)
+        (request,) = [line for line in personas._read_lines(whole) if line["type"] == "request"]
+        self.assertEqual((request["erased"], "Pip is 3." in request["user"]), ([digest], True))
+        (request,) = [line for line in personas._read_lines(old) if line["type"] == "request"]
+        self.assertEqual((request["erased"], request["user"]), ([digest], ""), "no name left: the whole prompt")
+        self.assertEqual(self.store.external_erase("kate", digest)["run_logs"], 0, "nothing left to clean")
+
+    def test_a_log_is_judged_by_its_mark_never_by_block_names_that_only_look_versioned(self) -> None:
+        """The operator's condition: an erase removes the bytes from every run log. A note named as Obsidian or a
+        Zettelkasten names it (YYYYMMDDHHmm: 12 hex digits, then a space) was framed memory-202610261200-... by
+        the released code, which looks like a block that names its version. Such a log (blocks memory-<name>,
+        the request line unmarked) is still cleaned: by the name it was read under, and, for a wake that read
+        the erased version again (its manifest entry already {sha256, erased}: no name left), by taking the
+        whole prompt out; whether the look-alike is that note or another. Only a line marked blocks:
+        VERSIONED_BLOCKS (as wakes write it) is left as it is when no block names this version."""
+        marker = "MARKER-zettel-4b7e"
+        for erased_name, other in (("202610261200 someone.md", "pets.md"), ("someone.md", "202610261200 pets.md")):
+            with self.subTest(erased=erased_name, other=other):
+                shutil.rmtree(self.persona_dir, ignore_errors=True)
+                for path in (self.root / "notes").iterdir():
+                    path.unlink()
+                self.note(erased_name, f"About a person: {marker}.\n")
+                self.note(other, "Pip is 3.\n", age=5)
+                rows = self.context_read("W-000001")
+                digest = next(row["sha256"] for row in rows if row["source"] == erased_name)
+                first = self.wake_log("W-000001", rows, clean=False, versioned=False)
+                (request,) = [line for line in personas._read_lines(first) if line["type"] == "request"]
+                self.assertRegex(request["user"], r'source="memory-[0-9a-f]{12}-', "a block that looks versioned")
+                self.assertNotIn("blocks", request)
+                self.assertEqual(self.store.external_erase("kate", digest)["run_logs"], 1)
+                (request,) = [line for line in personas._read_lines(first) if line["type"] == "request"]
+                self.assertEqual((request["erased"], request["user"].count(personas.ERASED_BLOCK),
+                                  "Pip is 3." in request["user"]), ([digest], 1, True), "by the name it was read under")
+                again = self.wake_log("W-000002", self.context_read("W-000002"), clean=False, versioned=False)
+                self.assertIn(marker, again.read_text())
+                erased = self.store.external_erase("kate", digest)
+                self.assertEqual((erased["copies"], erased["entries"], erased["run_logs"]), (0, 0, 1))
+                self.assert_nowhere(marker)
+                (request,) = [line for line in personas._read_lines(again) if line["type"] == "request"]
+                self.assertEqual((request["erased"], request["user"]), ([digest], ""), "no name left: the whole prompt")
+                self.assertEqual(self.store.external_erase("kate", digest)["run_logs"], 0, "nothing left to clean")
+        look_alike = ('<wake>\n<factory-data source="memory-202610261200-pets.md" taint="private untrusted">\nPip '
+                      'is 3.\n</factory-data>\n</wake>')
+        digest = "ab" * 32
+        for prompt, names in ((look_alike, ()), (look_alike, ("202610261200 pets.md",)),
+                              ("<wake>\nPip is 3. (no file)\n</wake>", ("pets.md",))):
+            with self.subTest(prompt=prompt[:40], names=names):
+                marked = [{"type": "request", "user": prompt, "blocks": personas.VERSIONED_BLOCKS}]
+                self.assertFalse(personas.erase_from_run_log(marked, names, digest), "marked: it never held it")
+                self.assertEqual(marked[0], {"type": "request", "user": prompt, "blocks": personas.VERSIONED_BLOCKS})
+                unmarked = [{"type": "request", "user": prompt}]
+                self.assertTrue(personas.erase_from_run_log(unmarked, names, digest))
+                self.assertEqual(unmarked[0]["erased"], [digest])
+                self.assertNotIn("Pip is 3.", unmarked[0]["user"], "unmarked: its block of that name, else all")
+
+    def erase_after_the_first_manifest_went(self, second: Any, drop: Any) -> None:
+        """Two wakes read the same version ten days apart and each writes its run log; drop() removes the first
+        wake's manifest (the second still names the version, so its copy stays). The erase still finds the first
+        wake's log, by the block that names the version, and the marker is in no file under her directory."""
+        marker = "MARKER-first-wake-5e1a"
+        self.note("someone.md", f"About a person: {marker}.\n")
+        with mock.patch.object(self.store, "now", lambda: "2026-10-01T00:00:00Z"):
+            first = self.context_read("W-000001")
+        self.wake_log("W-000001", first)
+        with second, mock.patch.object(self.store, "now", lambda: "2026-10-11T00:00:00Z"):
+            self.wake_log("W-000002", self.context_read("W-000002"))
+        drop()
+        manifests = personas._read_lines(self.persona_dir / personas.LEDGER_FILE)
+        self.assertEqual([line["wake"] for line in manifests], ["W-000002"], "the first wake's manifest went")
+        erased = self.store.external_erase("kate", first[0]["sha256"])
+        self.assertEqual((erased["copies"], erased["run_logs"]), (1, 2))
+        self.assert_nowhere(marker)
+
+    def test_an_erase_finds_the_log_of_a_wake_whose_manifest_retention_removed(self) -> None:
+        self.erase_after_the_first_manifest_went(contextlib.nullcontext(), lambda: self.store.prune(
+            "kate", run_log_days=30, text_days=7, now=datetime(2026, 10, 12, tzinfo=timezone.utc)))
+
+    def test_an_erase_finds_the_log_of_a_wake_whose_manifest_the_owner_forgot(self) -> None:
+        self.erase_after_the_first_manifest_went(contextlib.nullcontext(),
+                                                 lambda: self.store.forget_before("kate", "2026-10-05"))
+
+    def test_an_erase_finds_the_log_of_a_wake_whose_manifest_was_trimmed(self) -> None:
+        self.erase_after_the_first_manifest_went(mock.patch.object(personas, "EXTERNAL_MANIFEST_BYTES", 500),
+                                                 lambda: None)
+
+    def test_an_erase_between_a_read_and_its_commit_leaves_only_the_sha256(self) -> None:
+        """A read hashes and copies each file as it reads it, and appends its manifest after: an erase that lands
+        between them still leaves only {sha256, erased} in every manifest entry, the name never written."""
+        name = "someone-private-name.md"
+        self.note(name, "a detail about a person\n")
+        for first in (True, False):   # a version the ledger already has a copy of, and one it copies now
+            with self.subTest(copied_before=first):
+                shutil.rmtree(self.persona_dir, ignore_errors=True)
+                if first:
+                    self.context_read("W-000001")
+                record = self.store.external_read("kate", wake="W-000002")
+                rows = personas.read_external_memory({"folder": str(self.root / "notes")}, 100000,
+                                                     roots=[self.root], record=record)
+                digest = rows[0]["sha256"]
+                self.assertEqual(self.store.external_erase("kate", digest)["copies"], 1)
+                record.commit()
+                entries = [entry for line in personas._read_lines(self.persona_dir / personas.LEDGER_FILE)
+                           for entry in line["files"]]
+                self.assertEqual(len(entries), 2 if first else 1)
+                for entry in entries:
+                    self.assertEqual(set(entry), {"sha256", "erased"}, entry)
+                self.assert_nowhere(name)
+                self.assertEqual(self.store.external_versions("kate")["files"], [])
+
+    def test_an_erase_takes_only_its_own_version_from_a_log_whose_names_begin_alike(self) -> None:
+        """Two notes whose names share their first 33 characters: the block names the version it holds
+        (memory_source), so erasing one leaves the other's text in the run log."""
+        a, b = "2026-10-26-conversation-with-someone-a.md", "2026-10-26-conversation-with-someone-b.md"
+        self.note(a, "MARKER-note-a-0d1e\n")
+        self.note(b, "MARKER-note-b-7a3f\n", age=5)
+        rows = self.context_read("W-000001")
+        log = self.wake_log("W-000001", rows)
+        digest = next(row["sha256"] for row in rows if row["source"] == a)
+        lines = personas._read_lines(log)
+        self.assertTrue(personas.erase_from_run_log(lines, (a,), digest))
+        self.assertEqual((lines[1]["user"].count(personas.ERASED_BLOCK), "MARKER-note-b-7a3f" in lines[1]["user"],
+                          "MARKER-note-a-0d1e" in lines[1]["user"]), (1, True, False))
+        self.assertEqual(self.store.external_erase("kate", digest)["run_logs"], 1)
+        self.assert_nowhere("MARKER-note-a-0d1e")
+        (request,) = [line for line in personas._read_lines(log) if line["type"] == "request"]
+        self.assertEqual(request["user"].count(personas.ERASED_BLOCK), 1)
+        self.assertIn("MARKER-note-b-7a3f", request["user"], "the other note's block stays")
+
+    def test_an_erased_version_the_prompt_never_held_takes_nothing_from_a_run_log(self) -> None:
+        """A wake's manifest names every file it read, also one that never reached its prompt: a note that is not
+        UTF-8 or holds only spaces, or the version a first render read when the look-alike re-render read a newer
+        one. The prompt's blocks name the version they hold, so erasing such a version takes nothing from a log
+        (the erase, and every later wake that reads it again from her store, as write_run_log), and the other
+        notes stay in it."""
+        def requests(path: Path) -> list[dict]:
+            return [line for line in personas._read_lines(path) if line["type"] == "request"]
+        for case, text in (("not UTF-8", b"\xff\xfe a detail \x80\n"), ("only spaces", b"  \n\t\n")):
+            with self.subTest(case):
+                shutil.rmtree(self.persona_dir, ignore_errors=True)
+                self.note("bin.md", text)
+                self.note("pets.md", "Pip is 3.\n", age=5)
+                rows = self.context_read("W-000001")
+                self.assertEqual([row["source"] for row in rows], ["pets.md"], "bin.md never reaches the prompt")
+                first = self.wake_log("W-000001", rows)
+                before = first.read_text()
+                erased = self.store.external_erase("kate", hashlib.sha256(text).hexdigest())
+                self.assertEqual((erased["entries"], erased["run_logs"]), (1, 0))
+                self.assertEqual(first.read_text(), before, "the log never held it: it is left as it is")
+                later = self.wake_log("W-000002", self.context_read("W-000002"))   # her store still holds it
+                (request,) = requests(later)
+                self.assertIn("Pip is 3.", request["user"], "the rest of the prompt stays")
+                self.assertNotIn(personas.ERASED_BLOCK, request["user"])
+                self.assertNotIn("erased", request)
+        with self.subTest("a re-render read a newer version"):
+            shutil.rmtree(self.persona_dir, ignore_errors=True)
+            (self.root / "notes" / "bin.md").unlink()
+            older = "MARKER-first-render-2c9e\n"
+            self.note("someone.md", older)
+            self.context_read("W-000003")   # the first render
+            erased = self.store.external_erase("kate", hashlib.sha256(older.encode()).hexdigest())
+            self.assertEqual((erased["entries"], erased["run_logs"]), (1, 0))
+            self.note("someone.md", "MARKER-re-render-91f0\n")
+            log = self.wake_log("W-000003", self.context_read("W-000003"))   # the re-render, the one logged
+            (request,) = requests(log)
+            self.assertIn("MARKER-re-render-91f0", request["user"])
+            self.assertIn("Pip is 3.", request["user"])
+            self.assertNotIn("erased", request)
+            self.assertEqual(self.store.external_erase("kate", hashlib.sha256(older.encode()).hexdigest())[
+                "run_logs"], 0, "erasing again leaves it as it is")
+            self.assert_nowhere("MARKER-first-render-2c9e")
 
     def test_retention_frees_the_copies_only_old_manifests_named(self) -> None:
         note = self.root / "notes" / "a.md"

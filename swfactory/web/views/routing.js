@@ -1061,7 +1061,7 @@
       h('fieldset', { class: 'pl-custody-set' }, h('legend', null, 'GPU custody register ', h('span', { class: 'tag tag-warn', title: 'The register’s contract waits for the operator’s confirmation' }, 'Contract proposed')),
         h('p', { class: 'field-hint' }, 'The register is the operator’s: the harness never changes what it holds. It only asks for a lease before a run that may load a model here (lazy_load or allow_model_swap); the register decides and keeps the ledger. Another provider entry on the same server follows it. With custody, a run that gets no lease goes to the next build or the overflow.'),
         h('ul', { class: 'field-hint pl-custody-rules' },
-          h('li', null, 'The card is held by someone else (HELD): the run waits up to this provider’s “Overflow after” seconds, then moves on. A run waits once in all, however many builds answer HELD.'),
+          h('li', null, 'The card is held by someone else (HELD): the run goes at once to another build that is free. Only when none is does it wait, up to this provider’s “Overflow after” seconds, then move on. A run waits once in all, however many builds answer HELD.'),
           h('li', null, 'The card cannot fit the model now (FULL): the run moves on at once, so list another card or a smaller build.'),
           h('li', null, 'The token is never typed here: name a file, an environment name or a systemd credential (one of the three). A credential needs a LoadCredential=<name>:<path> line in the harness’s unit, added by whoever holds root on the server; under bwrap the agents cannot read it.')),
         line, follows && !custody ? null : [h('div', { class: 'pl-grid' }, cust), namesField]),
@@ -1257,7 +1257,7 @@
         st.timeout ? [h('dt', null, 'Answer timeout'), h('dd', null, String(st.timeout) + ' s')] : null,
         h('dt', null, 'Token'), h('dd', null, st.token_credential ? ['the systemd credential ', h('code', null, String(st.token_credential)), h('span', { class: 'sf-muted' }, ' (a LoadCredential= line in the harness’s unit)')]
           : st.token_file ? 'from the file ' + st.token_file : st.token_env ? 'from ' + st.token_env : 'none'),
-        row.needs_lease ? [h('dt', null, 'When the card is held'), h('dd', { dataset: { part: 'held-wait' } }, row.held_wait_seconds ? 'a HELD answer waits up to ' + Math.round(Number(row.held_wait_seconds)) + 's, once per run; FULL never waits'
+        row.needs_lease ? [h('dt', null, 'When the card is held'), h('dd', { dataset: { part: 'held-wait' } }, row.held_wait_seconds ? 'a HELD answer waits up to ' + Math.round(Number(row.held_wait_seconds)) + 's, once per run, when no other card is free; FULL never waits'
           : 'a HELD answer does not wait (no Overflow after); FULL never waits')] : null,
         h('dt', null, 'Generation'), h('dd', null, String(reg.generation !== undefined && reg.generation !== null ? reg.generation : '?') + (reg.epoch ? ' · epoch ' + reg.epoch : '')),
         h('dt', null, 'Resident'), h('dd', null, res ? [residentText(res.resident), ' ', h('span', { class: 'sf-muted' }, '(read ' + SF.relTime(res.read_at || res.observed_at) + ')')]

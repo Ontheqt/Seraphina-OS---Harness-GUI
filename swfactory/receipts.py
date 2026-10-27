@@ -4,13 +4,17 @@ The operator (operator.py) holds root and acts through her own tools; for every 
 sidecar into ``operator.receipts_dir``, a directory she owns and the harness's user may only read. This module
 reads them and nothing else:
 
-- **Read only.** Scanning never writes, renames, creates or chmods anything in her directory. The directory is
+- **Read only.** Scanning never writes, renames, creates, chmods, chowns or sets an ACL on anything in her
+  directory, and never asks for more access than it has. A subdirectory or file the harness's user may not read
+  (her 0700 root ones, or a folder it may list but not search) is listed as unreadable, by name, and left as it
+  is; the rest is read, and what was read in it before is not marked gone. The directory is
   opened with ``O_NOFOLLOW``, every subdirectory (at most MAX_DEPTH levels) and file through the parent's
   descriptor with ``O_NOFOLLOW``; a symbolic link, a hard link (it could be a file outside the directory) and a
   file larger than ``operator.max_receipt_bytes`` are refused and listed, never followed. Past
   ``operator.max_receipts`` files the newest are read and the oldest listed (still there: never gone). Only
   ``*.json`` files are read: her prose journal is never parsed (a receipt may link to it). Hidden files (a write
-  in progress) are skipped. One file can only ever be a cannot-read entry, never a failed scan.
+  in progress) are skipped. One file can only ever be a cannot-read entry, never a failed scan. Every receipt
+  is read and listed whoever its actor is (other agents' faults included), and carries its actor as written.
 - **Two schemas, the same fields.** ``kate-change-receipt/1`` exactly as the operator defined it, and the generic
   alias ``operator-receipt/1``: schema, id (upper case allowed), time, actor, intent, undo_class, jobs (UUIDs),
   before and after (free-form objects, not hashes), rollback (prose), verified and not_verified (lists of
@@ -27,7 +31,8 @@ reads them and nothing else:
   never reads as success (outcome), and not_verified is shown wherever verified is, first.
 - **The tracker keeps what she did not check.** Each not_verified entry becomes one proposed system-scope item
   owned by the operator (persona:<name>), verified by a person, linked to its receipt (links.receipt), taint
-  private (and untrusted when the harness's own user could have written the file: harness_may_write). One item
+  private (and untrusted when the harness's own user could have written the file: harness_may_write, or when the
+  receipt's actor does not name her: another agent's words are never hers, whoever owns the item). One item
   per claim on this server (claim_key: the words without a trailing "done", "not done", "verified" ...; never
   the owner, so marking the operator later or adding a second one opens nothing again: the live item follows
   the attribution), kept across rescans until a later receipt lists the claim as verified: the item then waits
@@ -115,6 +120,10 @@ ENTRY_CHARS = 500             # each verified / not_verified entry
 TEXT_CHARS = {"intent": 2000, "rollback": 4000, "actor": 200}
 OBJECT_KEEP_BYTES = 16384     # before / after kept in the index up to this size (canonical JSON); the file has all
 REFUSED_KEEP = 200            # refused paths listed per scan
+ACTOR_NOT_STATED = "not stated"   # a receipt that names no actor (one that cannot be read): said so, never guessed
+# A subdirectory or file the harness's user may not read: listed by name and left as it is (her ruling, 26 Oct:
+# sharing must not widen custody; some of hers are 0700 root and stay so)
+UNREADABLE = "the harness's user may not read it: left as it is (the harness never changes its owner, mode or ACL)"
 GONE_KEEP_FACTOR = 2          # receipts that went away stay in the index, up to this many times max_receipts
 CLAIM_TAIL_RE = re.compile(
     r"(?:\s*[-:,;(–—]\s*|\s+)(?:(?:still|yet)\s+)?(?:not\s+(?:yet\s+)?|un)?"
@@ -310,14 +319,17 @@ def parse_receipt(data: bytes) -> dict:
         return {"status": "cannot read", "problem": f"not JSON this harness can read ({type(exc).__name__})"}
     if not isinstance(doc, dict):
         return {"status": "cannot read", "problem": "a receipt is a JSON object"}
+    # who it names, as written, even when it cannot be read: every actor's receipt shows whose it is
+    actor = doc["actor"].strip()[:TEXT_CHARS["actor"]] if isinstance(doc.get("actor"), str) else ""
+    stated = {"actor": actor} if actor else {}
     schema = doc.get("schema")
     if schema not in SCHEMAS:
         shown = schema[:60] if isinstance(schema, str) else type(schema).__name__ if schema is not None else "none"
         return {"status": "cannot read", "problem": f"unknown schema {shown!r} (this harness reads "
-                                                    f"{' and '.join(SCHEMAS)})"}
+                                                    f"{' and '.join(SCHEMAS)})", **stated}
     missing = [name for name in FIELDS if name not in doc]
     if missing:
-        return {"status": "cannot read", "problem": f"missing {', '.join(missing)}", "schema": schema}
+        return {"status": "cannot read", "problem": f"missing {', '.join(missing)}", "schema": schema, **stated}
     warnings: list[str] = []
     try:
         receipt_id = doc["id"]
@@ -360,7 +372,7 @@ def parse_receipt(data: bytes) -> dict:
         not_verified = _string_list(doc["not_verified"], "not_verified", warnings)
         result = reported_outcome(doc, warnings) if schema in OPTIONAL else None
     except ValueError as exc:
-        return {"status": "cannot read", "problem": str(exc), "schema": schema}
+        return {"status": "cannot read", "problem": str(exc), "schema": schema, **stated}
     known = set(FIELDS) | set(OPTIONAL.get(schema, ()))
     extra = {key: doc[key] for key in sorted(doc) if key not in known}
     if extra:   # kept as data, never read: the operator's schema is hers, a later field is not guessed at
@@ -408,7 +420,8 @@ def _open_dir(path: Path) -> int:
         if isinstance(exc, NotADirectoryError):
             raise ReceiptsError(f"{path} is not a directory") from None
         if isinstance(exc, PermissionError):
-            raise ReceiptsError(f"the harness may not read {path}: give its user read access") from None
+            raise ReceiptsError(f"the harness may not read {path}: give its user read and search (r-x) access") \
+                from None
         raise ReceiptsError(f"cannot open {path}: {exc.strerror or exc}") from None
 
 
@@ -462,9 +475,20 @@ def _resolved(path: Path) -> Path:
 def _walk(dir_fd: int, prefix: str, depth: int, found: list[tuple[str, int, str, os.stat_result, bool]],
           refused: list[dict], opened: list[int]) -> None:
     """Every *.json regular file below dir_fd as (relative path, its dir fd, its name, lstat, whether the harness's
-    user may write its directory); symlinks refused."""
+    user may write its directory); symlinks refused. A folder the harness's user may not list, or may list but not
+    search (read without execute: no entry in it can be looked at), is refused as unreadable by name, never
+    skipped in silence."""
+    def unreadable_here() -> None:
+        why = UNREADABLE
+        with contextlib.suppress(OSError):
+            why = f"{UNREADABLE}; {_owner_mode(os.fstat(dir_fd))}"
+        refused.append({"file": prefix or ".", "why": why, "unreadable": True})
+
     try:
         names = sorted(os.listdir(dir_fd))
+    except PermissionError:
+        unreadable_here()
+        return
     except OSError as exc:
         refused.append({"file": prefix or ".", "why": f"cannot list: {exc.strerror or exc}"})
         return
@@ -475,8 +499,11 @@ def _walk(dir_fd: int, prefix: str, depth: int, found: list[tuple[str, int, str,
         rel = f"{prefix}{name}"
         try:
             info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+        except PermissionError:   # listed but not searchable (r without x): every entry in it fails alike
+            unreadable_here()
+            return
         except OSError:
-            continue
+            continue   # gone during the scan
         if stat.S_ISLNK(info.st_mode):
             refused.append({"file": rel, "why": "a symbolic link: refused (it could point outside the directory)"})
         elif stat.S_ISDIR(info.st_mode):
@@ -485,6 +512,9 @@ def _walk(dir_fd: int, prefix: str, depth: int, found: list[tuple[str, int, str,
                 continue
             try:
                 child = os.open(name, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC, dir_fd=dir_fd)
+            except PermissionError:   # her 0700 root folder, say: named, never widened
+                refused.append({"file": rel + "/", "why": f"{UNREADABLE}; {_owner_mode(info)}", "unreadable": True})
+                continue
             except OSError as exc:
                 refused.append({"file": rel + "/", "why": f"cannot open: {exc.strerror or exc}"})
                 continue
@@ -498,6 +528,8 @@ def _read_file(dir_fd: int, name: str, limit: int) -> tuple[bytes | None, str | 
     """(bytes, None, fstat) of one regular, single-link file opened with O_NOFOLLOW, or (None, why, fstat)."""
     try:
         fd = os.open(name, os.O_RDONLY | _O_NOFOLLOW | _O_NONBLOCK | _O_CLOEXEC, dir_fd=dir_fd)
+    except PermissionError:
+        return None, UNREADABLE, None
     except OSError as exc:
         return None, f"cannot open: {exc.strerror or exc}", None
     try:
@@ -520,6 +552,10 @@ def _read_file(dir_fd: int, name: str, limit: int) -> tuple[bytes | None, str | 
         return b"".join(chunks), None, info
     finally:
         os.close(fd)
+
+
+def _owner_mode(info: os.stat_result) -> str:
+    return f"owner uid {info.st_uid}, mode {stat.S_IMODE(info.st_mode):04o}"
 
 
 def _stamp(info: os.stat_result) -> list[int]:
@@ -725,6 +761,7 @@ class Receipts:
                 "read": sum(1 for entry in files if entry.get("status") == "read"),
                 "cannot_read": sum(1 for entry in files if entry.get("status") != "read"),
                 "refused": len(doc.get("refused") or []), "past_limit": int(doc.get("past_limit") or 0),
+                "unreadable": len(unreadable(doc)),
                 "writable": bool(doc.get("writable")), "problem": doc.get("problem"),
                 "new": 0, "changed": 0, "gone": sum(1 for entry in doc["files"].values() if entry.get("gone"))}
 
@@ -753,6 +790,9 @@ class Receipts:
             doc["writable"] = _fd_writable(top)
             _walk(top, "", 1, found, refused, opened)
             present = {rel for rel, *_ in found}   # on disk: never marked gone, read or not
+            # a folder the harness may not read now: what was read in it before is still there, only unreadable
+            hidden = tuple("" if row["file"] == "." else row["file"] for row in refused
+                           if row.get("unreadable") and str(row["file"]).endswith(("/", ".")))
             limit = int(settings["max_receipts"])
             doc["past_limit"] = max(0, len(found) - limit)
             if len(found) > limit:   # the newest files are read; the oldest past the limit wait (already read: kept)
@@ -789,7 +829,7 @@ class Receipts:
                     fresh.pop("changed_at", None)
                 doc["files"][rel] = fresh
             for rel, entry in doc["files"].items():
-                if rel not in present and not entry.get("gone"):
+                if rel not in present and not entry.get("gone") and not rel.startswith(hidden):
                     entry["gone"] = True
                     entry["gone_at"] = _iso(now)
                     stats["gone"] += 1
@@ -804,7 +844,7 @@ class Receipts:
         attribute = self.attributor()
         for entry in doc["files"].values():
             if entry.get("status") == "read":
-                entry["operator"] = attribute(entry.get("actor"))
+                entry["operator"], entry["operator_named"] = attribute(entry.get("actor"))
         doc["refused"] = refused[:REFUSED_KEEP]
         doc["problem"] = None
         return stats
@@ -818,6 +858,8 @@ class Receipts:
             entry["harness_writable"] = True
         if data is None:
             entry.update(status="cannot read", problem=why, sha256=None)
+            if why == UNREADABLE:   # named, never widened
+                entry.update(problem=f"{UNREADABLE}; {_owner_mode(info)}", unreadable=True)
             return entry
         entry["sha256"] = hashlib.sha256(data).hexdigest()
         entry["first_sha256"] = entry["sha256"]
@@ -848,9 +890,11 @@ class Receipts:
 
     # -- attribution ------------------------------------------------------------------------------------
 
-    def attributor(self) -> Callable[[Any], str | None]:
-        """attribute(actor): the operator persona a receipt's actor names, one whose name or instance name is the
-        actor (any case); else the only operator when there is exactly one; else None."""
+    def attributor(self) -> Callable[[Any], tuple[str | None, bool]]:
+        """attribute(actor): (the operator persona a receipt is attributed to, whether its actor names her). Named:
+        one whose name or instance name is the actor (any case). Else the only operator when there is exactly one,
+        not named: that decides who owns its items only, never whose words they are (another agent's receipt in
+        the shared folder is not hers). Else (None, False)."""
         config = self._config()
         names = operators(config)
         aliases = {name: {name.lower()} for name in names}
@@ -864,12 +908,12 @@ class Receipts:
                     if persona is not None and persona.instance_name:
                         aliases[name].add(persona.instance_name.lower())
 
-        def attribute(actor: Any) -> str | None:
+        def attribute(actor: Any) -> tuple[str | None, bool]:
             wanted = str(actor or "").strip().lower()
             for name in names:
                 if wanted in aliases[name]:
-                    return name
-            return names[0] if len(names) == 1 else None
+                    return name, True
+            return (names[0] if len(names) == 1 else None), False
 
         return attribute
 
@@ -910,8 +954,8 @@ class Receipts:
         for entry in doc["files"].values():
             if entry.get("status") != "read" or entry.get("duplicate_of"):
                 continue
-            name = attribute(entry.get("actor"))
-            entry["operator"] = name
+            name, named = attribute(entry.get("actor"))
+            entry["operator"], entry["operator_named"] = name, named
             order = f"{entry.get('time')}|{entry.get('id')}"
             for kind, field in (("nv", "not_verified"), ("v", "verified")):
                 for index, text in enumerate(entry.get(field) or []):
@@ -1000,7 +1044,7 @@ class Receipts:
         return list(dict.fromkeys(changed))
 
     def _apply_outcome(self, ledger: tracker.Ledger, digest: str, report: dict, known: list[dict], record: dict,
-                       changed: list[str], attribute: Callable[[Any], str | None]) -> None:
+                       changed: list[str], attribute: Callable[[Any], tuple[str | None, bool]]) -> None:
         """One receipt id's reported outcome on the tracker (DESIGN §40). Unknown, and no item for it yet: one
         proposed item "Outcome unknown: check before retrying". A version that reports succeeded or failed and is
         newer than every unknown one still read (she re-observed it and rewrote the receipt) makes a live item done,
@@ -1008,7 +1052,7 @@ class Receipts:
         second one, also when the index is lost (the item is found by its hash)."""
         if report["unknown"] and not known and not record.get("u"):
             entry = report["unknown"][-1]
-            known = [self._open_outcome_item(ledger, digest, entry, attribute(entry.get("actor")))]
+            known = [self._open_outcome_item(ledger, digest, entry, attribute(entry.get("actor"))[0])]
             record["u"] = entry.get("sha256")
             changed.append(ledger.scope.item_ref(known[0]["id"]))
         live = next((i for i in reversed(known) if i.get("status") not in tracker.TERMINAL), None)
@@ -1017,7 +1061,7 @@ class Receipts:
         if live is None or not later:
             return
         latest = max(later, key=lambda e: str(e.get("mtime") or ""))
-        name = attribute(latest.get("actor"))
+        name = attribute(latest.get("actor"))[0]
         if self._reattribute(ledger, live, ("", latest, "", name)):
             changed.append(ledger.scope.item_ref(live["id"]))
         sha = latest.get("sha256")
@@ -1044,10 +1088,9 @@ class Receipts:
                   f"(DESIGN §40).\nIntent: {entry.get('intent')}")
         if entry.get("rollback"):
             detail += f"\nRollback (as written): {entry['rollback']}"
-        taint = ("private", "untrusted") if entry.get("harness_writable") else ("private",)
         return ledger.add(tracker.FACTORY, f"{rule.UNKNOWN_TITLE} (receipt {entry.get('id')})", kind="gap",
                           detail=detail, owner=owner, verifier=tracker.HUMAN, status="proposed", uncapped=True,
-                          taint=taint, links={"receipt": entry.get("id")},
+                          taint=_receipt_taint(entry), links={"receipt": entry.get("id")},
                           source={"type": "receipt", "agent": owner, "receipt": entry.get("id"),
                                   "file": entry.get("file"), "hash": digest, "outcome": rule.UNKNOWN,
                                   "u": entry.get("sha256"), "reported": REPORTED})
@@ -1074,10 +1117,9 @@ class Receipts:
                   f"{entry.get('actor')}: {entry.get('intent')}")
         if entry.get("rollback"):
             detail += f"\nRollback (as written): {entry['rollback']}"
-        # a receipt the harness's own user could have written may not be hers: its words are untrusted too
-        taint = ("private", "untrusted") if entry.get("harness_writable") else ("private",)
         return ledger.add(tracker.FACTORY, text, kind="gap", detail=detail, owner=owner, verifier=tracker.HUMAN,
-                          status="proposed", uncapped=True, taint=taint, links={"receipt": entry.get("id")},
+                          status="proposed", uncapped=True, taint=_receipt_taint(entry),
+                          links={"receipt": entry.get("id")},
                           source={"type": "receipt", "agent": owner, "receipt": entry.get("id"),
                                   "file": entry.get("file"), "hash": digest, "nv": order, "reported": REPORTED})
 
@@ -1112,8 +1154,9 @@ class Receipts:
         keep = ("file", "status", "problem", "schema", "id", "time", "time_as_written", "actor", "operator",
                 "intent", "undo", "jobs", "rollback", "not_verified", "verified", "outcome", "reported_outcome",
                 "warnings", "label", "items", "sha256", "first_sha256", "bytes", "mtime", "read_at", "first_read_at",
-                "changed_at", "gone", "gone_at", "duplicate_of", "harness_writable")
+                "changed_at", "gone", "gone_at", "duplicate_of", "harness_writable", "unreadable")
         row = {key: copy.deepcopy(entry.get(key)) for key in keep if key in entry}
+        row["actor"] = row.get("actor") or None   # as written in the receipt; null: not stated (ACTOR_NOT_STATED)
         row["label"] = REPORTED
         row.setdefault("not_verified", [])
         row.setdefault("verified", [])
@@ -1128,10 +1171,30 @@ class Receipts:
         return redact(row, self.secrets())
 
 
+def _receipt_taint(entry: dict) -> tuple[str, ...]:
+    """The taint of the items a receipt opens: private, and untrusted unless its words are hers. They are not when
+    the harness's own user could have written the file (harness_may_write), nor when its actor does not name her
+    (operator_named false: another agent's receipt in the shared folder, attributed to her only because she is the
+    one operator, or one attributed to nobody). Her wake then frames them untrusted: wakes._operator_items keeps
+    the item's own taint."""
+    if entry.get("harness_writable") or not entry.get("operator_named"):
+        return "private", "untrusted"
+    return ("private",)
+
+
+def unreadable(doc: dict) -> list[str]:
+    """What the last scan could not read for want of access (a 0700 root folder or file of hers), by name: listed,
+    left as it is, and never widened."""
+    names = [str(row.get("file")) for row in doc.get("refused") or [] if isinstance(row, dict) and row.get("unreadable")]
+    names += [rel for rel, entry in (doc.get("files") or {}).items() if entry.get("unreadable") and not entry.get("gone")]
+    return sorted(names)
+
+
 def receipt_lines(row: dict) -> list[str]:
     """A receipt for a terminal: what it says, not_verified before verified, always "reported by the operator"."""
     if row.get("status") != "read":
-        return [f"{row.get('file')}  cannot read: {row.get('problem')}"]
+        return [f"{row.get('file')}  cannot read: {row.get('problem')}  (actor: "
+                f"{row.get('actor') or ACTOR_NOT_STATED})"]
     undo = row.get("undo") or {}
     lines = [f"{row.get('time')}  {row.get('id')}  {row.get('actor')}  ({REPORTED})",
              f"  intent: {row.get('intent')}",

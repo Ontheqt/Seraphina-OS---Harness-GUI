@@ -910,7 +910,7 @@ class Notifier:
         self.sleep = sleep
         self.monotonic = monotonic
         self.environ = os.environ if environ is None else environ
-        self._tailnet = tailnet or _cached_tailnet()
+        self._tailnet = tailnet or _cached_tailnet(confirmed=lambda: _confirmed_suffix(self.config))
         self._server_yml = server_yml or _read_server_yml
         sync = wakes_settings(config).get("time_sync") or {}
         self.time_sync = time_sync or TimeSync(require=bool(sync.get("require", True)),
@@ -2464,6 +2464,67 @@ class Notifier:
             self._save_rules()
         return True
 
+    def app_event(self, kind: str, key: str, subject: str | None = None) -> dict:
+        """A Your server notice (DESIGN §42; docs/seraphina/YOUR_SERVER.md §10.2): service.down, service.up or
+        disk.low for one app or disk, from the internal source "yourserver". key keeps one incident per app (its id,
+        never shown on the phone); subject is the short name the owner allowed on his phone for that app
+        (services.<app>.phone_name), else None and the text names nothing. {message} or {message: None}."""
+        if kind not in ("service.down", "service.up", "disk.low"):
+            raise NotifyError("kind must be service.down, service.up or disk.low")
+        if not isinstance(key, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", key):
+            raise NotifyError("key must be an app id or a disk key")
+        if subject is not None and (not isinstance(subject, str) or not SUBJECT_RE.fullmatch(subject)):
+            subject = None
+        self.load()
+        now = self._now()
+        fields = {"subject": subject, "subject_allowed": subject is not None, "at": iso(now), "source": "yourserver"}
+        base = RECOVERS.get(kind, kind)
+        signature = f"{base}:yourserver:{key}"
+        with self._lock:
+            incidents = self._rules.setdefault("incidents", {})
+            open_one = incidents.get(signature)
+            if kind in RECOVERS:
+                if not open_one or open_one.get("closed"):
+                    return {"message": None, "recorded": True}
+                open_one.update(closed=iso(now))
+                self._save_rules()
+            elif open_one and not open_one.get("closed"):
+                open_one["repeats"] = int(open_one.get("repeats") or 0) + 1
+                self._save_rules()
+                return {"message": None, "deduped": True}
+        title, body = operational_text(Notice(kind=kind, klass="operational", route=RULE_ROUTES[kind],
+                                              priority="default", title="", body="", fields=fields), names=True,
+                                       safe_repos=set())
+        result = self.notify(Notice(kind=kind, klass="operational", route=RULE_ROUTES[kind],
+                                    priority=self._rule_priority(kind), title=title, body=body, fields=fields,
+                                    signature=signature))
+        if kind not in RECOVERS:
+            with self._lock:
+                self._rules.setdefault("incidents", {})[signature] = {
+                    "kind": kind, "subject": subject, "opened": iso(now), "last_alert": iso(now), "reminders": 0,
+                    "message": result.get("id"), "silenced": False, "closed": None}
+                self._save_rules()
+        _call(self.factory, "wake_event", kind, {"kind": kind, "subject": subject}, message=result.get("id"))
+        return {"message": result.get("id")}
+
+    def app_incidents(self) -> list[str]:
+        """The keys of the Your server service.down incidents still open (kept on disk), so the area knows them again
+        after a restart and closes them on its next fresh observation."""
+        self.load()
+        prefix = "service.down:yourserver:"
+        with self._lock:
+            return sorted(signature[len(prefix):] for signature, incident in
+                          (self._rules.get("incidents") or {}).items()
+                          if signature.startswith(prefix) and isinstance(incident, dict) and not incident.get("closed"))
+
+    def app_clear(self, key: str) -> bool:
+        """Close an open Your server incident without a notice (an app the owner keeps off, hid, or that is no longer
+        on the server): no more reminders, and its next outage is announced again. True when one was open."""
+        if not isinstance(key, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", key):
+            raise NotifyError("key must be an app id or a disk key")
+        self.load()
+        return self.parity_clear("service.down", f"yourserver:{key}")
+
     def _incident_reminders(self, now: datetime) -> None:
         settings = (self._settings().get("incident") or {})
         hours = float(settings.get("repeat_hours") or 6)
@@ -3842,7 +3903,10 @@ def hook_snippets(name: str, spec: Mapping[str, Any], url: str) -> list[dict]:
 # ---------------------------------------------------------------- module helpers
 
 
-def _cached_tailnet(seconds: float = 600.0) -> Callable[[], dict | None]:
+def _cached_tailnet(seconds: float = 600.0, confirmed: Callable[[], str | None] | None = None
+                    ) -> Callable[[], dict | None]:
+    """`tailscale status`, cached; confirmed gives the owner's confirmed tailnet suffix for a server whose Tailscale
+    runs only in containers (channels.tailnet_status's fallback)."""
     lock = threading.Lock()
     cache: list[Any] = [0.0, None]
 
@@ -3850,11 +3914,24 @@ def _cached_tailnet(seconds: float = 600.0) -> Callable[[], dict | None]:
         with lock:
             if cache[0] and time.monotonic() - cache[0] < seconds:
                 return cache[1]
-        status = tailnet_status()
+        suffix = None
+        if confirmed is not None:
+            with contextlib.suppress(Exception):
+                suffix = confirmed()
+        status = tailnet_status(confirmed=suffix)
         with lock:
             cache[0], cache[1] = time.monotonic(), status
         return status
     return get
+
+
+def _confirmed_suffix(config: Any) -> str | None:
+    """yourserver.tailnet.suffix: the tailnet the owner confirmed in Your server (None when not confirmed)."""
+    raw = getattr(config, "raw", {}) or {}
+    section = raw.get("yourserver") if isinstance(raw.get("yourserver"), dict) else {}
+    tailnet = section.get("tailnet") if isinstance(section.get("tailnet"), dict) else {}
+    suffix = tailnet.get("suffix")
+    return suffix if isinstance(suffix, str) else None
 
 
 def _read_server_yml() -> str | None:

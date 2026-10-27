@@ -629,7 +629,7 @@ export async function run(t) {
       assert(/Lease denied: another lease covers it/.test(hist) && /Lease denied: the card cannot fit this model now/.test(hist), 'denials in words (reason_codes): ' + hist);
       assert(/Waits up to 900s: the card is held by someone else/.test(hist) && /The hold ended after 60\.2s: lease granted/.test(hist), 'a HELD wait and how it ended: ' + hist);
       assert(/Not released: the register restarted, so it no longer knows this lease/.test(hist), 'not sent to a register that restarted: ' + hist);
-      assert(/When the card is held\s*a HELD answer waits up to 900s, once per run; FULL never waits/.test(tabby) && /the systemd credential strata-custody-token/.test(strata), 'the held wait and a credential: ' + tabby.slice(0, 400) + ' | ' + strata.slice(0, 400));
+      assert(/When the card is held\s*a HELD answer waits up to 900s, once per run, when no other card is free; FULL never waits/.test(tabby) && /the systemd credential strata-custody-token/.test(strata), 'the held wait and a credential: ' + tabby.slice(0, 400) + ' | ' + strata.slice(0, 400));
       assert(/a HELD answer does not wait/.test(await text(page, '#routing-root .pl-cust[data-provider="tabby-raw"]')), 'no Overflow after: no wait');
       const u = await waitGet(page, /^\/api\/custody/, () => page.click('#routing-root [data-action="custody-read"]'));
       assert(u.searchParams.get('refresh') === '1', 'Read now asks with refresh=1');

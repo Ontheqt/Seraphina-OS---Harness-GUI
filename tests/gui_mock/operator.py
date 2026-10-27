@@ -280,7 +280,10 @@ def _index(now: float) -> dict:
     doc = {"version": R.INDEX_VERSION, "receipts_dir": RECEIPTS_DIR, "scanned_at": _iso(now - 1800),
            "files": _receipt_files(now), "handled": {}, "past_limit": 0, "writable": False, "problem": None,
            "refused": [{"file": "latest.json", "why": "a symbolic link: refused (it could point outside the directory)"},
-                       {"file": "archive/2024/q1/jan/old/", "why": f"deeper than {R.MAX_DEPTH} levels: not read"}]}
+                       {"file": "archive/2024/q1/jan/old/", "why": f"deeper than {R.MAX_DEPTH} levels: not read"},
+                       # her 0700 root folder: named, left as it is (never widened)
+                       {"file": "change-receipts/root-only/", "why": f"{R.UNREADABLE}; owner uid 0, mode 0700",
+                        "unreadable": True}]}
     R.Receipts._mark_duplicates(doc)
     _items(doc)
     return doc
@@ -472,7 +475,8 @@ def _write_sources(root: Path, now: float) -> None:
         {"at": at(6 * H - 1), "register": reg, "op": "claim", "outcome": "denied", "reason": "FULL", "provider": "gpu0",
          "model": "qwen3.8-27b-exl3", "purpose": "plan my-app/P004 lead", "words": "the card cannot fit this model now",
          "generation": 42},
-        # HELD: a placement waits out someone else's hold, once, and gives up after the provider's overflow_after_seconds
+        # HELD with no other card free: a placement waits out someone else's hold, once, and gives up after the provider's
+        # overflow_after_seconds
         {"at": at(5 * H), "register": reg, "op": "claim", "outcome": "requested", "provider": "gpu0", "model": "qwen3.8-flash-next",
          "purpose": f"chat {CHAT}", "holder": "harness-4711"},
         {"at": at(5 * H - 1), "register": reg, "op": "claim", "outcome": "denied", "reason": "HELD", "provider": "gpu0",
@@ -795,8 +799,8 @@ def state(core) -> dict:
     summary = _reader(core).summary()
     out = {"operators": operators(core), "marked": OP.marked(raw), "several": list(st["several"]),
            "problem": OP.rule_problem(raw), "receipts_dir": st["receipts_dir"], "label": REPORTED,
-           "scan": {key: summary[key] for key in ("scanned_at", "read", "cannot_read", "refused", "past_limit", "writable",
-                                                  "gone", "problem")}}
+           "scan": {key: summary[key] for key in ("scanned_at", "read", "cannot_read", "refused", "past_limit",
+                                                  "unreadable", "writable", "gone", "problem")}}
     out.update(copy.deepcopy(st["override"]))
     return out
 
@@ -929,8 +933,9 @@ def api(core, handler, method, parts, query, body):
             raise core.Invalid(str(exc)) from None
         scan = _scan(core, rescan=rescan)
         reader = _reader(core)
+        index = reader.index()
         return handler.send_json({"receipts": reader.rows(limit=limit, since=since_at, until=until_at),
-                                  "refused": reader.index().get("refused") or [], "scan": scan})
+                                  "refused": index.get("refused") or [], "unreadable": R.unreadable(index), "scan": scan})
     if method == "POST" and p == ["operator", "receipts", "scan"]:
         return handler.send_json({"scan": _scan(core, rescan=True)})
     if method == "GET" and len(p) == 3 and p[:2] == ["operator", "receipts"]:
@@ -1052,21 +1057,24 @@ def contract(test) -> None:
     status, st = get("/api/operator")
     test.assertEqual(status, 200)
     test.assertEqual(set(st), {"operators", "marked", "several", "problem", "receipts_dir", "label", "scan"})
-    test.assertEqual(set(st["scan"]), {"scanned_at", "read", "cannot_read", "refused", "past_limit", "writable", "gone", "problem"})
+    test.assertEqual(set(st["scan"]), {"scanned_at", "read", "cannot_read", "refused", "past_limit", "unreadable", "writable",
+                                       "gone", "problem"})
     test.assertEqual(st["label"], OP.REPORTED)
     test.assertEqual(st["operators"], ["kate"])
 
     status, listing = get("/api/operator/receipts")
     test.assertEqual(status, 200)
-    test.assertEqual(set(listing), {"receipts", "refused", "scan"})
+    test.assertEqual(set(listing), {"receipts", "refused", "unreadable", "scan"})
+    test.assertEqual(listing["unreadable"], ["change-receipts/root-only/"], "named, left as it is")
     keep = {"file", "status", "problem", "schema", "id", "time", "time_as_written", "actor", "operator", "intent", "undo", "jobs",
             "rollback", "not_verified", "verified", "outcome", "reported_outcome", "warnings", "label", "items", "sha256",
             "first_sha256", "bytes", "mtime", "read_at", "first_read_at", "changed_at", "gone", "gone_at", "duplicate_of",
-            "harness_writable"}
+            "harness_writable", "unreadable"}
     rows = listing["receipts"]
     states, problems, reports = set(), [], set()
     for row in rows:
         test.assertLessEqual(set(row), keep, row.get("file"))
+        test.assertIn("actor", row, "every receipt carries its actor (null: not stated)")
         test.assertEqual(row["label"], OP.REPORTED)
         test.assertNotIn("before", row)
         keys = list(row)
@@ -1090,7 +1098,7 @@ def contract(test) -> None:
     test.assertTrue(any(p.startswith("could not be read (") for p in problems))
     for flag in ("gone", "changed_at", "duplicate_of", "harness_writable"):
         test.assertTrue(any(row.get(flag) for row in rows), flag)
-    test.assertTrue(all(set(r) == {"file", "why"} for r in listing["refused"]))
+    test.assertTrue(all({"file", "why"} <= set(r) <= {"file", "why", "unreadable"} for r in listing["refused"]))
     test.assertTrue(any("symbolic link" in r["why"] for r in listing["refused"]))
     times = [row.get("time") or row.get("mtime") for row in rows]
     test.assertEqual(times, sorted(times, reverse=True), "newest first")
@@ -1106,7 +1114,8 @@ def contract(test) -> None:
     status, _, raw = test.request("POST", "/api/operator/receipts/scan", {})
     test.assertEqual(status, 200)
     test.assertEqual(set(json.loads(raw)["scan"]), {"scanned_at", "receipts_dir", "read", "cannot_read", "refused", "past_limit",
-                                                    "writable", "new", "changed", "gone", "items", "problem", "skipped"})
+                                                    "unreadable", "writable", "new", "changed", "gone", "items", "problem",
+                                                    "skipped"})
 
     since = _iso(time.time() - 30 * 86400)
     status, act = get(f"/api/activity?agent=kate&since={since}")

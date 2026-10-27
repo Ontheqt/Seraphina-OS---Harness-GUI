@@ -87,6 +87,8 @@ GLOBAL_ALLOWED_PATHS = {
     "/srv/ai-work": "the README's example data folder (not found on the owner's server)",
     "/srv/models": "the Model Factory's example registry root",
     "/srv/seraphina": "example folder in the v2 design's restore drill",
+    "/home/sandbox": "the private home inside the browser's minimal sandbox (not a real folder)",
+    "/home/verify": "the private home inside a repository's verify sandbox (not a real folder)",
 }
 
 # Made-up fixture paths that only files under tests/ may name: the folder
@@ -95,7 +97,7 @@ TEST_ALLOWED_NAMES = {
     "home": {"u", "operator"},
     "srv": {".snapraid", "snapraid.parity", "api", "app", "chats", "data", "docker", "early", "f",
             "factory-output", "m", "m.db", "media", "memory", "notes", "operator", "out", "real", "sera",
-            "shop", "staged", "x"},
+            "shop", "staged", "x", "a", "again", "data1", "data2", "elsewhere", "old", "private"},
 }
 
 KEY_BEGIN = re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----")

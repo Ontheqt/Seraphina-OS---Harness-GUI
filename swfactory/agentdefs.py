@@ -37,6 +37,9 @@ class AgentDef:
     body: str
     path: Path
     meta: dict[str, str] = field(default_factory=dict)
+    # the browser profile a browsing agent may use (BROWSER_AND_CODEX.md §2.6): read only from the project and user
+    # agent directories, never from a repository's .factory/agents (discover_agents refuses it there)
+    browser: str | None = None
 
     def to_dict(self) -> dict:
         """JSON-ready view (path as a string, raw frontmatter under "meta")."""
@@ -190,6 +193,7 @@ def parse_agent_file(path: str | Path) -> AgentDef:
         body=body,
         path=path,
         meta=meta,
+        browser=(meta.get("browser") or "").strip() or None,
     )
 
 
@@ -208,6 +212,10 @@ def discover_agents(dirs: list[Path]) -> dict[str, AgentDef]:
             if path.name.startswith(".") or path.name.lower() == "readme.md" or not path.is_file():
                 continue
             agent = parse_agent_file(path)
+            if agent.browser is not None and directory.name == "agents" and directory.parent.name == ".factory":
+                raise ValueError(f"{path}: a browser: line is refused in a repository's agent file (repository content "
+                                 f"is untrusted, DESIGN §17): browsing agents live in the project or user agent "
+                                 f"directory")
             if agent.name in defined_here:
                 raise ValueError(f"{path}: agent {agent.name!r} is already defined in {defined_here[agent.name]}")
             defined_here[agent.name] = path

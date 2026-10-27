@@ -1,0 +1,5 @@
+[{"unit":"ssh.service","load":"loaded","active":"active","sub":"running","description":"OpenBSD Secure Shell server"},
+{"unit":"example-indexer.service","load":"loaded","active":"active","sub":"running","description":"An example root service with a script in a home folder"},
+{"unit":"example-shell.service","load":"loaded","active":"inactive","sub":"dead","description":"An example root service running bash on a script"},
+{"unit":"example-agent.service","load":"loaded","active":"active","sub":"running","description":"An example service of its own user"},
+{"unit":"example-writable.service","load":"loaded","active":"inactive","sub":"dead","description":"An example root service whose program others can change"}]

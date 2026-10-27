@@ -1044,6 +1044,30 @@ class WakePersonaSettingsTest(SettingsTestCase):
                 self.refused(self.persona(**entry), words)
         self.refused({"wakes": {"personas": {"Bad Name": {}}}}, "invalid persona name")
 
+    def test_the_read_and_ledger_caps_are_settings_with_bounds(self) -> None:
+        """The operator's ruling (26 Oct): the caps of one read and of the read ledger are settings, not constants.
+        memory.external.max_files (default 200), read_mib (8), ledger_mib (32) and ledger_copies (2000)."""
+        from swfactory import personas
+
+        self.assertEqual(personas.external_caps(None), {"max_files": 200, "read_bytes": 8 << 20,
+                                                        "ledger_bytes": 32 << 20, "ledger_copies": 2000,
+                                                        "ledger_mib": 32})
+        caps = {"max_files": 400, "read_mib": 16, "ledger_mib": 64, "ledger_copies": 5000}
+        saved = self.save(self.persona(memory={"external": {"folder": "/srv/sera/memory", "ledger": True, **caps}}))
+        external = saved.raw["wakes"]["personas"]["seraphina"]["memory"]["external"]
+        self.assertEqual(personas.external_caps(external), {"max_files": 400, "read_bytes": 16 << 20,
+                                                            "ledger_bytes": 64 << 20, "ledger_copies": 5000,
+                                                            "ledger_mib": 64})
+        for key, bad, words in (("max_files", 0, "an integer from 1 to 2000"), ("max_files", 2001, "an integer from 1 to 2000"),
+                                ("max_files", True, "an integer from 1"), ("read_mib", 65, "an integer from 1 to 64"),
+                                ("ledger_mib", 0, "an integer from 1 to 1024"),
+                                ("ledger_copies", 9, "an integer from 10 to 100000"), ("ledger_copies", "lots", "an integer from 10")):
+            with self.subTest(key=key, value=bad):
+                self.refused(self.persona(memory={"external": {"folder": "/srv/m", key: bad}}),
+                             f"wakes.personas.seraphina.memory.external.{key} must be {words}")
+        self.assertEqual(personas.external_caps({"max_files": 0, "ledger_mib": "64"})["max_files"], 200,
+                         "a hand edit the settings would refuse counts as unset")
+
     def test_local_attested_is_never_set_in_the_config(self) -> None:
         self.save({"wakes": {"servers": {"local": {"kind": "llamacpp", "router": True,
                                                    "root_url": "http://127.0.0.1:8080"}}}})

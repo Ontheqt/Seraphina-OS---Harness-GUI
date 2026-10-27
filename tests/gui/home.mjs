@@ -6,12 +6,12 @@
 // noOverflow, watch, allowHttp, newPage(label, {phone, width, height, colorScheme, mockUrl}), areaShot(page, area, name) }.
 
 const AREA = 'home';
-const LIVE = ['factory', 'tracker', 'personas', 'messages', 'backups', 'operator'];
+const LIVE = ['yourserver', 'factory', 'tracker', 'personas', 'messages', 'backups', 'operator'];
 const PLANNED = ['maintenance', 'upgrades', 'research', 'audit', 'model-factory'];
 const DECISION = 'item:job:my-app/004-render-user-notes/I-2';   // 002's moves to follow-ups when the core suite approves it (carry_items)
 
 /** Home's live cards (n of them) all show their status. */
-const loaded = (page, n = 6) => page.waitForFunction((count) => {
+const loaded = (page, n = LIVE.length) => page.waitForFunction((count) => {
   const cards = Array.from(document.querySelectorAll('#home-root .home-grid:not(.is-planned) .home-card'));
   return cards.length === count && cards.every((c) => { const s = c.querySelector('.home-status-text'); return s && s.textContent && s.textContent !== 'checking…'; });
 }, n, { timeout: 10000 });
@@ -34,7 +34,7 @@ export async function run(t) {
       const cards = await page.$$eval('#home-root .home-grid:not(.is-planned) .home-card', (els) => els.map((e) => ({
         id: e.dataset.section, text: e.querySelector('.home-card-text').textContent, status: e.querySelector('.home-status-text').textContent,
         open: e.querySelector('[data-action="open"]').getAttribute('href'), routes: (e.querySelector('.home-card-routes') || {}).textContent || '' })));
-      const hrefs = { factory: '#/factory', tracker: '#/housekeeping', personas: '#/personas', messages: '#/messages', backups: '#/backups', operator: '#/operator' };
+      const hrefs = { yourserver: '#/apps', factory: '#/factory', tracker: '#/housekeeping', personas: '#/personas', messages: '#/messages', backups: '#/backups', operator: '#/operator' };
       for (const c of cards) {
         assert(/\.$/.test(c.text) && c.text.length > 30, c.id + ': one plain sentence: ' + c.text);
         assert(c.status.length > 2, c.id + ': a live status: ' + c.status);
@@ -49,7 +49,7 @@ export async function run(t) {
       assert(planned.every((x) => x.tag === 'Planned' && x.doc === 'docs/seraphina/SERAPHINA_OS_HARNESS.md' && /\.$/.test(x.text)), 'each planned card: Planned, one sentence, the design document');
       assert(await page.locator('.home-proc ol.proc li').count() === 3, 'How Home works, as a numbered procedure');
       const rail = await page.$$eval('.rail .rail-item:not([hidden])', (els) => els.map((e) => e.dataset.view));
-      assert(t.canon(rail) === t.canon(['home', 'factory', 'plans', 'tracker', 'chat', 'messages', 'backups', 'operator', 'personas', 'agents', 'settings', 'grid', 'procedures', 'doctor']), 'rail: ' + rail);
+      assert(t.canon(rail) === t.canon(['home', 'yourserver', 'factory', 'plans', 'tracker', 'chat', 'messages', 'backups', 'operator', 'personas', 'browser', 'codex', 'agents', 'settings', 'grid', 'procedures', 'doctor']), 'rail: ' + rail);
       assert(await page.getAttribute('.rail-item[data-view="home"]', 'aria-current') === 'page', 'Home is marked current in the rail');
       assert(await page.textContent('.rail-item[data-view="messages"] .rail-badge') === '2', 'the Messages entry counts unread messages');
       await t.areaShot(page, AREA, 'home-desktop');
@@ -129,7 +129,7 @@ export async function run(t) {
       await page.waitForFunction(() => window.__heard.length === 1 && window.__heard[0] === 7, null, { timeout: 8000 });
     });
 
-    await step('Home at 390 px: Needs you first, one column of cards, the bottom bar holds Home and Messages, no sideways scroll', async () => {
+    await step('Home at 390 px: Needs you first, one column of cards, the bottom bar holds Home, Your server and Messages, no sideways scroll', async () => {
       const m = p.page;
       await m.goto(t.url + '/#/home');
       await loaded(m);
@@ -149,7 +149,8 @@ export async function run(t) {
         await m.evaluate(() => { document.getElementById('main').scrollTop = 0; window.scrollTo(0, 0); });
       }
       const bar = await m.$$eval('.rail .rail-item', (els) => els.filter((e) => e.getClientRects().length).map((e) => e.dataset.view));
-      assert(t.canon(bar) === t.canon(['home', 'factory', 'plans', 'chat', 'messages', 'settings']), 'phone bar: ' + bar);
+      // Your server takes Plans' place on the phone's bar (YOUR_SERVER.md D21)
+      assert(t.canon(bar) === t.canon(['home', 'yourserver', 'factory', 'chat', 'messages', 'settings']), 'phone bar: ' + bar);
       await t.areaShot(m, AREA, 'home-phone');
       await m.evaluate(() => window.SF.drawer.open({ key: 'smoke-phone', title: 'A panel', sub: 'From a view module', body: window.SF.h('p', null, 'On a phone a panel takes the whole width.'), back: '#/home' }));
       await m.waitForSelector('#drawer.is-panel:not([hidden])');
@@ -176,7 +177,7 @@ export async function run(t) {
         assert(await f.page.locator('.opt-launch .opt-card[data-opt="home"]').count() === 1, 'Welcome offers Home');
         await t.areaShot(f.page, AREA, 'welcome-fresh-desktop');
         await f.page.goto(fresh.url + '/#/home');
-        await loaded(f.page, 5);
+        await loaded(f.page, LIVE.length - 1);
         assert(await f.page.locator('.home-card[data-section="operator"]').count() === 0, 'no operator card without an operator');
         assert(await f.page.isHidden('.rail-item[data-view="operator"]'), 'no operator rail entry either');
         await f.page.waitForSelector('.needs-empty');
@@ -185,7 +186,7 @@ export async function run(t) {
         const fp = await t.newPage('home-fresh-phone', { mockUrl: fresh.url, phone: true });
         try {
           await fp.page.goto(fresh.url + '/#/home');
-          await loaded(fp.page, 5);
+          await loaded(fp.page, LIVE.length - 1);
           await noOverflow(fp.page, 'fresh home 390');
           await t.areaShot(fp.page, AREA, 'home-fresh-phone');
           await fp.page.goto(fresh.url + '/#/welcome');

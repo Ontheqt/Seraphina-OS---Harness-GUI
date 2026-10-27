@@ -148,6 +148,11 @@ export async function run(t) {
       await page.click('[data-disclosure="refused"] > summary');
       const refused = await page.textContent('[data-disclosure="refused"]');
       assert(/Not read \(2\)/.test(refused) && /latest\.json/.test(refused) && /a symbolic link: refused/.test(refused), 'refused: ' + refused);
+      assert(!/root-only/.test(refused), 'an unreadable folder is not among the refused: ' + refused);
+      // her ruling (26 Oct): what the harness may not read is named apart and left as it is; every receipt names its actor
+      const locked = await page.textContent('#operator-root .op-unreadable');
+      assert(/1 place in her folder the harness may not read: change-receipts\/root-only\/\. They are left as they are: the harness never changes their owner, mode or access/.test(locked), 'unreadable: ' + locked);
+      assert(info.every((r) => /by \S|actor not stated/.test(r.text)), 'every row names its actor or says it is not stated');
       await page.click('.op-filter[data-filter="cannot"]');
       await page.waitForFunction(() => document.querySelectorAll('#operator-root .op-rcpt').length === 4);
       assert(await page.getAttribute('.op-filter[data-filter="cannot"]', 'aria-pressed') === 'true', 'the filter says it is on');
@@ -672,7 +677,7 @@ export async function run(t) {
         assert(/Not released: the register restarted, so it no longer knows this lease/.test(hist) && /nothing was sent: the register restarted/.test(hist), 'not sent: ' + hist.slice(0, 600));
         const waitTones = await page.$$eval('.op-reg[data-register="https://127.0.0.1:7300"] .op-hist-row[data-op="wait"] .pill', (els) => els.map((e) => e.className));
         assert(waitTones.length === 2 && waitTones.every((c) => /tone-warn/.test(c)), 'a wait is amber: ' + waitTones);
-        assert(/tabby needs a lease .* · a HELD answer waits up to 120s, once per run; FULL never waits/.test(gpu0) && /Its token: the systemd credential custody-token/.test(gpu0), 'the held wait and the credential: ' + gpu0.slice(0, 600));
+        assert(/tabby needs a lease .* · a HELD answer waits up to 120s, once per run, when no other card is free; FULL never waits/.test(gpu0) && /Its token: the systemd credential custody-token/.test(gpu0), 'the held wait and the credential: ' + gpu0.slice(0, 600));
         const strata = await page.textContent('.op-reg[data-register="http://127.0.0.1:7400"]');
         assert(/The register’s generation went back from 17 to 3/.test(strata) && /its answers are refused until it passes 17 or the harness restarts/.test(strata), 'fenced: ' + strata.slice(0, 300));
         assert(await page.locator('#operator-root [role="alert"]').count() === 0, 'the fenced banner is a plain callout');

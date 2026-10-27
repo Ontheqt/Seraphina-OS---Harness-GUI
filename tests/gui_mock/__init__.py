@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import importlib
 
-AREAS = ("routing", "tracker", "personas", "messages", "operator", "backups")
+AREAS = ("routing", "tracker", "personas", "messages", "operator", "backups", "yourserver", "browser", "codex")
 
 
 def load() -> list:

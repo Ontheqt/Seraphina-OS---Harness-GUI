@@ -1,0 +1,8 @@
+{"blockdevices": [
+ {"name": "nvme0n1", "type": "disk", "size": 500107862016, "model": "Example NVMe 500GB", "serial": "EXAMPLESN0001", "wwn": "eui.0000000000000001", "tran": "nvme", "rota": false},
+ {"name": "sda", "type": "disk", "size": 4000787030016, "model": "Example Disk 4TB", "serial": "EXAMPLESN0002", "wwn": "0x5000000000000002", "tran": "sata", "rota": true},
+ {"name": "sdb", "type": "disk", "size": 4000787030016, "model": "Example Disk 4TB", "serial": "EXAMPLESN0003", "wwn": "0x5000000000000003", "tran": "sata", "rota": true},
+ {"name": "sdc", "type": "disk", "size": 8001563222016, "model": "Example USB Disk", "serial": "EXAMPLESN0004", "wwn": null, "tran": "usb", "rota": true},
+ {"name": "loop0", "type": "loop", "size": 1000000, "model": null, "serial": null, "wwn": null, "tran": null, "rota": false},
+ {"name": "zram0", "type": "disk", "size": 1000000, "model": null, "serial": null, "wwn": null, "tran": null, "rota": false}
+]}

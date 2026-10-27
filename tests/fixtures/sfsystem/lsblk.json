@@ -1,0 +1,4 @@
+{"blockdevices": [{"name": "nvme0n1", "type": "disk", "size": 500107862016, "fstype": null, "uuid": null, "label": null, "mountpoints": [null],
+  "children": [{"name": "nvme0n1p1", "type": "part", "size": 1073741824, "fstype": "vfat", "uuid": "AAAA-0001", "label": null, "mountpoints": ["/boot/efi"]},
+               {"name": "nvme0n1p2", "type": "part", "size": 499033980928, "fstype": "ext4", "uuid": "0000aaaa-0000-4000-8000-000000000001", "label": "system", "mountpoints": ["/"]}]},
+ {"name": "sda", "type": "disk", "size": 16000900661248, "fstype": "ext4", "uuid": "0000aaaa-0000-4000-8000-000000000002", "label": "data1", "mountpoints": ["/srv/private/data1"]}]}

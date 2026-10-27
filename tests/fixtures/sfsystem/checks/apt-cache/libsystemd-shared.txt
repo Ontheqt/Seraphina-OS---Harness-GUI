@@ -1,0 +1,3 @@
+Package: libsystemd-shared
+Version: 259.1-1ubuntu2
+Depends: libacl1 (>= 2.2.23), libc6 (>= 2.38)

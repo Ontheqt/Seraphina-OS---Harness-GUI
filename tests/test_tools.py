@@ -902,7 +902,7 @@ class McpTest(ToolTestCase):
     def client(self, tools_list, result=("ok", False), allow=None, error=None, write_args=None) -> SimpleNamespace:
         calls: list = []
 
-        def call(tool, arguments, timeout=None):
+        def call(tool, arguments, timeout=None, cancel=None):
             calls.append((tool, arguments))
             if error:
                 raise error

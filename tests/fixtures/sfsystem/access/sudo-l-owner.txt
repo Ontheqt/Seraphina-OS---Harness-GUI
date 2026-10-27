@@ -1,0 +1,5 @@
+Matching Defaults entries for owner on server:
+    env_reset, mail_badpass, secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin\:/sbin\:/bin, use_pty
+
+User owner may run the following commands on server:
+    (ALL : ALL) ALL

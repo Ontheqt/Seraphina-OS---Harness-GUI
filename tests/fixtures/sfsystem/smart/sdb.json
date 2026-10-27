@@ -1,0 +1,7 @@
+{"json_format_version": [1, 0], "smartctl": {"version": [7, 4], "exit_status": 24},
+ "device": {"name": "/dev/sdb", "type": "sat", "protocol": "ATA"}, "model_name": "Example Disk 4TB",
+ "smart_status": {"passed": false},
+ "ata_smart_attributes": {"revision": 16, "table": [
+  {"id": 5, "name": "Reallocated_Sector_Ct", "value": 3, "worst": 3, "thresh": 10, "when_failed": "now", "raw": {"value": 2312, "string": "2312"}},
+  {"id": 197, "name": "Current_Pending_Sector", "value": 100, "worst": 100, "thresh": 0, "when_failed": "", "raw": {"value": 48, "string": "48"}}]},
+ "temperature": {"current": 39}, "power_on_time": {"hours": 41877}}

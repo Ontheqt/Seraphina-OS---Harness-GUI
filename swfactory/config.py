@@ -24,6 +24,8 @@ from .agentdefs import clean_value, read_small_text
 from .custody import custody_on_server
 from .custody import parse_settings as parse_custody
 from .plainhttp import CREDENTIALS_ENV, bearer_of
+from .browser.runs import SETTINGS_DEFAULTS as BROWSER_DEFAULTS
+from .codex.settings import SETTINGS_DEFAULTS as CODEX_DEFAULTS
 
 if TYPE_CHECKING:
     from .agentdefs import AgentDef
@@ -107,6 +109,9 @@ DEFAULTS: dict[str, Any] = {
         "qwen": {"type": "cli", "preset": "qwen", "command": "qwen", "env": {}, "models": {}},
         "claude": {"type": "cli", "preset": "claude", "command": "claude", "env": {}, "models": {}},
         "codex": {"type": "cli", "preset": "codex", "command": "codex", "env": {}, "models": {}},
+        # The hardened Codex builder (DESIGN §44): started through bin/sf-codex-launch, never from PATH; it runs
+        # only while codex.enabled is true and the doctor's codex model line passes.
+        "codex-worker": {"type": "cli", "preset": "codex-worker", "command": "", "env": {}, "models": {}},
     },
     "agents": {"*": {"driver": "builtin"}},
     "pipeline": {"reviewers": ["security", "ux", "ui", "code"], "max_resumes": 2,
@@ -191,6 +196,44 @@ DEFAULTS: dict[str, Any] = {
     # Maintenance jobs (v2 §6.2; the first revision of BACKUPS_SNAPRAID.md, §5.2): one mode for every job, and a
     # pause. Nothing reads them; the design's revision 2 drops them with Seraphina's own scheduler (its §2.3).
     "maintenance": {"mode": "scheduled", "paused": False},
+    # Your server (DESIGN §42; docs/seraphina/YOUR_SERVER.md §11.2), phase P1a: the Apps launcher and the host strip.
+    # Off until the owner turns it on; the host strip needs no helper. It only looks: what the helper may do lives in
+    # its root-owned config, never here. The confirmed app addresses are not settings: they live in
+    # <data_dir>/yourserver/apps.json with its hash chain. links: Dockge, Cockpit and Beszel, each confirmed by the
+    # owner; beszel.login_secret names the environment variable (the env file) that holds the read-only login's
+    # password, login_email that login's email; updates.registry_checks stays off (D4); ask_model: the model key
+    # "Ask about this app" uses (a model on this machine only, D19; null: the first local one).
+    "yourserver": {
+        "enabled": False,
+        "helper": "/usr/local/libexec/seraphina/sf-system",
+        "refresh": {"live_seconds": 15, "idle_minutes": 5, "probe_seconds": 60, "map_minutes": 5},
+        "stale_minutes": 10,
+        "tailnet": {"suffix": None, "confirmed_at": None},
+        "links": {"dockge": None, "cockpit": None, "beszel": None},
+        "beszel": {"watch": True, "login_secret": None, "login_email": None, "stale_minutes": 15},
+        "updates": {"registry_checks": False},
+        "keep_tag_prefixes": [],
+        "host": {"disk_warn": {"free_percent": 15, "free_gb_cap": 100},
+                 "disk_err": {"free_percent": 5, "free_gb_cap": 20},
+                 "disks": {},
+                 "ram_warn_percent": 90,
+                 "temp_warn_c": {"cpu": 90, "nvme": 70, "gpu": 85}},
+        "ask_model": None,
+    },
+    # Per-app and per-job settings (YOUR_SERVER.md §2.5, §2.9, §11.2), keyed by app id (a-<name>) or a fixed job id:
+    # {maintenance: {mode}, phone_name, probe: {kind, path, target, ca_file, pin_sha256}, expect: {state,
+    # grace_minutes, confirmed_at}, main_member}. Only pinned and frozen change anything today.
+    "services": {},
+    # The browser adapter (DESIGN §43; docs/seraphina/BROWSER_AND_CODEX.md §2), phase BC1a: off by default. The
+    # harness's own runtime (Node, Playwright MCP, the Chrome build) in runtime.dir, never a program from PATH (K1);
+    # profiles name loopback origins inside the browser's own namespace only; caps: what the session folders keep
+    # (screenshots, action logs, receipts), the owner's O6.
+    "browser": copy.deepcopy(BROWSER_DEFAULTS),
+    # The Codex worker (DESIGN §44; docs/seraphina/BROWSER_AND_CODEX.md §3), phase BC1b: off by default. A factory
+    # job whose builder runs on the codex-worker driver: the pinned Codex (binary, pin) through the launcher, as the
+    # Codex user (user, via, group: the owner's O3) once the owner has made it; work_root holds the per-job homes and
+    # the per-run folders (null: <data_dir>/codex). Repository entries gain verify, preview and personal_data.
+    "codex": copy.deepcopy(CODEX_DEFAULTS),
     "notify": {
         "enabled": True,
         "default_persona": "seraphina",
@@ -355,6 +398,12 @@ class RepoConfig:
     base: str | None = None
     setup: str | None = None
     escalate_paths: list[str] = field(default_factory=list)
+    # DESIGN §44: the command the harness runs itself after a harness commit (always under bwrap), how to serve the
+    # job's branch for "Verify in the browser", and whether the repository holds personal data (the owner's O10:
+    # true unless the entry says false; only then may a codex-worker job's other roles use a hosted provider).
+    verify: str | None = None
+    preview: dict | None = None
+    personal_data: bool = True
 
 
 @dataclass
@@ -416,6 +465,24 @@ class McpServerConfig:
     # tool -> names of its arguments that give a file the tool writes; the builtin harness checks each
     # against the agent's write policy (like Write) before the call reaches the server
     write_args: dict[str, list[str]] = field(default_factory=dict)
+    # A run fails when a required server cannot start, instead of running without its tools (BROWSER_AND_CODEX.md
+    # §2.11). sandbox "run" (the default): started the way the run's sandbox runs a command; "self": started
+    # unwrapped, accepted only for the installed bin/sf-browser, which builds its own tighter namespace (§2.9).
+    required: bool = False
+    sandbox: str = "run"
+
+
+MCP_SANDBOXES = ("run", "self")
+
+
+def self_sandboxed_command(command: str) -> str | None:
+    """The command of a sandbox "self" server resolved, when it is the installed bin/sf-browser (a bare
+    "sf-browser" names it); None otherwise."""
+    installed = os.path.realpath(PROJECT_DIR / "bin" / "sf-browser")
+    if command == "sf-browser":
+        return installed
+    resolved = os.path.realpath(os.path.expanduser(command)) if os.sep in command else None
+    return installed if resolved == installed else None
 
 
 def sensitive_terms_path(config: "Config") -> Path:
@@ -433,8 +500,11 @@ def sandbox_masks(config: "Config", *, receipts: bool = True) -> dict[str, list[
     default) and ~/.config/software-factory, the wake and notify data, the system scope's tracker
     (<data_dir>/housekeeping: personas' items and the checks an operator reports as not done, all private),
     an operator's receipts and the harness's index of them (§36), the custody journal (lease purposes name wakes
-    and personas, §37), the disk protection panel's facts and staged setup files (§41), the Bearer tokens of
-    custody registers and drift sources (token_masks: this process's systemd credentials, and each token_file),
+    and personas, §37), the disk protection panel's facts and staged setup files (§41), Your server's app record
+    (names and addresses, §42), the browser's grants, session locks and session folders (§43), the Codex worker's
+    receipts, work root and staged setup files and the Codex route's key file (§44: the launcher's alone, whatever
+    its mode), the Bearer tokens of custody registers and drift sources (token_masks: this process's systemd
+    credentials, and each token_file),
     a sensitive-terms file kept elsewhere, and the sockets that make whoever reaches them root (ROOT_SOCKETS).
     {dirs, files, fallback, rebind}: fallback is what is hidden file by file when a directory cannot be hidden
     whole because the run needs a path inside it; rebind is bound back read-only (skills that ship scripts).
@@ -451,12 +521,18 @@ def sandbox_masks(config: "Config", *, receipts: bool = True) -> dict[str, list[
     receipts_dirs = [expand_path(operator["receipts_dir"], config.path.parent)] \
         if receipts and isinstance(operator.get("receipts_dir"), str) and operator["receipts_dir"].strip() else []
     token_dirs, token_files = token_masks(config)
+    from .codex.settings import masked_key_files
+
     return {"dirs": list(dict.fromkeys([config_dir, user_dir, config.data_dir / "wakes", config.data_dir / "notify",
                                         config.data_dir / "housekeeping", config.data_dir / "operator",
-                                        config.data_dir / "custody", config.data_dir / "snapraid", *receipts_dirs,
+                                        config.data_dir / "custody", config.data_dir / "snapraid", config.data_dir / "yourserver",
+                                        config.data_dir / "browser",
+                                        config.data_dir / "receipts", config.data_dir / "codex",
+                                        config.data_dir / "codex-setup",
+                                        *receipts_dirs,
                                         *socket_dirs, *token_dirs])),
             "files": [sensitive_terms_path(config), config.path, *socket_files, *token_files, *root_sockets(),
-                      *snapraid_link_socket(config)],
+                      *snapraid_link_socket(config), *masked_key_files(config)],
             "fallback": [config.path, *fallback],
             # skills that ship scripts, and the notice rulebook (read-only to agents: an outside notifier and the
             # agents may read quiet hours and limits, never change them; Wake & Messages decision g)
@@ -676,6 +752,12 @@ class Config:
             self.merge()
             self.housekeeping()
             self.mcp_servers()
+            from .browser.runs import check_settings as check_browser   # the browser section (DESIGN §43)
+
+            check_browser(self.raw)
+            from .codex.settings import check_settings as check_codex   # the codex section, repo verify (§44)
+
+            check_codex(self.raw)
             from .driftsources import parse_sources   # the drift sources the tracker reads (DESIGN §38)
 
             parse_sources(self.raw)
@@ -920,9 +1002,21 @@ class Config:
             if not isinstance(entry, dict) or not entry.get("command"):
                 raise ValueError(f"mcp_servers.{name} needs a command")
             cwd = entry.get("cwd")
+            sandbox = entry.get("sandbox") or "run"
+            command = os.path.expanduser(str(entry["command"]))
+            if sandbox not in MCP_SANDBOXES:
+                raise ValueError(f"mcp_servers.{name}.sandbox must be one of {', '.join(MCP_SANDBOXES)}")
+            if sandbox == "self":
+                own = self_sandboxed_command(str(entry["command"]))
+                if own is None:
+                    raise ValueError(f"mcp_servers.{name}.sandbox \"self\" is accepted only for the installed "
+                                     f"bin/sf-browser, which builds its own namespace")
+                command = own
+            if entry.get("required") is not None and not isinstance(entry.get("required"), bool):
+                raise ValueError(f"mcp_servers.{name}.required must be true or false")
             servers[name] = McpServerConfig(
                 name=name,
-                command=os.path.expanduser(str(entry["command"])),
+                command=command,
                 args=_str_list_or_none(entry.get("args"), f"mcp_servers.{name}.args") or [],
                 env={str(k): None if v is None else str(v) for k, v in (entry.get("env") or {}).items()},
                 cwd=os.path.expanduser(str(cwd)) if cwd else None,
@@ -930,6 +1024,8 @@ class Config:
                 tools=_str_list_or_none(entry.get("tools"), f"mcp_servers.{name}.tools"),
                 startup_timeout=float(entry.get("startup_timeout") or DEFAULT_MCP_STARTUP_TIMEOUT),
                 write_args=_write_args(entry.get("write_args"), f"mcp_servers.{name}.write_args"),
+                required=entry.get("required") is True,
+                sandbox=sandbox,
             )
         return servers
 
@@ -1048,12 +1144,16 @@ class Config:
     def _repo_from(self, entry: Any) -> RepoConfig:
         if not isinstance(entry, dict) or not entry.get("name") or not entry.get("path"):
             raise ValueError(f"repo entry {entry!r} needs a name and a path")
+        from .codex.settings import repo_settings
+
+        work = repo_settings(entry)
         return RepoConfig(
             name=str(entry["name"]),
             path=expand_path(entry["path"], self.path.parent),
             base=entry.get("base") or None,
             setup=entry.get("setup") or None,
             escalate_paths=[str(glob) for glob in (entry.get("escalate_paths") or [])],
+            verify=work.verify, preview=work.preview, personal_data=work.personal_data,
         )
 
 

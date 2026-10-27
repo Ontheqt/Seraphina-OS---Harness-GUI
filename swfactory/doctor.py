@@ -142,6 +142,9 @@ def run_checks(config: Config, factory: Any = None, probe_models: bool = False,
     checks += _safely("wakes", lambda: _wake_checks(config))
     checks += _safely("operator", lambda: _operator_checks(config))
     checks += _safely("snapraid", lambda: _snapraid_checks(config))
+    checks += _safely("your server", lambda: _yourserver_checks(config))
+    checks += _safely("browser", lambda: _browser_checks(config))
+    checks += _safely("codex", lambda: _codex_checks(config, probe_models))
     jobs += _channel_jobs(config)
     found = _parallel(jobs, 3 * HTTP_TIMEOUT + VERSION_TIMEOUT + GRACE_SECONDS)
     looked = look_for_model_servers(config, skip_ports=look_skip_ports) if look_around else None
@@ -1206,8 +1209,9 @@ def _custody_check(config: Config, name: str, in_server: bool = False) -> list[C
                                              f"{name} that needs a lease is unavailable and follows its overflow"
                                              f"{follows}")] + fallback
     resident = ", ".join(f"{item.provider}/{item.model}" for item in seen.resident) or "nothing resident"
-    wait = (f"a HELD answer (the card is held by someone else) waits up to {provider.overflow_after_seconds:g}s "
-            f"(overflow_after_seconds)" if provider.overflow_after_seconds else
+    wait = (f"a HELD answer (the card is held by someone else) goes at once to another build that is free, else "
+            f"waits up to {provider.overflow_after_seconds:g}s (overflow_after_seconds)"
+            if provider.overflow_after_seconds else
             "a HELD answer (the card is held by someone else) does not wait (no overflow_after_seconds)")
     return [check(label, True, "info", f"the register answers (generation {seen.generation}; {resident}); runs on "
                                        f"{name} take a request lease; {wait}; a FULL answer (the card cannot fit "
@@ -1273,6 +1277,30 @@ def _snapraid_checks(config: Config) -> list[Check]:
     from .snapraid import doctor_checks
 
     return doctor_checks(config)
+
+
+def _yourserver_checks(config: Config) -> list[Check]:
+    """Your server (DESIGN §42, YOUR_SERVER.md §11.7): read-only, through the helper's info."""
+    from .yourserver import doctor_checks
+
+    return doctor_checks(config)
+
+
+def _browser_checks(config: Config) -> list[Check]:
+    """The browser adapter (DESIGN §43, BROWSER_AND_CODEX.md §4.3): browser pins, sandbox, timeouts and preset; one
+    info line while it is off and unconfigured."""
+    from .browser.checks import all_checks
+
+    return all_checks(config, check)
+
+
+def _codex_checks(config: Config, probe: bool = False) -> list[Check]:
+    """The Codex worker (DESIGN §44, BROWSER_AND_CODEX.md §4.4): codex version, launcher, home, model (a blocker
+    until the Responses route has passed its check under a custody request lease; --probe runs that check), sandbox,
+    reads and egress; one info line while it is off and no agent runs on it."""
+    from .codex.checks import all_checks
+
+    return all_checks(config, check, probe=probe)
 
 
 def _notify_run(argv: list[str]) -> str:
@@ -1417,7 +1445,7 @@ def _wake_alarm(power: Any, zone: str, alarm_path: Path | None = None, now: floa
 
 def _operator_checks(config: Config) -> list[Check]:
     """The operator persona (DESIGN §36): the one-operator rule, marks on names that cannot be an operator, a
-    role: line in a persona file (it means nothing), whether the receipts directory can be read (opened as the
+    role: line in a persona file (it means nothing), her wake persona's own mark (operator.wake_mark_problems), whether the receipts directory can be read (opened as the
     scan opens it; nothing in it is read or written), that it stands apart from the harness's own files and that
     the harness's user cannot write it (else a planted file would read as her words), and the last scan's
     max_receipts cut."""
@@ -1430,6 +1458,8 @@ def _operator_checks(config: Config) -> list[Check]:
     except ValueError:
         found = {}
     checks = [check("operator", False, level, words) for level, words in op.doctor_problems(config, found)]
+    # her wake persona carries the mark itself, and operator.several lists both names: verified, not assumed
+    checks += [check("operator wake persona", ok, "warn", words) for ok, words in op.wake_mark_problems(config, found)]
     names = op.operators(config)
     reader = Receipts(lambda: config, config.data_dir)
     directory = reader.directory()
@@ -1455,7 +1485,15 @@ def _operator_checks(config: Config) -> list[Check]:
         return checks
     try:
         writable = harness_may_write(os.fstat(fd))
-        count = sum(1 for name in os.listdir(fd) if name.endswith(".json") and not name.startswith("."))
+        listed = [name for name in os.listdir(fd) if not name.startswith(".")]
+        count = sum(1 for name in listed if name.endswith(".json"))
+        if listed:
+            try:   # read without search (r--): listed, but no receipt in it can be opened
+                os.stat(listed[0], dir_fd=fd, follow_symlinks=False)
+            except PermissionError:
+                count = None
+                checks.append(check("operator receipts", False, "error", f"{directory} can be listed but not "
+                                    "searched: give the harness's user read and search (r-x) access"))
     except OSError as exc:
         writable, count = False, None
         checks.append(check("operator receipts", False, "error", f"cannot list {directory}: {exc.strerror or exc}"))
@@ -1606,9 +1644,12 @@ def _external_memory_checks(config: Config, name: str, external: dict, problems:
                          f"{str(health.get('trimmed_at'))[:16]})")
         if health.get("not_kept"):
             words.append(f"{health['not_kept']} versions not kept (the last at {str(health.get('not_kept_at'))[:16]})")
-        cap = personas.EXTERNAL_LEDGER_BYTES // (1024 * 1024)
-        detail = (f"at its cap ({cap} MiB): " + "; ".join(words) + ". The oldest rollbacks are gone; see factory "
-                  "personas ledger") if words else "on: each read of her own memory is recorded, with private copies"
+        caps = personas.external_caps(external)   # memory.external's caps as set, else the defaults
+        cap = f"{caps['ledger_mib']} MiB, {caps['ledger_copies']} copies"
+        detail = (f"at its cap ({cap}): " + "; ".join(words) + ". The oldest rollbacks are gone: raise "
+                  "memory.external.ledger_mib or ledger_copies, or see factory personas ledger") if words else (
+            f"on: each read of her own memory is recorded, with private copies (the ledger keeps {cap} at most; "
+            f"one read opens {caps['max_files']} files and {caps['read_bytes'] // personas.MIB} MiB at most)")
         out.append(check(f"{label} read ledger", not words, "warn", detail))
     return out
 

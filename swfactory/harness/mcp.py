@@ -26,6 +26,7 @@ import signal
 import subprocess
 import threading
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
 
@@ -68,6 +69,43 @@ class _Timeout(McpError):
         super().__init__(f"MCP request {method} timed out after {seconds:g}s")
         self.request_id = request_id
         self.sent = sent   # False: the server never saw the request, so there is nothing to cancel
+
+
+class _Cancelled(McpError):
+    """The caller's cancel event was set while the request waited (notifications/cancelled is sent when it left)."""
+
+    def __init__(self, method: str, request_id: int, sent: bool) -> None:
+        super().__init__(f"MCP request {method} was cancelled")
+        self.request_id = request_id
+        self.sent = sent
+
+
+# The statuses of call_result (BROWSER_AND_CODEX.md §2.5): ok and tool_error are answers; timeout_sent and
+# transport_failed with sent are DESIGN §40's unknown; timeout_unsent, and transport_failed without sent, never
+# reached the server; cancelled says the caller stopped waiting (sent tells whether the request had left).
+CALL_STATUSES = ("ok", "tool_error", "timeout_sent", "timeout_unsent", "transport_failed", "cancelled")
+_CANCEL_POLL = 0.05
+
+
+@dataclass
+class CallResult:
+    """One tools/call, typed: status (CALL_STATUSES), text (as call() gives it), the structured content and the
+    raw content parts (image data included), and whether the request wholly left the client (sent)."""
+
+    status: str
+    text: str = ""
+    structured: Any = None
+    content: list = field(default_factory=list)
+    sent: bool = False
+
+    @property
+    def is_error(self) -> bool:
+        return self.status != "ok"
+
+    @property
+    def unknown(self) -> bool:
+        """The request may have taken effect and no answer says whether it did (DESIGN §40)."""
+        return self.status in ("timeout_sent", "transport_failed", "cancelled") and self.sent
 
 
 class _Pending:
@@ -163,32 +201,57 @@ class McpClient:
         """The server's allowlisted tools as [{name, description, inputSchema}]."""
         return [dict(tool) for tool in self._tools]
 
-    def call(self, tool: str, arguments: dict, timeout: float | None = None) -> tuple[str, bool]:
+    def call(self, tool: str, arguments: dict, timeout: float | None = None,
+             cancel: threading.Event | None = None) -> tuple[str, bool]:
         """Call a tool and return (text, is_error). Never raises: failures come back as errors.
 
         ``timeout`` defaults to cfg.timeout and bounds the whole call, including
         writing the request. On timeout a sent request is cancelled with
-        notifications/cancelled.
+        notifications/cancelled; so is one the caller's ``cancel`` event stops.
+        A wrapper over call_result.
         """
+        result = self.call_result(tool, arguments, timeout, cancel)
+        return result.text, result.is_error
+
+    def call_result(self, tool: str, arguments: dict, timeout: float | None = None,
+                    cancel: threading.Event | None = None) -> CallResult:
+        """Call a tool and return a CallResult; never raises. Waits for the answer, the timeout or cancel,
+        whichever comes first: on a timeout or a cancel a request that had left is cancelled with
+        notifications/cancelled, and the result says whether it had left (sent)."""
         if self._allow is not None and tool not in self._allow:
-            return f"MCP tool {tool} is not in the tools allowlist of server {self.name}", True
+            return CallResult("tool_error", f"MCP tool {tool} is not in the tools allowlist of server {self.name}")
         limit = self._call_timeout if timeout is None else timeout
         try:
-            result = self._request("tools/call", {"name": tool, "arguments": arguments or {}}, limit)
+            result = self._request("tools/call", {"name": tool, "arguments": arguments or {}}, limit, cancel)
+        except _Cancelled as exc:
+            if exc.sent:
+                self._send({"jsonrpc": "2.0", "method": "notifications/cancelled",
+                            "params": {"requestId": exc.request_id, "reason": "cancelled by the caller"}})
+                return CallResult("cancelled", f"MCP call cancelled. The request was sent, {UNKNOWN_WORDS}",
+                                  sent=True)
+            return CallResult("cancelled", "MCP call cancelled before the request was sent: the tool did not run.")
         except _Timeout as exc:
             if not exc.sent:
-                return f"MCP call timed out after {limit:g}s before the request was sent: the tool did not run.", True
+                return CallResult("timeout_unsent", f"MCP call timed out after {limit:g}s before the request was "
+                                                    f"sent: the tool did not run.")
             self._send({"jsonrpc": "2.0", "method": "notifications/cancelled",
                         "params": {"requestId": exc.request_id, "reason": f"timed out after {limit:g}s"}})
-            return f"MCP call timed out after {limit:g}s. The request was sent, {UNKNOWN_WORDS}", True
+            return CallResult("timeout_sent", f"MCP call timed out after {limit:g}s. The request was sent, "
+                                              f"{UNKNOWN_WORDS}", sent=True)
         except McpError as exc:
             if exc.partly:
-                return (f"{exc}. Part of the request was written and the rest may still reach the server, "
-                        f"{UNKNOWN_WORDS}"), True
+                return CallResult("transport_failed", f"{exc}. Part of the request was written and the rest may "
+                                                      f"still reach the server, {UNKNOWN_WORDS}", sent=True)
             if exc.sent:
-                return f"{exc}. The request was sent before that, {UNKNOWN_WORDS}", True
-            return str(exc), True
-        return _format_result(result)
+                return CallResult("transport_failed", f"{exc}. The request was sent before that, {UNKNOWN_WORDS}",
+                                  sent=True)
+            if exc.code is not None:   # the server answered with a JSON-RPC error: it saw the request
+                return CallResult("tool_error", str(exc), sent=True)
+            return CallResult("transport_failed", str(exc))
+        text, is_error = _format_result(result)
+        content = result.get("content")
+        return CallResult("tool_error" if is_error else "ok", text, result.get("structuredContent"),
+                          list(content) if isinstance(content, list) else [], sent=True)
 
     def close(self) -> None:
         """Stop the server and every process in its group: stdin EOF, SIGTERM, SIGKILL. Idempotent."""
@@ -290,8 +353,9 @@ class McpClient:
                 raise McpError(f"tools/list repeated cursor {cursor!r}")
             seen.add(cursor)
 
-    def _request(self, method: str, params: dict, timeout: float) -> dict:
-        """Send a request and wait at most ``timeout`` for its result; raises McpError (or _Timeout)."""
+    def _request(self, method: str, params: dict, timeout: float, cancel: threading.Event | None = None) -> dict:
+        """Send a request and wait at most ``timeout`` for its result, or until ``cancel`` is set; raises McpError
+        (_Timeout, _Cancelled)."""
         pending = _Pending()
         with self._lock:
             if self._failure is not None:
@@ -301,7 +365,17 @@ class McpClient:
             request_id = next(self._ids)
             self._pending[request_id] = pending
         outgoing = self._send({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
-        if not pending.done.wait(timeout):
+        if cancel is not None and not self._wait_or_cancel(pending.done, timeout, cancel):
+            with self._lock:
+                self._pending.pop(request_id, None)
+                if outgoing.state == _QUEUED:
+                    outgoing.state = _DROPPED   # never sent: nothing to cancel on the server
+                state = outgoing.state
+            if not pending.done.is_set():
+                if state == _WRITING:
+                    outgoing.written.wait(_WRITE_GRACE)
+                raise _Cancelled(method, request_id, sent=outgoing.state in (_SENT, _WRITING))
+        if not pending.done.wait(0 if cancel is not None else timeout):
             if outgoing.state == _WRITING:
                 outgoing.written.wait(_WRITE_GRACE)
             with self._lock:
@@ -331,6 +405,20 @@ class McpClient:
         if not isinstance(result, dict):   # an answer, but not one that says what was done
             raise McpError(f"MCP server {self.name} sent an invalid result for {method}", sent=True)
         return result
+
+    @staticmethod
+    def _wait_or_cancel(done: threading.Event, timeout: float, cancel: threading.Event) -> bool:
+        """Wait for done up to timeout; False as soon as cancel is set first. A timeout returns True, so the
+        ordinary timeout path below decides what it was."""
+        deadline = time.monotonic() + max(0.0, timeout)
+        while not done.is_set():
+            if cancel.is_set():
+                return False
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return True
+            done.wait(min(_CANCEL_POLL, left))
+        return True
 
     def _send(self, message: dict) -> _Outgoing:
         """Queue a message for the writer thread; never blocks. Dropped once the session failed."""

@@ -1,0 +1,46 @@
+{
+ "Binds": [
+  "/srv/data1/photos/originals:/photoprism/originals:rw"
+ ],
+ "ContainerIDFile": "",
+ "LogConfig": {
+  "Type": "json-file",
+  "Config": {}
+ },
+ "NetworkMode": "photos_default",
+ "PortBindings": {},
+ "RestartPolicy": {
+  "Name": "unless-stopped",
+  "MaximumRetryCount": 0
+ },
+ "AutoRemove": false,
+ "VolumeDriver": "",
+ "VolumesFrom": null,
+ "CapAdd": null,
+ "CapDrop": null,
+ "CgroupnsMode": "private",
+ "Dns": [],
+ "DnsOptions": [],
+ "DnsSearch": [],
+ "ExtraHosts": [],
+ "GroupAdd": null,
+ "IpcMode": "private",
+ "Cgroup": "",
+ "Links": null,
+ "OomScoreAdj": 0,
+ "PidMode": "",
+ "Privileged": false,
+ "PublishAllPorts": false,
+ "ReadonlyRootfs": false,
+ "SecurityOpt": null,
+ "UTSMode": "",
+ "UsernsMode": "",
+ "ShmSize": 67108864,
+ "Runtime": "runc",
+ "Isolation": "",
+ "CpuShares": 0,
+ "Memory": 0,
+ "CgroupParent": "",
+ "Devices": null,
+ "DeviceRequests": null
+}

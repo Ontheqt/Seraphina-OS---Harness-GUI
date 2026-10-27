@@ -1,0 +1,1 @@
+restrict,command="/usr/local/bin/backup-receive" ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBGQjg2pUOpLvizYTYQfnoLgMWMIJLv4kawwzq5tghcicIh/uP1nTXu5IklhyWe5w5Xvog96WXz9lzaP+K7kb9So= backup-box

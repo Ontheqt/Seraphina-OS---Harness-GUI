@@ -1,0 +1,14 @@
+{
+  "description": "Add-on, not a routing preset: adds the browser adapter's MCP server (DESIGN §43; docs/seraphina/BROWSER_AND_CODEX.md §2): the installed bin/sf-browser, which builds its own namespace (sandbox self), required (a browsing turn whose browser cannot start fails with the reason), with the shim's nine tools only and a 60-second MCP timeout above the shim's own 20. Changes no routing and leaves browsing off: set browser.runtime.dir to the harness's own runtime (Node, Playwright MCP 0.0.83 and the Chrome build) and turn browser.enabled on, then give a browsing persona (tools: none, mcp: browser, browser: fixture) a dedicated Open WebUI preset that carries no writer and no transmitter.",
+  "mcp_servers": {
+    "browser": {
+      "command": "sf-browser",
+      "args": ["mcp"],
+      "sandbox": "self",
+      "required": true,
+      "timeout": 60,
+      "startup_timeout": 30,
+      "tools": ["observe", "read", "navigate", "click", "fill", "press", "wait_for", "screenshot", "close"]
+    }
+  }
+}

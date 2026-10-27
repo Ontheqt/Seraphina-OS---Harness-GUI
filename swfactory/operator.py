@@ -16,6 +16,7 @@ doctor says why.
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -148,3 +149,67 @@ def doctor_problems(config: Config, personas: dict[str, Persona]) -> list[tuple[
             problems.append(("warn", f"persona {name}: a role: line in its file means nothing (only the owner's "
                                      f"config marks the operator: agents.{name}.role)"))
     return problems
+
+
+def profile_of(persona: Persona | None) -> str | None:
+    """The Open WebUI profile (workspace model id) a persona stands for: an Open WebUI-bound persona's model, or
+    the one a wake persona was imported from (source_model); None otherwise."""
+    if persona is None:
+        return None
+    if persona.kind == "openwebui":
+        return str((persona.binding or {}).get("model") or "") or None
+    if persona.kind == "wake" and (persona.source or {}).get("type") == "openwebui":
+        return str((persona.source or {}).get("model") or "") or None
+    return None
+
+
+def wake_pairs(raw: dict, personas: dict[str, Persona]) -> list[tuple[str, str, str]]:
+    """[(her live profile's persona, the wake persona, the profile id)] for each marked operator: a live
+    (Open WebUI-bound) persona and a wake persona imported from the same Open WebUI profile, either one marked."""
+    names = set(marked(raw))
+    pairs = set()
+    for live, persona in personas.items():
+        model = profile_of(persona) if persona.kind == "openwebui" else None
+        if not model:
+            continue
+        for wake, other in personas.items():
+            if other.kind == "wake" and profile_of(other) == model and names & {live, wake}:
+                pairs.add((live, wake, model))
+    return sorted(pairs)
+
+
+def wake_mark_problems(config: Config, personas: dict[str, Persona]) -> list[tuple[bool, str]]:
+    """[(ok, words)] for the doctor, one per wake_pairs pair: the wake persona carries the mark itself
+    (agents.<wake>.role), so do her live profile's, operator.several lists both names exactly, and the acting
+    layer agrees (is_operator for both, as a wake turn asks it). Without that her wakes read no receipts. The words
+    say exactly what to set."""
+    raw = config.raw
+    names = set(marked(raw))
+    several = section(raw).get("several")
+    listed = [str(name) for name in several] if isinstance(several, list) else []
+    out: list[tuple[bool, str]] = []
+    for live, wake, model in wake_pairs(raw, personas):
+        where = f"{wake} is the wake persona of {live} (both from Open WebUI profile {model})"
+        unmarked = [name for name in (wake, live) if name not in names]
+        unlisted = [name for name in (live, wake) if name not in listed]
+        if unmarked or unlisted:
+            missing = [f"agents.{name}.role is not operator" for name in unmarked]
+            if unlisted:
+                missing.append(f"operator.several does not list {' or '.join(unlisted)}")
+            sets = [f'agents.{name}.role to "operator"' for name in unmarked]
+            if unlisted:
+                sets.append(f"operator.several to {json.dumps(sorted({*listed, live, wake}))}")
+            out.append((False, f"{where}, but {'; '.join(missing)}: without that her wakes read no receipts. "
+                               f"Set {' and '.join(sets)}"))
+            continue
+        acting = operators(config)
+        refused = [name for name in (live, wake) if name not in acting]
+        if refused:
+            why = rule_problem(raw) or "; ".join(filter(None, (mark_problem(name, personas.get(name), set())
+                                                               for name in refused))) or "it cannot be the operator"
+            out.append((False, f"{where}: both are marked and listed in operator.several, but the harness does not "
+                               f"treat {' and '.join(refused)} as the operator ({why}), so her wakes read no receipts"))
+            continue
+        out.append((True, f"{where}: the wake persona carries role: operator itself and operator.several lists "
+                          f"both {live} and {wake}, so her wakes read her receipts"))
+    return out

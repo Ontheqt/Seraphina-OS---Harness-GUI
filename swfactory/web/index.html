@@ -17,6 +17,9 @@
 <script src="/views/messages.js" defer></script>
 <script src="/views/operator.js" defer></script>
 <script src="/views/backups.js" defer></script>
+<script src="/views/yourserver.js" defer></script>
+<script src="/views/browser.js" defer></script>
+<script src="/views/codex.js" defer></script>
 </head>
 <body>
 <svg id="sprite" aria-hidden="true" focusable="false" style="position:absolute;width:0;height:0;overflow:hidden">
@@ -125,11 +128,12 @@
   </header>
 
   <!-- data-order places the view modules' entries (SF.registerView nav.order) among these. On a phone the bar holds
-       the entries without rail-extra (six); Home reaches every section from there. -->
+       the entries without rail-extra (six); Home reaches every section from there. Your server takes Plans' place
+       on the phone's bar (YOUR_SERVER.md D21); Plans stays one tap away on Home. -->
   <nav class="rail" aria-label="Main">
     <a class="rail-item" href="#/home" data-view="home" data-order="0"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-home"/></svg><span>Home</span></a>
     <a class="rail-item" href="#/factory" data-view="factory" data-order="10"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-factory"/></svg><span>Factory</span><span class="rail-badge" id="rail-human" hidden></span></a>
-    <a class="rail-item" href="#/plans" data-view="plans" data-order="20"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-plan"/></svg><span>Plans</span><span class="rail-badge" id="rail-plans" hidden></span></a>
+    <a class="rail-item rail-extra" href="#/plans" data-view="plans" data-order="20"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-plan"/></svg><span>Plans</span><span class="rail-badge" id="rail-plans" hidden></span></a>
     <a class="rail-item" href="#/chat" data-view="chat" data-order="30"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-chat"/></svg><span>Chat</span></a>
     <a class="rail-item rail-extra" href="#/agents" data-view="agents" data-order="80"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-agents"/></svg><span>Agents</span></a>
     <a class="rail-item" href="#/settings" data-view="settings" data-order="90"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#i-settings"/></svg><span>Settings</span></a>

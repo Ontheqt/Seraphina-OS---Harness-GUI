@@ -1,4 +1,4 @@
-# Tools: REA, agent-browser and billion-context
+# Tools: REA, agent-browser, the browser adapter and billion-context
 
 What each outside tool does for the factory, how to connect it, and what was
 actually checked. Everything marked **verified** was run on 2026-10-21 in the
@@ -285,6 +285,69 @@ body's `system-ui 16px`.
   tested).
 - Chromium tries to reach Google services in the background; where the network
   blocks them nothing breaks.
+
+## The browser adapter: `sf-browser` (DESIGN §43)
+
+agent-browser stays the coding agents' Bash tool. The **browser adapter** is a
+different thing for a different caller: a browsing persona (Kate's
+`kate-browser`) gets it as MCP tools, `mcp__browser__observe`, `read`,
+`navigate`, `click`, `fill`, `press`, `wait_for`, `screenshot` and `close`
+(3,170 characters of schemas), never Playwright's own 25 tools. Design:
+[docs/seraphina/BROWSER_AND_CODEX.md](seraphina/BROWSER_AND_CODEX.md) §2.
+
+| | agent-browser | the browser adapter |
+| --- | --- | --- |
+| who | the builder, the UX and UI reviewers, the Chat coder, through Bash | a browsing persona only (`tools: none`, `mcp: browser`) |
+| pages | the job's dev server, any URL its Bash can reach | the fixture site and a job's preview, in a namespace with no network |
+| records | the run's transcript | an action log (intent before, outcome after), a receipt per run, screenshots as artifacts |
+| a timeout | an error string | `outcome_unknown`, a fresh observation, the origin on hold; never repeated |
+
+### The runtime (K1)
+
+The harness's own runtime lives in one directory, `browser.runtime.dir`, laid
+out as `node/bin/node`, `playwright-mcp/node_modules/@playwright/mcp` (from
+`npm install @playwright/mcp@0.0.83` in `playwright-mcp/`) and
+`chrome/chrome-headless-shell-linux64/chrome-headless-shell`; each can be given
+explicitly (`browser.runtime.node`, `.playwright_mcp`, `.chrome`, relative to
+the directory). The grant names only these paths, and the namespace binds only
+them: a Node or Chrome on `PATH` is never used. `factory doctor` compares each
+with `browser.pins` (version, sha256, and Playwright MCP's npm integrity from
+the install's lock file). The pins: Playwright MCP 0.0.83
+(`sha512-oNcl+Ae2…azUKOg==`) and chrome-headless-shell 155.0.8059.12; set the
+sha256 values once you have checked the builds.
+
+### `examples/browser.json`
+
+```json
+"mcp_servers": {
+  "browser": {
+    "command": "sf-browser", "args": ["mcp"], "sandbox": "self", "required": true,
+    "timeout": 60, "startup_timeout": 30,
+    "tools": ["observe", "read", "navigate", "click", "fill", "press", "wait_for", "screenshot", "close"]
+  }
+}
+```
+
+`sandbox: "self"` is accepted only for the installed `bin/sf-browser` (a bare
+`sf-browser` names it): it builds its own, tighter namespace, so the run's
+sandbox does not wrap it. `required` fails a turn whose browser does not start.
+The harness appends the turn's grant path to the args; nothing else is
+configured per run.
+
+### What was checked (on this repository's machine, 26 Oct 2026)
+
+Through the shim, the real Playwright MCP 0.0.83 with chromium-headless-shell
+141.0.7390.37 (not the pinned 155: see
+`tests/fixtures/browser/README.md`), in the namespace, as root with
+`--no-sandbox` (O11): the fixture loads; the host's loopback, a tailnet address
+and a public host do not; a page's `javascript:` navigation would run in
+Playwright (the shim refuses it first); a redirect off `--allowed-origins` is
+followed (the shim answers `origin_not_allowed`); two clicks on Submit are two
+submissions in the browser (the shim refuses the second); a 2-second commit
+limit on the slow shop gives `outcome_unknown` with a fresh observation showing
+"Accepted order #1" and exactly one order in the fixture's log; `--caps
+testing` is accepted and offers `browser_verify_text_visible`. Not checked: a
+non-root user with Chromium's own sandbox, the owner's server, and Chrome 155.
 
 ## billion-context: a context proxy in front of Strata
 

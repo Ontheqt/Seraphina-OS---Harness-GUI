@@ -353,7 +353,7 @@ class Toolset:
         def handler(arguments: dict) -> str:
             if write_args:
                 arguments = self._checked_write_args(tool, arguments, write_args)
-            text, is_error = client.call(tool, arguments)
+            text, is_error = client.call(tool, arguments, cancel=self.policy.cancel)   # Stop reaches the call
             if is_error:
                 raise ToolError(text or f"MCP tool {tool} failed")
             return text or "(no output)"

@@ -1,0 +1,5 @@
+# the owner's keys (placeholders made for these tests)
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB61ZVk/U1FoCXc0ZoFd3bWXvvErNbE04NKtwLe7SOOw owner@laptop
+from="192.0.2.0/24",no-port-forwarding ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCsnwY1U64UUiHH7fGnMWHu1Zsf+nA7lfogNmzjxjkAWfOUWhLArYR20qdoEPXiNG/lyZ13ozgaoo5z3ROlFNYatRs/AMdqnbHSVvphacLOiKoUbzMDjkDc5BGdhEc/Irg4N2M2FndNn30LMWSOQMXI56ArhzLQT7WrF/qUcA6Wd5DxV3xo5JrlI9FdE7ZRxH7uYG09LkStJqPW0GSHi2DLz+4pCjY4JjR3ArwnaGEnBbOne17idiuILlQCh9gFFM0kJzkbXnkn71ZEkdqTpQrkdTMGocqvyDe7it8oRGOMr4/FXh81iki3JDdUTusXfRCekOXku3AaJMxLOpKEpHwx phone-key
+
+this line is not a key

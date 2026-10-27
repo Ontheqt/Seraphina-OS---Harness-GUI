@@ -13,10 +13,12 @@ custody_on_server): another provider entry on the same server, or an older job's
 carries the same register. The placement takes the lease before the run (routing.choose_build with a
 Claims): a denial, an error, a timeout or an unreachable register makes that build unavailable, so the run
 follows the configured overflow path. Two refusals differ (the operator's decision): HELD (someone else holds the
-card) waits, for at most the provider's overflow_after_seconds, asking again every HELD_RETRY_SECONDS, when the
-placement can wait (Claims with a cancel event); one placement waits that long once in all, however many of its
-builds answer HELD. FULL (the card cannot fit the request, whoever holds it) never waits: the placement goes on at
-once to the model's next build (another card, or a smaller build), then the overflow. Nothing bypasses custody:
+card) sends the placement at once to the model's other builds (another card that is free takes the run); only when
+none of them can take it does the run wait out the HELD answer, for at most the provider's overflow_after_seconds,
+asking again every HELD_RETRY_SECONDS, when the placement can wait (Claims with a cancel event); one placement
+waits that long once in all, however many of its builds answer HELD. FULL (the card cannot fit the request,
+whoever holds it) never waits: the placement goes on at once to the model's next build (another card, or a smaller
+build), then the overflow. Nothing bypasses custody:
 Provider.complete refuses a call to such a provider unless the call's provider config carries a valid lease for
 that model (lease_problem), so a path that is not placed (a Test probe, a swap-back, a wake turn) takes its own
 lease (leased) or does not call.
@@ -27,16 +29,22 @@ and JSON shapes is in RegisterAdapter:
 - residency: ``GET <url>/residency`` → ``{resident: [{provider, model, vram_mib, since}], generation,
   observed_at, epoch?}``;
 - a request lease: ``POST <url>/leases {provider, model, purpose, holder}`` → ``{granted, lease_id, holder,
-  until, generation, reason_code, epoch?}``; ``POST <url>/leases/<lease_id>/renew`` and ``.../release`` answer
-  in the same shape. reason_code is OK, HELD, FULL, NOT_RESIDENT, LEASED, MAINTENANCE or UNKNOWN (anything else
-  reads as UNKNOWN; REFUSAL_WORDS says each in plain words). HELD: the card is held outside the register's leases
-  (by the operator's own use of it, say); LEASED: a lease the register granted to another request covers it. A
-  refusal may come with an error status (409, 423, 503) when its body is that shape; any other answer of 500 or
-  more to a POST is OUTCOME_UNKNOWN (the register failed while handling it, so a grant or a release may hide in
-  it: DESIGN §40), and another status is ERROR. The generation only grows within one epoch. The epoch names the
-  register's instance: the register should derive it from the host's boot id (/proc/sys/kernel/random/boot_id)
-  plus a counter it persists and moves on at every start, so a reboot or a restart of the register gives a new
-  one. The client treats it as an opaque name.
+  until, generation, reason_code, epoch?}``; ``POST <url>/leases/<lease_id>/renew {epoch?}`` and ``.../release
+  {epoch?}`` answer in the same shape. reason_code is OK, HELD, FULL, NOT_RESIDENT, LEASED, MAINTENANCE,
+  EPOCH_MISMATCH or UNKNOWN (read in any case; anything else reads as UNKNOWN; REFUSAL_WORDS says each in plain
+  words). HELD: the card is held outside the register's leases (by the operator's own use of it, say); LEASED: a
+  lease the register granted to another request covers it. A refusal may come with an error status (409, 423,
+  503) when its body is that shape; any other answer of 500 or more to a POST is OUTCOME_UNKNOWN (the register
+  failed while handling it, so a grant or a release may hide in it: DESIGN §40), and another status is ERROR. The
+  generation only grows within one epoch. The epoch names the register's instance: the register should derive it
+  from the host's boot id (/proc/sys/kernel/random/boot_id) plus a counter it persists and moves on at every start,
+  so a reboot or a restart of the register gives a new one. The client treats it as an opaque name.
+- epochs on renew and release (the operator's answer, 26 Oct): lease ids are unique across epochs (an instance
+  never hands out an id an earlier one gave), and a renew or a release carries, in its JSON body, the epoch the
+  lease was granted in (``{"epoch": ...}``; ``{}`` for a lease granted without one, by a register that sends
+  none). The register refuses a renew or a release whose epoch is not its own (a missing one too, when it sends
+  epochs): HTTP 409 ``{granted: false, lease_id, generation, reason_code: "EPOCH_MISMATCH", epoch}``, with its own
+  epoch. Reading residency first is the client's courtesy; the refusal is the enforcement.
 
 The client's rules (CustodyClient):
 
@@ -45,9 +53,11 @@ The client's rules (CustodyClient):
 - generation fencing: an answer whose generation is older than the last one seen in its epoch, or whose until
   has passed, is stale and refused (a stale grant is released, once); calls to one register go one at a time,
   so answers arrive in order. A new epoch restarts the fence (its generation may start again from 0) and loses
-  every lease of the earlier epoch: no renew or release is sent for it again (a new instance may hand out the same
-  lease id to someone else), and before a renew or a release of a lease granted under an epoch the client reads
-  residency, so a restart it has not seen yet is seen first;
+  every lease of the earlier epoch: no renew or release is sent for it again, and before a renew or a release of
+  a lease granted under an epoch the client reads residency, so a restart it has not seen yet is seen first. A
+  renew or a release refused with EPOCH_MISMATCH loses the lease (never outcome unknown, never sent again), and a
+  grant of a lease id this client already saw under another epoch breaks the contract: it is not used (CONTRACT,
+  noted with why), and nothing more is sent for it;
 - releasing a request lease is never evidence that VRAM is free: residency is read again, separately, after
   every release, and kept with the lease;
 - a lost connection while holding a lease (to the register, or to the model server during a leased call: no
@@ -84,9 +94,9 @@ from typing import Any, Callable, Iterator
 from . import outcomes as rule
 from . import plainhttp
 
-REASON_CODES = ("OK", "HELD", "FULL", "NOT_RESIDENT", "LEASED", "MAINTENANCE", "UNKNOWN")
+REASON_CODES = ("OK", "HELD", "FULL", "NOT_RESIDENT", "LEASED", "MAINTENANCE", "EPOCH_MISMATCH", "UNKNOWN")
 # The harness's own words for an answer it did not get or cannot use (never sent to the register).
-NO_ANSWER_CODES = ("UNREACHABLE", "TIMEOUT", "ERROR", "STALE", "OUTCOME_UNKNOWN")
+NO_ANSWER_CODES = ("UNREACHABLE", "TIMEOUT", "ERROR", "STALE", "OUTCOME_UNKNOWN", "CONTRACT")
 # Every code in plain words, as a placement, a log line, a journal line and the GUI say it (refusal_words).
 REFUSAL_WORDS = {
     "OK": "refused",
@@ -95,12 +105,14 @@ REFUSAL_WORDS = {
     "NOT_RESIDENT": "the model is not resident and may not be loaded now",
     "LEASED": "another lease covers it",
     "MAINTENANCE": "the server is in maintenance",
+    "EPOCH_MISMATCH": "the lease is of an earlier instance of the register",
     "UNKNOWN": "the register gave no reason",
     "UNREACHABLE": "the custody register could not be reached",
     "TIMEOUT": "the custody register did not answer in time",
     "ERROR": "the custody register's answer could not be used",
     "STALE": "the custody register's answer was stale",
     "OUTCOME_UNKNOWN": "the outcome is unknown and the request was not replayed",
+    "CONTRACT": "the custody register broke its contract",
 }
 SETTINGS_KEYS = ("url", "token_file", "token_env", "token_credential", "host_header", "ca_file", "provider", "models",
                  "timeout")
@@ -114,6 +126,7 @@ MAX_RENEW_WAIT = 3600.0          # the keeper looks at a lease at least hourly, 
 HELD_RETRY_SECONDS = 5.0         # a placement waiting out a HELD answer asks the register again this often
 MAX_UNTIL = 253402300799.0       # 9999-12-31T23:59:59Z: an until past it cannot be read
 HISTORY_KEPT = 50
+IDS_KEPT = 10000                 # lease ids a client remembers with their epoch (a reused id breaks the contract)
 JOURNAL_DIR = "custody"          # <data_dir>/custody/journal-YYYY-MM.jsonl: what the clients note, as a record
 JOURNAL_REASON_CHARS = 300
 # This process as the register sees it: a restarted harness is another holder, so it never takes an earlier
@@ -468,6 +481,12 @@ def _until(value: Any) -> tuple[str | None, float | None]:
     raise ValueError("its until is not a time")
 
 
+def _mismatch_words(lease: "Lease", answer: Answer) -> str:
+    """An EPOCH_MISMATCH refusal in words: the lease's epoch and the register's."""
+    now = f"; the register is at epoch {answer.epoch}" if answer.epoch is not None else ""
+    return f"EPOCH_MISMATCH: {refusal_words('EPOCH_MISMATCH')} (granted under epoch {lease.epoch}{now})"
+
+
 def _epoch_change(old: str | None, new: str | None) -> str:
     """A register restart in words: "epoch A became B", or "it now sends epoch B" after answers without one."""
     return f"epoch {old} became {new}" if old is not None else f"it now sends epoch {new}"
@@ -477,6 +496,11 @@ def _iso(epoch: float | None) -> str | None:
     if epoch is None:
         return None
     return datetime.fromtimestamp(epoch, timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _epoch_body(epoch: str | None) -> dict:
+    """A renew's or a release's body: the epoch the lease was granted in, none for a lease granted without one."""
+    return {"epoch": epoch} if epoch is not None else {}
 
 
 class RegisterAdapter:
@@ -495,13 +519,15 @@ class RegisterAdapter:
         return parse_answer(self._call("POST", "leases", {"provider": provider, "model": model, "purpose": purpose,
                                                           "holder": holder}, answer=True))
 
-    def renew(self, lease_id: str) -> Answer:
-        return parse_answer(self._call("POST", f"leases/{urllib.parse.quote(lease_id, safe='')}/renew", {},
-                                       answer=True))
+    def renew(self, lease_id: str, epoch: str | None = None) -> Answer:
+        """Renew lease_id; epoch: the one it was granted in (sent so the register refuses a mismatch)."""
+        return parse_answer(self._call("POST", f"leases/{urllib.parse.quote(lease_id, safe='')}/renew",
+                                       _epoch_body(epoch), answer=True))
 
-    def release(self, lease_id: str) -> Answer:
-        return parse_answer(self._call("POST", f"leases/{urllib.parse.quote(lease_id, safe='')}/release", {},
-                                       answer=True))
+    def release(self, lease_id: str, epoch: str | None = None) -> Answer:
+        """Release lease_id; epoch as for renew."""
+        return parse_answer(self._call("POST", f"leases/{urllib.parse.quote(lease_id, safe='')}/release",
+                                       _epoch_body(epoch), answer=True))
 
     def _call(self, method: str, path: str, body: Any = None, answer: bool = False) -> dict:
         settings = self.settings
@@ -642,11 +668,13 @@ class CustodyClient:
     restart of the register gives a new epoch; the client never parses it. The first epoch seen is taken as it
     is. A changed epoch (or the first one from a register whose earlier answers had none) restarts the fence: the
     generation may start again from 0, and every lease of the earlier epoch is lost (the register no longer
-    knows it: its calls are refused, and no renew or release is sent for it, since the new instance may have
-    given its id to another holder). A renew or a release of a lease granted under an epoch reads residency
-    first, so a restart not seen yet is seen before the request would go out. Within one epoch, or without an
-    epoch, a generation that went back is refused as stale until it passes the highest one seen, and the client
-    says so (fenced, in view() and the doctor)."""
+    knows it: its calls are refused, and no renew or release is sent for it). A renew or a release carries the
+    epoch its lease was granted in, and the register refuses one of another epoch (EPOCH_MISMATCH: the lease is
+    lost); reading residency first, before a renew or a release of a lease granted under an epoch, is a courtesy,
+    so a restart not seen yet is seen before the request would go out. Lease ids are unique across epochs: a
+    grant of an id this client already saw under another epoch is not used (ids, CONTRACT). Within one epoch, or
+    without an epoch, a generation that went back is refused as stale until it passes the highest one seen, and
+    the client says so (fenced, in view() and the doctor)."""
 
     def __init__(self, settings: CustodySettings, adapter: RegisterAdapter | None = None,
                  now: Callable[[], float] = time.time) -> None:
@@ -659,6 +687,7 @@ class CustodyClient:
         self.residency: Residency | None = None
         self.leases: dict[tuple[str, str], Lease] = {}   # (register provider, register model) -> the shared lease
         self.history: deque[dict] = deque(maxlen=HISTORY_KEPT)
+        self.ids: dict[str, str | None] = {}   # every lease id granted to this client -> the epoch it came under
         self._lock = threading.RLock()
 
     # -- reading -----------------------------------------------------------------------
@@ -731,10 +760,15 @@ class CustodyClient:
             stale = self._stale(answer.generation, answer.until if answer.granted else None, answer.epoch)
             if stale:
                 if answer.granted and answer.lease_id:
-                    self._release_once(answer.lease_id)
+                    self._release_once(answer.lease_id, answer.epoch)
                 self._note("claim", provider=provider, model=model, purpose=purpose, outcome="stale", reason=stale)
                 raise CustodyDenied("STALE", f"the register's answer is stale ({stale})")
             self._seen(answer.generation)
+            reused = self._reused(answer) if answer.granted else None
+            if reused:   # never used, and nothing more is sent for it: it expires at the register
+                self._note("claim", provider=provider, model=model, purpose=purpose, outcome="denied",
+                           reason="CONTRACT", words=reused, lease_id=answer.lease_id, generation=answer.generation)
+                raise CustodyDenied("CONTRACT", f"no lease for {model} on {provider}: {reused}")
             if not answer.granted:
                 if quiet and answer.reason_code == "HELD":   # its request line still gets its answer (§40)
                     self._answer_quietly("claim", provider=provider, model=model, purpose=purpose,
@@ -752,9 +786,10 @@ class CustodyClient:
             return lease
 
     def renew(self, lease: Lease) -> bool:
-        """Renew lease once (the keeper calls it). False when it was not renewed: refused or stale (the lease is
-        lost), granted under an earlier epoch of the register (lost; nothing sent, _granted_earlier), outcome
-        unknown (unknown; residency read again, the request never replayed), or the register could not be
+        """Renew lease once (the keeper calls it), carrying the epoch it was granted in. False when it was not
+        renewed: refused or stale (the lease is lost; EPOCH_MISMATCH too: the register says the lease is of an
+        earlier instance), granted under an earlier epoch of the register (lost; nothing sent, _granted_earlier),
+        outcome unknown (unknown; residency read again, the request never replayed), or the register could not be
         reached (the lease stays held until its until; the next renewal is a new request)."""
         with self._lock:
             if lease.state != "held":
@@ -764,7 +799,7 @@ class CustodyClient:
                            reason=f"not sent: {lease.error}")
                 return False
             try:
-                answer = self.adapter.renew(lease.lease_id)
+                answer = self.adapter.renew(lease.lease_id, lease.epoch)
             except RegisterError as exc:
                 if exc.sent:
                     lease.state, lease.error = "unknown", f"renew: {exc.detail}"
@@ -775,6 +810,12 @@ class CustodyClient:
                            reason=exc.code)
                 return False
             stale = self._stale(answer.generation, answer.until if answer.granted else None, answer.epoch)
+            if answer.reason_code == "EPOCH_MISMATCH":   # the register's own refusal: lost, never sent again
+                lease.state, lease.error = "lost", f"renew refused: {_mismatch_words(lease, answer)}"
+                lease._stop.set()
+                self._note("renew", lease_id=lease.lease_id, purpose=lease.purpose, outcome="lost",
+                           reason=lease.error)
+                return False
             if lease.state != "held":   # the answer came from a new epoch of the register: the lease is gone
                 return False
             if stale or not answer.granted:
@@ -790,8 +831,10 @@ class CustodyClient:
     def release(self, lease: Lease, why: str = "") -> dict:
         """One user of lease is done; the last one releases it at the register (once, never replayed). A
         release is never evidence that VRAM is free: residency is read again afterwards and kept in
-        lease.after. A lease granted under an earlier epoch of the register is not released at all: it stays
-        lost, with its error, and only residency is read (_granted_earlier). Returns lease.view()."""
+        lease.after. The release carries the epoch the lease was granted in; refused with EPOCH_MISMATCH, the
+        lease is lost (not unknown: the register answered, and nothing is sent again). A lease granted under an
+        earlier epoch of the register is not released at all: it stays lost, with its error, and only residency is
+        read (_granted_earlier). Returns lease.view()."""
         with self._lock:
             if lease.users > 1:
                 lease.users -= 1
@@ -814,13 +857,15 @@ class CustodyClient:
             self._intend("release", lease_id=lease.lease_id, provider=lease.provider, model=lease.model,
                          purpose=lease.purpose)
             try:
-                answer = self.adapter.release(lease.lease_id)
+                answer = self.adapter.release(lease.lease_id, lease.epoch)
             except RegisterError as exc:
                 lease.state = "unknown" if exc.sent else "unreleased"
                 lease.error = f"release: {exc.detail}" + ("" if exc.sent else "; the register keeps it until it expires")
             else:
                 stale = self._stale(answer.generation, epoch=answer.epoch)
-                if stale:   # an answer that cannot be believed: not taken as a release, and not replayed
+                if answer.reason_code == "EPOCH_MISMATCH":   # the register's own refusal: lost, never sent again
+                    lease.state, lease.error = "lost", f"release refused: {_mismatch_words(lease, answer)}"
+                elif stale:   # an answer that cannot be believed: not taken as a release, and not replayed
                     lease.state, lease.error = "unknown", f"release: the answer is stale ({stale})"
                 else:
                     self._seen(answer.generation)
@@ -828,8 +873,9 @@ class CustodyClient:
                     if answer.reason_code == "UNKNOWN":
                         lease.error = "the register no longer knew this lease (it may have expired)"
             lease.after = self.reread()
+            reason = (f"{lease.error}" + (f" ({why})" if why else "")) if lease.state == "lost" else why or None
             self._note("release", lease_id=lease.lease_id, provider=lease.provider, model=lease.model,
-                       purpose=lease.purpose, outcome=lease.state, reason=why or None,
+                       purpose=lease.purpose, outcome=lease.state, reason=reason,
                        resident_after=[list(pair) for pair in lease.after.on(lease.provider)] if lease.after else None)
             return lease.view()
 
@@ -887,9 +933,10 @@ class CustodyClient:
     def _granted_earlier(self, lease: Lease) -> tuple[bool, Residency | None]:
         """(whether lease was granted under an earlier epoch of the register, the residency read to tell, or
         None). Before a renew or a release of a lease granted under an epoch, residency is read, so a restart
-        this client has not seen yet is seen first: the register's new instance no longer knows the lease, and
-        the contract does not keep lease ids apart across epochs, so the call could reach another holder's lease.
-        Such a lease is lost (its error says the register restarted), and nothing is sent for it."""
+        this client has not seen yet is seen first: the register's new instance no longer knows the lease. The
+        read is a courtesy (the register refuses a call of another epoch, EPOCH_MISMATCH); it saves a request the
+        register would refuse. Such a lease is lost (its error says the register restarted), and nothing is sent
+        for it."""
         seen = self.reread() if lease.epoch is not None and lease.epoch == self.epoch else None
         if lease.epoch == self.epoch:
             return False, seen
@@ -898,9 +945,25 @@ class CustodyClient:
         lease._stop.set()
         return True, seen
 
-    def _release_once(self, lease_id: str) -> None:
+    def _reused(self, answer: Answer) -> str | None:
+        """Why a grant cannot be used (its lease id was granted to this client under another epoch before: lease
+        ids are unique across epochs, the contract), or None; the id is remembered with its epoch either way."""
+        lease_id = str(answer.lease_id)
+        if lease_id in self.ids and self.ids[lease_id] != answer.epoch:
+            before = self.ids[lease_id]
+            return (f"the register granted lease id {lease_id[:60]} again under "
+                    f"{f'epoch {answer.epoch}' if answer.epoch is not None else 'no epoch'}, after "
+                    f"{f'epoch {before}' if before is not None else 'answers without one'} granted it: lease ids "
+                    f"must be unique across epochs, so it is not used and nothing more is sent for it (it expires "
+                    f"at the register)")
+        self.ids[lease_id] = answer.epoch
+        while len(self.ids) > IDS_KEPT:
+            del self.ids[next(iter(self.ids))]
+        return None
+
+    def _release_once(self, lease_id: str, epoch: str | None) -> None:
         with contextlib.suppress(RegisterError):
-            self.adapter.release(lease_id)
+            self.adapter.release(lease_id, epoch)
 
     def _note(self, op: str, **fields: Any) -> None:
         entry = {"at": _iso(self.now()), "op": op, **{k: v for k, v in fields.items() if v is not None}}
@@ -1023,15 +1086,17 @@ class Claims:
     (or the register's refusal) on the placed model's provider and gives back any other one it took (a run
     that waited for its slot and then overflowed); release() gives everything back when the run ends.
 
-    The two refusals the operator told apart (her decision): HELD (someone else holds the card) waits, FULL (the
-    card cannot fit the request, whoever holds it) does not. A placement that can wait passes its cancel event
-    (a job's run, repo-scout, a chat turn, the lead): a HELD answer then waits for at most the provider's
+    The two refusals the operator told apart (her decision): HELD (someone else holds the card) may wait, FULL
+    (the card cannot fit the request, whoever holds it) does not. A placement that can wait passes its cancel
+    event (a job's run, repo-scout, a chat turn, the lead): a HELD answer then waits for at most the provider's
     overflow_after_seconds, asking again every HELD_RETRY_SECONDS (on_wait(provider name, seconds, the refusal)
-    is called once when the wait starts), and the build counts as unavailable only after that. The builds are
-    asked in order, so a HELD first build is waited for before a later build is asked, even one that is free.
-    One placement has one wait (wait_until): the first HELD answer starts it, a later HELD answer (another build,
-    the overflow) waits only for what is left of it, and none waits after stop_waiting (a slot wait that ran
-    out). Without a cancel event (a wake turn, a Test probe, a swap-back), or a provider without
+    is called once when the wait starts), and the build counts as unavailable only after that. HELD while another
+    card is free goes to the free card at once (the operator, 26 Oct): routing.choose_build asks each build with
+    wait=False, which puts a HELD answer off (put_off_held) instead of waiting, and only when none of the other
+    builds can take the run now does it wait the HELD answers out, in the builds' order (wait_for). One placement
+    has one wait (wait_until): the first HELD answer waited out starts it, a later HELD answer (another build, the
+    overflow) waits only for what is left of it, and none waits after stop_waiting (a slot wait that ran out).
+    Without a cancel event (a wake turn, a Test probe, a swap-back), or a provider without
     overflow_after_seconds, nothing waits. FULL, and every other refusal (LEASED too), passes the build over at
     once: the next build (another card, or a smaller build), then the overflow."""
 
@@ -1050,6 +1115,7 @@ class Claims:
         self.waited = False   # a HELD answer was waited out (a caller checks its cancel event afterwards)
         self.wait_until: float | None = None   # time.monotonic() when this placement's one wait ends
         self.waited_for = ""                   # what used the wait, for a later HELD answer's refusal
+        self.put_off: dict[tuple[str, str], CustodyDenied] = {}   # HELD answers asked with wait=False, not waited yet
 
     def stop_waiting(self, why: str) -> None:
         """No HELD answer of this placement waits from now on (why: what the run already waited for, said in
@@ -1057,8 +1123,13 @@ class Claims:
         self.wait_until = time.monotonic()
         self.waited_for = why
 
-    def __call__(self, provider: Any, model_id: str) -> tuple[bool, str]:
+    def __call__(self, provider: Any, model_id: str, wait: bool = True) -> tuple[bool, str]:
+        """(whether the build is usable, why not). wait=False (routing.choose_build): a HELD answer this placement
+        could wait out is put off (put_off_held, then wait_for) instead of waited for now, so the other builds are
+        asked first; a HELD answer it could not wait out (no cancel event, no overflow_after_seconds, no wait left)
+        is refused at once, as with wait=True."""
         settings = settings_of(provider)
+        self.put_off.pop((str(provider.name), model_id), None)
         if settings is None or not needs_lease(provider):
             return True, ""
         if self._held(provider, model_id) is not None:   # this placement holds it already (another build there)
@@ -1071,11 +1142,45 @@ class Claims:
             lease = client.claim(name, model, self.purpose, self.holder, harness_provider=str(provider.name),
                                  model_id=model_id)
         except CustodyDenied as exc:
+            if exc.code == "HELD" and not wait and self._can_wait(provider):
+                self.put_off[(str(provider.name), model_id)] = exc
+                self.denied[(str(provider.name), model_id)] = exc
+                return False, str(exc)
             found, denied = self._wait_out(client, provider, model_id, exc) if exc.code == "HELD" else (None, exc)
-            if found is None:
-                self.denied[(str(provider.name), model_id)] = denied
-                return False, str(denied)
-            lease = found
+            return self._took(provider, model_id, found, denied)
+        return self._took(provider, model_id, lease, None)
+
+    def put_off_held(self, provider: Any, model_id: str) -> bool:
+        """Whether the build's last answer was a HELD answer put off for a wait to come (asked with wait=False)."""
+        return (str(provider.name), model_id) in self.put_off
+
+    def wait_for(self, provider: Any, model_id: str) -> tuple[bool, str]:
+        """Wait out the HELD answer put off for a build, now that no other build can take the run
+        (routing.choose_build): the placement's first wait starts from that answer, as if it had been waited for at
+        once;
+        once the placement's wait has started (for an earlier build), the build is asked again, so a card freed
+        meanwhile is taken, and another HELD answer waits only for what is left of the one wait."""
+        denied = self.put_off.pop((str(provider.name), model_id), None)
+        if denied is None or self.wait_until is not None:
+            return self(provider, model_id)
+        if self.cancel is not None and self.cancel.is_set():
+            return False, "the run was cancelled"
+        found, denied = self._wait_out(client_for(settings_of(provider)), provider, model_id, denied)
+        return self._took(provider, model_id, found, denied)
+
+    def _can_wait(self, provider: Any) -> bool:
+        """Whether a HELD answer for provider would wait in this placement (a cancel event, its
+        overflow_after_seconds, and some of the placement's one wait left)."""
+        seconds = float(getattr(provider, "overflow_after_seconds", None) or 0.0)
+        return self.cancel is not None and seconds > 0 and (self.wait_until is None
+                                                            or self.wait_until > time.monotonic())
+
+    def _took(self, provider: Any, model_id: str, lease: Lease | None, denied: CustodyDenied | None
+              ) -> tuple[bool, str]:
+        """The build's outcome: lease kept (and renewed) when one was granted, else the refusal kept for info()."""
+        if lease is None:
+            self.denied[(str(provider.name), model_id)] = denied   # type: ignore[assignment]
+            return False, str(denied)
         self.denied.pop((str(provider.name), model_id), None)   # refused earlier in this placement, granted now
         self.leases.append(lease)
         if self.keep:

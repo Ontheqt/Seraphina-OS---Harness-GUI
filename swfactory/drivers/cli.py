@@ -80,6 +80,7 @@ of each model API:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -113,7 +114,8 @@ UNREACHABLE_SECONDS = 60.0    # else in between, spanning at least this long (th
 MAX_ARG_BYTES = 128 * 1024 - 1      # Linux MAX_ARG_STRLEN (32 pages) less the terminating NUL
 CLAUDE_TIERS = ("opus", "sonnet", "haiku")
 SYSTEM_SEPARATOR = "\n\n---\n\n"
-PLACEHOLDER = re.compile(r"\{(prompt|system|model|session_id|cwd|job_dir)\}")
+PLACEHOLDER = re.compile(r"\{(prompt|system|model|session_id|cwd|job_dir|out_dir)\}")
+INTERRUPT_SECONDS = 5.0       # after SIGINT (the presets with interrupt "SIGINT"), how long before SIGTERM
 ENV_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 HARNESS_NOTE = (
@@ -135,6 +137,17 @@ HARNESS_ITEMS_NOTE = (
 )
 HOOK_BOOT = ("import sys; root = sys.argv.pop(1); sys.path.insert(0, root); "
              "from swfactory.items_hook import main; sys.exit(main())")
+# codex-worker: verify runs on the harness's commit, which holds nothing git ignores (§44); only what the job's Codex
+# runs made or changed counts, so what the repository's setup installed stays (no network to put it back)
+IGNORED_NOTE = ("Leave no file that git ignores that you created or changed in the worktree (the harness removes what "
+                "you leave in __pycache__ and .pytest_cache): the harness commits what git tracks and runs the verify "
+                "command on that commit alone, so it fails while such a file is there. Ignored files that were there "
+                "before your run, such as installed dependencies, stay: do not remove them (no `git clean -X`), "
+                "since without network they cannot be put back.")
+# codex-worker: a resume gets no system text, and each run has an out folder of its own (its --add-dir)
+RESUME_OUT_NOTE = ("This run's out folder is {out_dir}: it starts empty, and an earlier run's out folder is not "
+                   "writable in this run. Write the whole build.md there again, even when only a line changes (the "
+                   "current one is {job_dir}/build.md); the harness copies it into the job folder.")
 
 PRESETS: dict[str, dict] = {
     "claude": {
@@ -191,14 +204,16 @@ PRESETS: dict[str, dict] = {
     },
     "codex": {
         "run_args": ["exec", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check",
-                     "--json", "-m", "{model}", "-C", "{cwd}", "--add-dir", "{job_dir}", "{prompt}"],
+                     "--json", "-m", "{model}", "-C", "{cwd}", "--add-dir", "{job_dir}", "-"],
         "resume_args": ["exec", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check",
                         "--json", "-m", "{model}", "-C", "{cwd}", "--add-dir", "{job_dir}",
-                        "resume", "{session_id}", "{prompt}"],
+                        "resume", "{session_id}", "-"],
         "system_mode": "prepend",
         "output": "jsonl",
         "usage_scope": "session",
         "usage_style": "openai",
+        "prompt_stdin": True,
+        "interrupt": "SIGINT",
         "env_keep": ["OPENAI_", "CODEX_"],
         "env_hint": "Configure the provider in $CODEX_HOME/config.toml or a profile "
                     "($CODEX_HOME/<name>.config.toml, driver 'profile'), or use a wrapper such as "
@@ -206,7 +221,30 @@ PRESETS: dict[str, dict] = {
                     "removed, so a provider env_key such as STRATA_API_KEY needs driver env "
                     "{\"STRATA_API_KEY\": \"${STRATA_API_KEY}\"} or a wrapper that loads it. Runs "
                     "without Codex's sandbox; for it, set run_args with '-s workspace-write' "
-                    "(git commits then fail).",
+                    "(git commits then fail). For a factory builder under Codex's own sandbox, as its own Unix "
+                    "user, use the codex-worker preset instead (DESIGN §44).",
+    },
+    # BROWSER_AND_CODEX.md §3.3, DESIGN §44: the hardened Codex builder. The arguments are exactly what
+    # bin/sf-codex-launch accepts; the launcher adds nothing but the job's CODEX_HOME and Codex's environment.
+    "codex-worker": {
+        "run_args": ["exec", "--json", "--strict-config", "--ignore-rules", "--skip-git-repo-check",
+                     "-m", "{model}", "-C", "{cwd}", "--add-dir", "{out_dir}", "-"],
+        "resume_args": ["exec", "--json", "--strict-config", "--ignore-rules", "--skip-git-repo-check",
+                        "-m", "{model}", "-C", "{cwd}", "--add-dir", "{out_dir}", "resume", "{session_id}", "-"],
+        "system_mode": "prepend",
+        "output": "jsonl",
+        "usage_scope": "session",
+        "usage_style": "openai",
+        "prompt_stdin": True,
+        "interrupt": "SIGINT",
+        "launcher": True,
+        "commits": "harness",
+        "env_keep": [],
+        "env_hint": "Runs the pinned Codex (codex.binary) through bin/sf-codex-launch, as the Codex user when "
+                    "codex.user is set, under Codex's own sandbox with the factory_worker permissions profile, on "
+                    "the route's local provider (a loopback Responses endpoint under a custody request lease). "
+                    "The harness commits and runs the repository's verify command; the doctor's codex lines say "
+                    "what is missing.",
     },
 }
 
@@ -244,8 +282,15 @@ class CliRunner(Runner):
         self.env_keep: tuple[str, ...] = tuple(preset.get("env_keep", ()))
         self.system_settings: dict | None = preset.get("system_settings")
         self.hooks: str | None = preset.get("hooks")
+        self.prompt_stdin: bool = bool(preset.get("prompt_stdin"))
+        self.interrupt: str | None = preset.get("interrupt")
+        self.launcher: bool = bool(preset.get("launcher"))
+        self.commits: str | None = preset.get("commits")
         self.supports_resume = self.resume_args is not None
         config_path = getattr(config, "path", None)
+        if self.launcher:   # the launcher, worked out per run (codex.user, codex.via), execs the pinned binary
+            self.command = []
+            return
         self.command = _command_argv(str(driver_cfg.command or self.preset_name or ""),
                                      Path(config_path).parent if config_path else None)
         if not self.command:
@@ -255,8 +300,11 @@ class CliRunner(Runner):
         """Start a new CLI session with prompt; session_ref is the id usable for resume()."""
         session_id = str(uuid.uuid4())
         chosen_here = any("{session_id}" in item for item in self.run_args)
+        if self.launcher:
+            return self._launched(ctx, prompt, session_id, resume=False)
         argv = self.command_line(ctx, prompt, session_id)
-        return self._execute(ctx, argv, session_id if chosen_here else None)
+        return self._execute(ctx, argv, session_id if chosen_here else None,
+                             stdin_text=self._stdin_text(ctx, prompt, resume=False))
 
     def resume(self, ctx: RunContext, session_ref: str, message: str) -> AgentRun:
         """Continue the CLI session session_ref with message."""
@@ -264,8 +312,68 @@ class CliRunner(Runner):
             return AgentRun(ok=False, error=f"driver {self.driver.name!r} cannot resume sessions")
         if not session_ref:
             return AgentRun(ok=False, error="no session to resume")
+        if self.launcher:
+            return self._launched(ctx, message, session_ref, resume=True)
         argv = self.command_line(ctx, message, session_ref, resume=True)
-        return self._execute(ctx, argv, session_ref)
+        return self._execute(ctx, argv, session_ref, stdin_text=self._stdin_text(ctx, message, resume=True))
+
+    def _stdin_text(self, ctx: RunContext, prompt: str, resume: bool) -> str | None:
+        """The prompt as stdin carries it (the system text first on a fresh run, as prepend mode does), or None."""
+        if not self.prompt_stdin:
+            return None
+        if self.system_mode == "prepend" and not resume:
+            prompt = self.system_text(ctx) + SYSTEM_SEPARATOR + prompt
+        return prompt.replace("\0", "")
+
+    def _launched(self, ctx: RunContext, prompt: str, session_ref: str, resume: bool) -> AgentRun:
+        """A codex-worker run: the run's folders, the launcher's argv (its checks, the job's CODEX_HOME, Codex's
+        environment, then the pinned binary), the run, and afterwards build.md copied in and the home's report.
+
+        Only a factory job's builder run the orchestrator cleared (ctx.codex_job: the routing check, the codex model
+        blocker and the run's custody request lease passed, K20) gets this far; a chat, a plan's lead or any other
+        caller is refused before anything is made. A resume gets RESUME_OUT_NOTE: its out folder is new."""
+        from ..codex import work
+
+        job = getattr(ctx, "job", None) or {}
+        run = Path(ctx.log_path).stem
+        if not getattr(ctx, "codex_job", False) or not job.get("repo") or not job.get("id"):
+            return AgentRun(ok=False, error="codex-worker runs a factory job's builder only", outcome="failed")
+        if not work.settings(self.config)["enabled"]:
+            return AgentRun(ok=False, error="the Codex worker is off (codex.enabled is false)", outcome="failed")
+        problem = _lease_problem(ctx)
+        if problem:
+            return AgentRun(ok=False, error=f"the Codex run cannot start: GPU custody: {problem}", outcome="failed")
+        try:
+            folders = work.run_folders(self.config, job, run)
+            ctx.codex_out = folders["out"]
+            prefix = work.launcher_prefix(self.config)
+            deny = work.deny_paths(self.config, job)
+            work.share_job(self.config, job)   # last: the finally below takes it back
+        except (work.WorkError, OSError, ValueError) as exc:
+            return AgentRun(ok=False, error=f"the Codex run cannot start: {exc}", outcome="failed")
+        if resume:   # the resumed session still has round 1's out folder, which this run cannot write
+            prompt += "\n\n" + RESUME_OUT_NOTE.format(out_dir=folders["out"], job_dir=ctx.job_dir)
+        provider = getattr(ctx.model, "provider", None)
+        base_url = str(getattr(provider, "base_url", "") or "").rstrip("/")
+        codex_args = self.command_line(ctx, prompt, session_ref, resume=resume)
+        argv = [*prefix, "run", "--job", f"{job['repo']}/{job['id']}", "--run", run, "--worktree", str(ctx.cwd),
+                "--provider", base_url, "--model", self.model_for(ctx),
+                *sum((["--deny", path] for path in deny), []), "--", *codex_args]
+        env = work.launcher_env(self.config, base_url)
+        collected = False
+        try:
+            result = self._execute(ctx, argv, session_ref if resume else None,
+                                   stdin_text=self._stdin_text(ctx, prompt, resume), env=env,
+                                   nnp=not work.uses_sudo(self.config))
+            result.details["folders"] = {name: str(path) for name, path in folders.items()}
+            result.details.update(work.collect(self.config, job, folders, Path(ctx.job_dir)))
+            collected = True
+        finally:
+            if not collected:   # collect() shares what Codex wrote; a run that raised still leaves it the group's
+                work.share_worktree(self.config, job)
+            work.remove_run_folders(folders)
+            work.unshare_job(self.config, job)
+        return result
 
     def command_line(self, ctx: RunContext, prompt: str, session_id: str,
                      resume: bool = False) -> list[str]:
@@ -283,11 +391,12 @@ class CliRunner(Runner):
             "session_id": session_id,
             "cwd": str(ctx.cwd),
             "job_dir": str(ctx.job_dir),
+            "out_dir": str(getattr(ctx, "codex_out", None) or ctx.job_dir),
         }
         # argv items are C strings: a NUL (e.g. pasted binary in a feature) cannot be passed.
         values = {key: value.replace("\0", "") for key, value in values.items()}
-        return [*self.command,
-                *(PLACEHOLDER.sub(lambda m: values[m.group(1)], item) for item in template)]
+        args = [PLACEHOLDER.sub(lambda m: values[m.group(1)], item) for item in template]
+        return args if self.launcher else [*self.command, *args]
 
     def model_for(self, ctx: RunContext) -> str:
         """Driver models[key], else the tier name for Claude, else the resolved model id."""
@@ -303,6 +412,11 @@ class CliRunner(Runner):
         harness note."""
         body = (getattr(ctx.agent, "body", "") or "").strip()
         note = HARNESS_NOTE.format(cwd=ctx.cwd, job_dir=ctx.job_dir)
+        if self.launcher:   # codex-worker: no network, the harness commits, build.md goes to the out folder
+            from ..codex import NO_NETWORK_NOTE
+
+            note += "\n\n" + NO_NETWORK_NOTE.format(out_dir=getattr(ctx, "codex_out", None) or ctx.job_dir)
+            note += " " + IGNORED_NOTE
         if getattr(ctx, "items", None) is not None:
             note += "\n\n" + HARNESS_ITEMS_NOTE
         return "\n\n".join(part for part in (body, getattr(ctx, "grid", "") or "", note) if part)
@@ -397,18 +511,19 @@ class CliRunner(Runner):
         driver_timeout = getattr(self.driver, "timeout", None)
         return float(driver_timeout if driver_timeout is not None else ctx.limits.max_wall_seconds)
 
-    def _execute(self, ctx: RunContext, argv: list[str], session_ref: str | None) -> AgentRun:
+    def _execute(self, ctx: RunContext, argv: list[str], session_ref: str | None, stdin_text: str | None = None,
+                 env: dict[str, str] | None = None, nnp: bool = True) -> AgentRun:
         if ctx.cancel.is_set():
-            return AgentRun(ok=False, error="cancelled", session_ref=session_ref)
+            return AgentRun(ok=False, error="cancelled", session_ref=session_ref, outcome="cancelled")
         if not Path(ctx.cwd).is_dir():
             return AgentRun(ok=False, error=f"working directory missing: {ctx.cwd}",
-                            session_ref=session_ref)
+                            session_ref=session_ref, outcome="failed")
         longest = max(len(os.fsencode(item)) for item in argv)
         if longest > MAX_ARG_BYTES:
-            return AgentRun(ok=False, session_ref=session_ref,
+            return AgentRun(ok=False, session_ref=session_ref, outcome="failed",
                             error=f"prompt too large for the command line: one argument is "
                                   f"{longest} bytes (limit {MAX_ARG_BYTES})")
-        env = self._env(ctx)
+        env = self._env(ctx) if env is None else env
         secrets = [*env_secret_values(os.environ), *env_secret_values(env),
                    *(getattr(ctx, "secrets", None) or [])]
         parser = _OutputParser(ctx.emit, self.output, self.usage_style, secrets)
@@ -420,27 +535,42 @@ class CliRunner(Runner):
                 argv = [*argv, *self._hook_settings(ctx)]
             except (OSError, ValueError) as exc:   # the run goes on without its hooks
                 ctx.emit("agent.output", {"line": f"[factory] item hooks not set: {type(exc).__name__}: {exc}"})
-        started = without_new_privileges(argv, env.get("PATH"), ctx.cwd)   # outside bwrap: no setuid rights (§17)
+        # outside bwrap: no setuid rights (§17); a codex-worker going through sudo sets the flag in the launcher
+        started = without_new_privileges(argv, env.get("PATH"), ctx.cwd) if nnp else list(argv)
         try:
-            proc = subprocess.Popen(started, cwd=str(ctx.cwd), env=env, stdin=subprocess.DEVNULL,
+            proc = subprocess.Popen(started, cwd=str(ctx.cwd), env=env,
+                                    stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     start_new_session=True)
         except FileNotFoundError:
-            return AgentRun(ok=False, error=f"command not found: {argv[0]}", session_ref=session_ref)
+            return AgentRun(ok=False, error=f"command not found: {argv[0]}", session_ref=session_ref,
+                            outcome="failed")
         except (OSError, ValueError) as exc:  # ValueError: a NUL in an env value or template
-            return AgentRun(ok=False, error=f"cannot start {argv[0]}: {exc}", session_ref=session_ref)
+            return AgentRun(ok=False, error=f"cannot start {argv[0]}: {exc}", session_ref=session_ref,
+                            outcome="failed")
         readers = [_start_reader(proc.stdout, parser.stdout_line),
                    _start_reader(proc.stderr, parser.stderr_line)]
-        stopped = _wait(proc, ctx.cancel, self._timeout(ctx), parser.unreachable)
-        _stop_group(proc, readers)
+        if stdin_text is not None:
+            _start_writer(proc.stdin, stdin_text)
+        give_up = _lease_watch(ctx, parser.unreachable) if self.launcher else parser.unreachable
+        stopped = _wait(proc, ctx.cancel, self._timeout(ctx), give_up)
+        interrupt = getattr(signal, self.interrupt, None) if stopped and self.interrupt else None
+        _stop_group(proc, readers, interrupt)
 
         session_ref = session_ref or parser.session_id
         hint = (parser.error_hint or parser.last_stderr)[:300]
+        program = "codex" if self.launcher else Path(argv[0]).name
         if stopped:
             error: str | None = f"{stopped} (last error: {hint})" if parser.error_hint else stopped
         elif proc.returncode != 0:
-            error = f"{Path(argv[0]).name} exited with code {proc.returncode}"
-            error += f": {hint}" if hint else ""
+            error = (f"{program} was killed by signal {-proc.returncode}" if proc.returncode < 0
+                     else f"{program} exited with code {proc.returncode}")
+            if parser.refused:
+                error = parser.refused
+            elif self.output == "jsonl" and parser.error_hint:   # exec's error text is canned (§3.3)
+                error += ": model error, no reason code"
+            else:
+                error += f": {hint}" if hint else ""
         else:
             error = None
         usage = {"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0}
@@ -448,8 +578,13 @@ class CliRunner(Runner):
             usage = self._run_usage(ctx, session_ref, parser.usage)
             ctx.emit("agent.usage", dict(usage))
         turns = parser.turn_count()
+        outcome = run_outcome(stopped, proc.returncode, parser, self.output)
+        if error is None and outcome != "completed":   # exit 0 with no turn.completed: never a success (§40)
+            error = f"{program} exited 0 without a turn.completed event, so how far it got is unknown"
         return AgentRun(ok=error is None, error=error, final_text=parser.final_text(),
-                        usage={**usage, "calls": turns}, session_ref=session_ref, turns=turns)
+                        usage={**usage, "calls": turns}, session_ref=session_ref, turns=turns, outcome=outcome,
+                        details={"exit": proc.returncode, "thread_id": parser.session_id,
+                                 "terminal": parser.terminal, "warnings": parser.warnings[:20]})
 
     def _run_usage(self, ctx: RunContext, session_ref: str | None, reported: dict) -> dict:
         """This launch's usage. CLIs that report session totals are diffed against the last
@@ -494,6 +629,9 @@ class _OutputParser:
         self._text_tail: deque[str] = deque(maxlen=1000)
         self._message_ids: set[str] = set()
         self._tool_names: dict[str, str] = {}
+        self.terminal: str | None = None   # turn.completed or turn.failed (exec); result for the stream-json CLIs
+        self.warnings: list[str] = []      # exec's warnings (item.completed of type error)
+        self.refused: str | None = None    # the launcher refused to start Codex (its stderr line)
 
     def stdout_line(self, line: str) -> None:
         line = redact(line, self.secrets)
@@ -510,6 +648,8 @@ class _OutputParser:
         self.emit("agent.output", {"line": line[:OUTPUT_LINE_CHARS]})
         if line.strip():
             self.last_stderr = line.strip()
+        if line.startswith("sf-codex-launch: "):
+            self.refused = line.strip()[:500]
 
     def final_text(self) -> str:
         if self.output == "text":
@@ -563,15 +703,18 @@ class _OutputParser:
                     self._tool_result(tool_id, self._tool_names.get(tool_id, ""),
                                       not block.get("is_error"), _content_text(block.get("content")))
         elif kind == "result":
+            self.terminal = "result"
             self._result(event)
         elif kind in ("item.started", "item.updated", "item.completed"):
             if isinstance(event.get("item"), dict):
                 self._codex_item(event["item"], done=kind == "item.completed")
         elif kind == "turn.completed":
+            self.terminal = "turn.completed"
             self.turns += 1
             if isinstance(event.get("usage"), dict):
                 self.usage = _normalize_usage(event["usage"], self.usage_style)
         elif kind == "turn.failed":
+            self.terminal = "turn.failed"
             error = event.get("error")
             self.error_hint = _str(error.get("message") if isinstance(error, dict) else error)
 
@@ -602,6 +745,12 @@ class _OutputParser:
 
     def _codex_item(self, item: dict, done: bool) -> None:
         kind = item.get("type")
+        if kind == "error":   # an exec warning (a model-metadata notice, say): a note, never the run's cause
+            if done and isinstance(item.get("message"), str):
+                note = _clip(item["message"], 300)
+                self.warnings.append(note)
+                self.emit("agent.output", {"line": f"[codex warning] {note}"})
+            return
         if kind == "agent_message":
             if done:
                 self._text(item.get("text"))
@@ -688,8 +837,80 @@ def _wait(proc: subprocess.Popen, cancel: threading.Event, timeout: float,
             return f"timed out after {timeout:g}s"
 
 
-def _stop_group(proc: subprocess.Popen, readers: list[threading.Thread]) -> None:
-    """SIGTERM the CLI's process group (the CLI and leftovers), SIGKILL after the grace period."""
+def _lease_problem(ctx: RunContext) -> str | None:
+    """Why the run's model may get no request now (custody.lease_problem: its provider needs a custody request lease
+    and the run's is missing, refused, lost or expired), else None."""
+    from ..custody import lease_problem
+
+    model = getattr(ctx, "model", None)
+    provider = getattr(model, "provider", None)
+    if provider is None:
+        return None
+    return lease_problem(provider, str(getattr(model, "model", "") or ""))
+
+
+def _lease_watch(ctx: RunContext, first: Callable[[], str | None]) -> Callable[[], str | None]:
+    """_wait's give_up for a codex-worker run (K20 (d)): first(), then the run's custody request lease, looked at on
+    every poll, so a lease that is lost or runs out (a renew refused, a register restarted) stops the run (SIGINT
+    first, then the reconcile; never replayed) before Codex sends another request outside it."""
+    def give_up() -> str | None:
+        reason = first()
+        if reason:
+            return reason
+        problem = _lease_problem(ctx)
+        return f"stopped: GPU custody: {problem}" if problem else None
+
+    return give_up
+
+
+def run_outcome(stopped: str | None, code: int | None, parser: "_OutputParser", output: str) -> str:
+    """The run's typed outcome (BROWSER_AND_CODEX.md §3.6, DESIGN §40): the harness's own cancel or wall clock
+    first; then exit 0 (with a terminal event, for exec's JSONL) is completed; a turn.failed, a run the harness
+    stopped (an unreachable model, a codex-worker run's lost custody lease) or a launcher refusal is failed; a CLI
+    that died by a signal the harness did not send, or (exec) ended without any terminal event, is unknown: it may
+    have acted, and nothing says how far it got. Every outcome but completed makes the run not ok."""
+    if stopped == "cancelled":
+        return "cancelled"
+    if stopped and stopped.startswith("timed out"):
+        return "timed_out"
+    if stopped or parser.refused:
+        return "failed"
+    if code == 0:
+        return "completed" if output != "jsonl" or parser.terminal == "turn.completed" else "unknown"
+    if code is not None and code < 0:
+        return "unknown"
+    if output == "jsonl" and parser.terminal is None and parser.error_hint is None:
+        return "unknown"
+    return "failed"
+
+
+def _start_writer(stream: IO[bytes] | None, text: str) -> threading.Thread:
+    """Write text to the CLI's stdin from a thread of its own, then close it (exec reads stdin to EOF); a write on
+    the calling thread could block the readers. A CLI that exits first only ends the write."""
+    def pump() -> None:
+        assert stream is not None
+        try:
+            stream.write(text.encode("utf-8", "replace"))
+            stream.flush()
+        except (BrokenPipeError, OSError, ValueError):
+            pass
+        finally:
+            with contextlib.suppress(OSError, ValueError):
+                stream.close()
+
+    thread = threading.Thread(target=pump, name="cli-driver-writer", daemon=True)
+    thread.start()
+    return thread
+
+
+def _stop_group(proc: subprocess.Popen, readers: list[threading.Thread], interrupt: int | None = None) -> None:
+    """SIGTERM the CLI's process group (the CLI and leftovers), SIGKILL after the grace period. interrupt (a preset's
+    "SIGINT", only when the harness stops the run): that signal first, and up to INTERRUPT_SECONDS for the CLI to
+    end its turn itself, before SIGTERM."""
+    if interrupt is not None and proc.poll() is None:
+        _signal_group(proc.pid, interrupt)
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            proc.wait(timeout=INTERRUPT_SECONDS)
     _signal_group(proc.pid, signal.SIGTERM)
     deadline = time.monotonic() + KILL_GRACE_SECONDS
     try:

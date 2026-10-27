@@ -1,0 +1,10 @@
+#!/bin/sh
+# sf-codex-launch: the one way the harness starts Codex (DESIGN.md §44; docs/seraphina/BROWSER_AND_CODEX.md §3.3).
+# This checkout's copy, for a harness without a Codex user (the test suite). On the server the owner installs
+# swfactory/codex/launch.py itself as root at /usr/local/libexec/seraphina/sf-codex-launch (`factory codex setup`
+# prints the block), and one sudoers rule lets the harness's user run that file, and nothing else, as the Codex user.
+# FACTORY_PYTHON picks the interpreter (python3, >= 3.10); -I keeps the environment and the cwd off sys.path.
+set -eu
+self=$(readlink -f "$0")
+root=$(dirname "$(dirname "$self")")
+exec "${FACTORY_PYTHON:-python3}" -I "$root/swfactory/codex/launch.py" "$@"

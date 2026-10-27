@@ -5,8 +5,10 @@ Each safety rule of the slice has at least one test here or in the module named 
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import stat
 import threading
 import time
@@ -860,7 +862,9 @@ class TurnTest(WakeTestCase):
             m.run_now("seraphina")
             self.run_tick()
             user = user_message(llm.requests[0])
-            self.assertIn('<factory-data source="memory-notes.md" taint="private untrusted">', user)
+            version = hashlib.sha256(b"The owner's dog is called Pip.\n").hexdigest()[:12]
+            self.assertIn(f'<factory-data source="memory-{version}-notes.md" taint="private untrusted">', user,
+                          "the block names the version it holds (P.memory_source)")
             self.assertIn("Pip", user)
             proposals = [json.loads(line) for line in outbox.read_text().splitlines()]
             self.assertEqual((proposals[0]["text"], proposals[0]["by"]), ("Pip likes walks.", "persona"))
@@ -932,6 +936,243 @@ class TurnTest(WakeTestCase):
                 self.assertNotIn("notes.md", json.dumps(erased), "the sha256 only")
                 self.assertEqual(note.read_text(), "Pip is 3.\n")
                 m.stop(time.monotonic() + 5)
+
+    def test_an_erase_deletes_every_copy_of_the_version_from_her_store_on_disk(self) -> None:
+        """The operator's condition (26 Oct): the erase really deletes the copy, verified where it acts. A wake reads
+        a note holding a unique marker (the ledger on, its caps set), the owner erases that version through the
+        WakeManager, and then no file anywhere under the persona's data directory holds the marker's bytes: not the
+        copy (gone from disk), not the manifests, not a temporary file, not the turn's run log (whose prompt held
+        the note), not a copy a cap trimmed or evicted. Her own note is untouched."""
+        folder = self.tmp / "persona-memory"
+        folder.mkdir()
+        marker = "ERASE-MARKER-7f3c9a1e-only-here"
+        note = folder / "someone.md"
+        note.write_text(f"A detail about a person: {marker}.\n")
+        os.utime(note, (2_000_000_000, 2_000_000_000))
+        (folder / "pets.md").write_text("Pip is 3.\n")
+        os.utime(folder / "pets.md", (1_999_999_000, 1_999_999_000))
+        external = {"folder": str(folder), "ledger": True, "ledger_copies": 10, "ledger_mib": 1, "max_files": 50}
+        with MockLLM([NONE, NONE]) as llm:
+            m = self.make(llm.base_url, persona={"memory": {"external": external}},
+                          wakes={"external_memory_roots": [str(folder)]})
+            m.run_now("seraphina")
+            self.run_tick()
+            self.assertIn(marker, user_message(llm.requests[0]), "the wake read it")
+            directory = m.store.dir("seraphina")
+            listing = m.external_ledger("seraphina")
+            self.assertEqual((listing["cap_copies"], listing["cap_bytes"], listing["max_files"]), (10, 1 << 20, 50),
+                             "the caps as set, not the constants")
+            digest = next(f["sha256"] for f in listing["recent"][0]["files"] if f["name"] == "someone.md")
+            copy = directory / P.LEDGER_VERSIONS / f"{digest}.txt"
+            self.assertTrue(copy.is_file())
+            held = [path for path in directory.rglob("*") if path.is_file() and marker.encode() in path.read_bytes()]
+            self.assertGreater(len(held), 1, "the copy, and the run log's prompt, before the erase")
+            erased = m.external_erase("seraphina", digest)["erased"]
+            self.assertEqual(erased["copies"], 1)
+            self.assertFalse(copy.exists(), "the copy file is gone from disk, not marked")
+            self.assertFalse(any(path.name.startswith(digest) for path in directory.rglob("*")))
+            for path in directory.rglob("*"):
+                if path.is_file():
+                    data = path.read_bytes()
+                    self.assertNotIn(marker.encode(), data, path)
+                    self.assertNotIn(b"someone.md", data, path)
+            self.assertEqual([p.name for p in directory.rglob("*") if p.name.endswith(".tmp")], [], "no temp file")
+            self.assertEqual(erased["run_logs"], 1)
+            (request,) = [line for log in (directory / "logs").glob("*.jsonl")
+                          for line in map(json.loads, log.read_text().splitlines()) if line.get("type") == "request"]
+            self.assertEqual(request["erased"], [digest])
+            self.assertIn(P.ERASED_BLOCK, request["user"])
+            self.assertIn("Pip is 3.", request["user"], "only that version's block goes from the prompt")
+            pets = next(f["sha256"] for f in listing["recent"][0]["files"] if f["name"] == "pets.md")
+            self.assertEqual(m.external_version("seraphina", pets)["text"], "Pip is 3.\n",
+                             "nothing else in the ledger changes")
+            self.assertIn(marker, note.read_text(), "her own note is not touched")
+            m.stop(time.monotonic() + 5)
+        # the owner erases it while a wake that read it still runs: the run log written after holds none of it
+        self.time.advance(60)   # a minute after the first erase: not at the wake's own start
+        store_commit = P.PersonaStore._ledger_commit
+
+        def commit_then_erase(store: P.PersonaStore, read: P.ExternalRead) -> dict:
+            record = store_commit(store, read)
+            store.external_erase(read.name, digest)
+            return record
+        with MockLLM([NONE]) as llm, mock.patch.object(P.PersonaStore, "_ledger_commit", commit_then_erase):
+            m = self.make(llm.base_url, persona={"memory": {"external": external}},
+                          wakes={"external_memory_roots": [str(folder)]})
+            m.run_now("seraphina")
+            self.run_tick()
+            self.assertIn(marker, user_message(llm.requests[0]), "her store still holds it: the wake read it")
+            for path in m.store.dir("seraphina").rglob("*"):
+                if path.is_file():
+                    self.assertNotIn(marker.encode(), path.read_bytes(), path)
+            m.stop(time.monotonic() + 5)
+
+    def her_marked_note(self, name: str = "someone.md", other: str = "pets.md") -> tuple[Path, str, str, dict]:
+        """(her memory folder, a unique marker, the sha256 of the note holding it, memory.external with the ledger
+        on) beside a second note about pets."""
+        folder = self.tmp / "persona-memory"
+        folder.mkdir()
+        marker = "ERASE-MARKER-read-again-3d8b"
+        text = f"A detail about a person: {marker}.\n"
+        note = folder / name
+        note.write_text(text)
+        os.utime(note, (2_000_000_000, 2_000_000_000))
+        (folder / other).write_text("Pip is 3.\n")
+        os.utime(folder / other, (1_999_999_000, 1_999_999_000))
+        return folder, marker, hashlib.sha256(text.encode()).hexdigest(), {"folder": str(folder), "ledger": True}
+
+    def test_a_wake_that_reads_an_erased_version_again_keeps_none_of_it_in_its_log(self) -> None:
+        """The operator's condition: the erase deletes everywhere the harness wrote it. Her store still holds the
+        note, so the next wake, an hour later, reads it again: its run log takes that version's block out
+        (whenever it was erased) and keeps the rest. A run log that still holds it (one written whole, as a wake
+        did before) is cleaned by erasing again."""
+        folder, marker, digest, external = self.her_marked_note()
+        with MockLLM([NONE, NONE, NONE]) as llm:
+            m = self.make(llm.base_url, persona={"memory": {"external": external}},
+                          wakes={"external_memory_roots": [str(folder)]})
+            m.run_now("seraphina")
+            self.run_tick()
+            directory = m.store.dir("seraphina")
+            self.assertEqual(m.external_erase("seraphina", digest)["erased"]["run_logs"], 1)
+            self.time.advance(3600)
+            m.run_now("seraphina")
+            self.run_tick()
+            self.assertIn(marker, user_message(llm.requests[1]), "her store still holds it: the wake read it again")
+            for path in directory.rglob("*"):
+                if path.is_file():
+                    self.assertNotIn(marker.encode(), path.read_bytes(), path)
+            (request,) = [line for line in m.store.run_log("seraphina", "02-wake") if line["type"] == "request"]
+            self.assertEqual(request["erased"], [digest])
+            self.assertEqual(request["user"].count(P.ERASED_BLOCK), 1)
+            self.assertIn("Pip is 3.", request["user"], "only that version's block goes")
+            self.assertEqual(request["blocks"], P.VERSIONED_BLOCKS, "the line says its blocks name their version")
+
+            def whole(store: P.PersonaStore, name: str, path: Path, lines: list, encode: Any) -> None:
+                with open(path, "a", encoding="utf-8") as handle:   # a log written whole, as before
+                    handle.writelines(encode(line) + "\n" for line in lines)
+            self.time.advance(3600)
+            with mock.patch.object(P.PersonaStore, "write_run_log", whole):
+                m.run_now("seraphina")
+                self.run_tick()
+            self.assertIn(marker, (directory / "logs" / "03-wake.jsonl").read_text())
+            self.assertEqual(m.external_erase("seraphina", digest)["erased"]["run_logs"], 1)
+            for path in directory.rglob("*"):
+                if path.is_file():
+                    self.assertNotIn(marker.encode(), path.read_bytes(), path)
+            m.stop(time.monotonic() + 5)
+
+    def test_erasing_again_cleans_a_released_log_whose_note_names_look_versioned(self) -> None:
+        """The operator's condition: an erase removes the bytes from every run log. The released code wrote a
+        wake's prompt whole, each block named memory-<name> and the request line unmarked, also for a wake that
+        read an erased version again (its manifest entry only {sha256, erased}). Her notes are named as Obsidian
+        or a Zettelkasten names them (YYYYMMDDHHmm, then a space), so their blocks look like ones that name
+        their version (memory-202610261200-...). Erasing again still takes the whole prompt out: a line is judged
+        by its mark (blocks: P.VERSIONED_BLOCKS, which every wake now writes), never by its blocks' names."""
+        folder, marker, digest, external = self.her_marked_note("202610261200 someone.md", "202610261201 pets.md")
+
+        def whole(store: P.PersonaStore, name: str, path: Path, lines: list, encode: Any) -> None:
+            with open(path, "a", encoding="utf-8") as handle:   # a log written whole, as the released code did
+                handle.writelines(encode(line) + "\n" for line in lines)
+        with MockLLM([NONE, NONE]) as llm:
+            m = self.make(llm.base_url, persona={"memory": {"external": external}},
+                          wakes={"external_memory_roots": [str(folder)]})
+            m.run_now("seraphina")
+            self.run_tick()
+            directory = m.store.dir("seraphina")
+            self.assertEqual(m.external_erase("seraphina", digest)["erased"]["run_logs"], 1)
+            self.time.advance(3600)
+            with mock.patch.object(P.PersonaStore, "write_run_log", whole):
+                m.run_now("seraphina")
+                self.run_tick()
+            self.assertIn(marker, user_message(llm.requests[1]), "her store still holds it: the wake read it again")
+            log = directory / "logs" / "02-wake.jsonl"
+            lines = [json.loads(text) for text in log.read_text().splitlines()]
+            for line in lines:   # as the released code wrote it: blocks memory-<name>, the request line unmarked
+                if line.get("type") == "request":
+                    self.assertEqual(line.pop("blocks"), P.VERSIONED_BLOCKS)
+                    line["user"] = re.sub(r'source="memory-[0-9a-f]{12}-', 'source="memory-', line["user"])
+                    self.assertIn('source="memory-202610261200-', line["user"], "it looks versioned")
+            log.write_text("".join(json.dumps(line) + "\n" for line in lines))
+            self.assertIn(marker, log.read_text())
+            erased = m.external_erase("seraphina", digest)["erased"]
+            self.assertEqual((erased["copies"], erased["entries"], erased["run_logs"]), (0, 0, 1))
+            for path in directory.rglob("*"):
+                if path.is_file():
+                    self.assertNotIn(marker.encode(), path.read_bytes(), path)
+            (request,) = [line for line in m.store.run_log("seraphina", "02-wake") if line["type"] == "request"]
+            self.assertEqual((request["erased"], request["user"]), ([digest], ""), "no name left: the whole prompt")
+            self.assertEqual(m.external_erase("seraphina", digest)["erased"]["run_logs"], 0, "nothing left")
+            m.stop(time.monotonic() + 5)
+
+    def test_erasing_a_version_that_never_reached_the_prompt_keeps_every_later_prompt_whole(self) -> None:
+        """A note that is not UTF-8 is read (and named in the wake's manifest) but never reaches the prompt. The
+        owner erases that version; her store still holds it, so every later wake reads it again: their run logs
+        keep the whole prompt, the other notes with it, and the first wake's log is left as it is."""
+        folder = self.tmp / "persona-memory"
+        folder.mkdir()
+        data = b"\xff\xfe not text \x80\n"
+        (folder / "bin.md").write_bytes(data)
+        (folder / "pets.md").write_text("Pip is 3.\n")
+        external = {"folder": str(folder), "ledger": True}
+        with MockLLM([NONE, NONE]) as llm:
+            m = self.make(llm.base_url, persona={"memory": {"external": external}},
+                          wakes={"external_memory_roots": [str(folder)]})
+            m.run_now("seraphina")
+            self.run_tick()
+            first = m.store.dir("seraphina") / "logs" / "01-wake.jsonl"
+            before = first.read_text()
+            erased = m.external_erase("seraphina", hashlib.sha256(data).hexdigest())["erased"]
+            self.assertEqual((erased["entries"], erased["run_logs"]), (1, 0))
+            self.assertEqual(first.read_text(), before)
+            self.time.advance(3600)
+            m.run_now("seraphina")
+            self.run_tick()
+            (request,) = [line for line in m.store.run_log("seraphina", "02-wake") if line["type"] == "request"]
+            self.assertEqual(request["user"], user_message(llm.requests[1]), "the prompt as it was sent")
+            self.assertIn("Pip is 3.", request["user"])
+            self.assertNotIn("erased", request)
+            m.stop(time.monotonic() + 5)
+
+    def test_an_erase_that_lands_as_the_run_log_is_written_still_reaches_it(self) -> None:
+        """The wake checks what was erased and writes its log under the store's lock, the one the erase holds: an
+        erase that comes between the check and the write waits, then finds the written log and cleans it."""
+        folder, marker, digest, external = self.her_marked_note()
+        real_meta, real_write = P.PersonaStore._ledger_meta, P.PersonaStore.write_run_log
+        writing = threading.local()
+        erasers: list[threading.Thread] = []
+
+        def write(store: P.PersonaStore, *args: Any) -> None:
+            writing.now = True
+            try:
+                real_write(store, *args)
+            finally:
+                writing.now = False
+
+        def racing(store: P.PersonaStore, name: str) -> dict:
+            meta = real_meta(store, name)
+            # the owner erases now: the wake has read what was erased, and has not written its log yet
+            if getattr(writing, "now", False) and not erasers:
+                eraser = threading.Thread(target=store.external_erase, args=(name, digest))
+                erasers.append(eraser)
+                eraser.start()
+                eraser.join(0.5)
+            return meta
+        with MockLLM([NONE]) as llm, mock.patch.object(P.PersonaStore, "write_run_log", write), \
+                mock.patch.object(P.PersonaStore, "_ledger_meta", racing):
+            m = self.make(llm.base_url, persona={"memory": {"external": external}},
+                          wakes={"external_memory_roots": [str(folder)]})
+            m.run_now("seraphina")
+            self.run_tick()
+            self.assertIn(marker, user_message(llm.requests[0]))
+            self.assertEqual(len(erasers), 1)
+            erasers[0].join(10)
+            self.assertFalse(erasers[0].is_alive())
+            for path in m.store.dir("seraphina").rglob("*"):
+                if path.is_file():
+                    self.assertNotIn(marker.encode(), path.read_bytes(), path)
+            (request,) = [line for line in m.store.run_log("seraphina", "01-wake") if line["type"] == "request"]
+            self.assertEqual(request["erased"], [digest])
+            m.stop(time.monotonic() + 5)
 
     def test_a_ledger_that_cannot_be_written_stops_the_turn(self) -> None:
         """With the ledger on, no turn reads her memory unrecorded: the turn fails before any model call, and the

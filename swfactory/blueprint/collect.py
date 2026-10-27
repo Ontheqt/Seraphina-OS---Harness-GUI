@@ -434,9 +434,10 @@ def _decode(data: bytes) -> tuple[str, bool]:
 class Collector:
     """One capture: runs the probes through check_argv and the runner, redacts, then normalises."""
 
-    def __init__(self, runner: Any, *, sudo: bool = False, known_secrets: Iterable[str] = ()) -> None:
+    def __init__(self, runner: Any, *, sudo: bool = False, known_secrets: Iterable[str] = (), helper: Any = None) -> None:
         self.runner = runner
         self.sudo = sudo
+        self.helper = helper   # helper mode (YOUR_SERVER.md §11.9): sf-system's read verbs replace the root probes
         self.sudo_missing = sudo and not runner.which("sudo")   # root-only probes then run as this user
         self.systemd_booted = systemd_booted()
         self.redactor = Redactor(known_secrets)
@@ -507,6 +508,28 @@ class Collector:
             return path
         resolved = (result.stdout or "").strip()
         return resolved if result.exit_code == 0 and _plain_path(resolved) else None
+
+    def helper_probe(self, section: str, name: str, verb: str, **fields: Any) -> dict:
+        """One read verb of Seraphina's system access (sf-system, through `sudo -n` and its one sudoers line), stored
+        like a probe: the answer as JSON, redacted by structure. A refusal is recorded with the helper's own words
+        (denied when its settings or the caller do not allow it, error otherwise), never raised."""
+        command = ["sf-system", verb, *(f"{key}={value}" for key, value in fields.items())]
+        started = time.monotonic()
+        try:
+            answer = self.helper.call(verb, **fields)
+        except Exception as exc:  # noqa: BLE001 - a helper that refuses or is not there is this probe's record
+            code = str(getattr(exc, "code", type(exc).__name__))
+            record = {"command": command, "exit_code": None, "stdout": "", "stderr": "",
+                      "seconds": round(time.monotonic() - started, 3),
+                      "status": "denied" if code in ("not_allowed", "caller_is_login_account", "caller_not_allowed",
+                                                     "caller_holds_root", "docker_api_off", "sudo_refused")
+                      else "error", "error": self.redactor.text(f"{code}: {getattr(exc, 'words', '')}".strip())}
+            self.raw.setdefault(section, {})[name] = record
+            return record
+        result = Result(0, json.dumps(answer, ensure_ascii=False), "", time.monotonic() - started)
+        record = self._record(section, name, command, result, "json")
+        self.raw.setdefault(section, {})[name] = record
+        return record
 
     def skip(self, section: str, name: str, command: list[str], reason: str) -> dict:
         record = {"command": command, "exit_code": None, "stdout": "", "stderr": "", "seconds": 0.0,
@@ -590,6 +613,8 @@ class Collector:
         self._cosmos()
         self._tailscale()
         self._backups()
+        if self.helper is not None:
+            self._users()
 
     def _host(self) -> None:
         s = "host_baseline"
@@ -628,6 +653,9 @@ class Collector:
         self.probe(s, "swap", ["swapon", "--show", "--bytes"])
         self.probe(s, "zfs_pools", ["zpool", "list", "-H", "-o", "name,size,alloc,free,health"])
         self.probe(s, "zfs_datasets", ["zfs", "list", "-H", "-o", "name,used,avail,mountpoint"])
+        if self.helper is not None:   # helper mode: SMART from sf-system's smart verb (never waking a disk)
+            self.helper_probe(s, "smart", "smart")
+            return
         scan = self.probe(s, "smart_scan", ["smartctl", "--scan", "-j"], root=True, kind="json")
         found = self.parsed.get((s, "smart_scan")) if scan["status"] == "ok" else None
         devices = found.get("devices") if isinstance(found, dict) else None
@@ -646,7 +674,10 @@ class Collector:
         self.probe(s, "addresses", ["ip", "-j", "addr", "show"], kind="json")
         self.probe(s, "routes", ["ip", "-j", "route", "show"], kind="json")
         self.probe(s, "routes6", ["ip", "-j", "-6", "route", "show"], kind="json")
-        self.probe(s, "listeners", ["ss", "-H", "-l", "-n", "-t", "-u", "-p"], root=True)
+        if self.helper is not None:   # helper mode: who listens, with process names, from sf-system's ports verb
+            self.helper_probe(s, "listeners", "ports")
+        else:
+            self.probe(s, "listeners", ["ss", "-H", "-l", "-n", "-t", "-u", "-p"], root=True)
         self.probe(s, "resolver", ["resolvectl", "status"])
         self.probe(s, "resolv_conf", ["cat", "/etc/resolv.conf"])
         self.probe(s, "hosts", ["cat", "/etc/hosts"])
@@ -746,6 +777,13 @@ class Collector:
         s = "docker"
         fmt = ["--format", "{{json .}}"]
         self.probe(s, "daemon_json", ["cat", "/etc/docker/daemon.json"], kind="json")
+        if self.helper is not None:
+            # helper mode: the container map from Docker's state files, and while Docker runs (and the helper's
+            # settings allow it) its own image list and health, through fixed read-only API calls; no socket here
+            self.helper_probe(s, "containers", "containers")
+            for call in ("info", "images", "health"):
+                self.helper_probe(s, f"api_{call}", "docker", call=call)
+            return
         # A docker command reaches the daemon through docker.socket, which would start dockerd (and with it
         # every container whose restart policy says so).
         reason = self.daemon_refusal("docker.service", "the docker CLI", "docker.socket")
@@ -791,6 +829,14 @@ class Collector:
                     found.setdefault(line, set()).add("search")
         for path in compose_paths_from_docker(self):
             found.setdefault(path, set()).add("docker")
+        if self.helper is not None:   # helper mode: what Compose makes of each folder (hashes and images, no contents)
+            folders = sorted({str((c.get("labels") or {}).get("com.docker.compose.project.working_dir") or "")
+                              for c in _helper_containers(self)} - {""})
+            for folder in folders[:MAX_COMPOSE_FILES]:
+                self.helper_probe(s, f"helper:{folder}", "compose", dir=folder)
+            for c in _helper_containers(self):
+                for path in _split_paths((c.get("labels") or {}).get("com.docker.compose.project.config_files")):
+                    found.setdefault(path, set()).add("docker")
         self.compose_found = {path: sorted(how) for path, how in sorted(found.items())}
         for path in list(self.compose_found)[:MAX_COMPOSE_FILES]:
             name = f"file:{path}"
@@ -799,6 +845,20 @@ class Collector:
                                                   "not read")
             else:
                 self.read_found(s, name, path, root=True, kind="compose")
+
+    def _users(self) -> None:
+        """Helper mode, once Seraphina's system access may read them (class private): who can act as root, from the
+        access enumeration it last kept (accounts, groups, sudo rules, keys by fingerprint; names kept, no secret)."""
+        record = self.helper_probe("users", "access", "access", read=True)
+        if record["status"] == "ok":
+            result = (self.parsed.get(("users", "access")) or {}).get("result") or {}
+            offset = len(result.get("rows") or [])
+            while offset < int(result.get("total") or 0) and offset < 5000:
+                page = self.helper_probe("users", f"access:{offset}", "access", read=True, offset=offset)
+                rows = ((self.parsed.get(("users", f"access:{offset}")) or {}).get("result") or {}).get("rows") or []
+                if page["status"] != "ok" or not rows:
+                    break
+                offset += len(rows)
 
     def _cockpit(self) -> None:
         s = "cockpit"
@@ -1060,7 +1120,45 @@ def _host_packages(c: Collector) -> dict:
     return dict(sorted(packages.items()))
 
 
+def _helper_containers(c: Collector) -> list[dict]:
+    answer = c.parsed.get(("docker", "containers"))
+    return [x for x in (answer or {}).get("containers") or [] if isinstance(x, dict) and not x.get("error")] \
+        if isinstance(answer, dict) else []
+
+
+def _containers_from_helper(c: Collector) -> dict:
+    """indexes.containers from sf-system's container map (helper mode), in the shape docker inspect gives; health
+    from its read-only Docker API calls when they answered, else unknown."""
+    health = ((c.parsed.get(("docker", "api_health")) or {}).get("health") or {})
+    out: dict[str, dict] = {}
+    for item in _helper_containers(c):
+        labels = item.get("labels") or {}
+        mounts = [{"type": m.get("type"), "name": m.get("name"), "source": m.get("source"),
+                   "destination": m.get("destination"), "mode": None, "rw": m.get("rw")} for m in item.get("mounts") or []]
+        out[str(item.get("name") or item.get("id"))] = {
+            "id": item.get("id"), "image": item.get("image"), "image_id": item.get("image_id"),
+            "state": "running" if item.get("running") else "exited",
+            "health": (health.get(item.get("id")) or {}).get("status"),
+            "restart_policy": item.get("restart_policy"), "created": item.get("created"),
+            "started_at": item.get("started_at"), "network_mode": item.get("network_mode"),
+            "privileged": bool(item.get("privileged")),
+            "gpu": any("nvidia" in d or "/dev/dri" in d for d in item.get("device_paths") or []),
+            "networks": {net: {"ip": (info or {}).get("ip"), "static_ip": None}
+                         for net, info in (item.get("networks") or {}).items()},
+            "ports": [{"container_port": str(p.get("container_port")), "protocol": p.get("proto"),
+                       "host_ip": p.get("host_ip"), "host_port": str(p.get("host_port"))} for p in item.get("ports") or []],
+            "mounts": mounts, "docker_socket": bool(item.get("docker_socket")),
+            "compose_project": labels.get("com.docker.compose.project"),
+            "compose_service": labels.get("com.docker.compose.service"),
+            "compose_config_files": _split_paths(labels.get("com.docker.compose.project.config_files")),
+            "compose_working_dir": labels.get("com.docker.compose.project.working_dir"),
+            "env_count": None, "labels_count": len(labels), "evidence": "sf-system.containers"}
+    return dict(sorted(out.items()))
+
+
 def _containers(c: Collector) -> dict:
+    if c.helper is not None:
+        return _containers_from_helper(c)
     containers: dict[str, dict] = {}
     for item in _inspect_objects(c):
         config, host, state = item.get("Config") or {}, item.get("HostConfig") or {}, item.get("State") or {}
@@ -1125,7 +1223,14 @@ def _compose_index(c: Collector, containers: dict) -> list[dict]:
 
 def _endpoints(c: Collector, containers: dict) -> list[dict]:
     listeners = c.ok("network", "listeners")
-    endpoints = parse_ss(listeners["stdout"]) if listeners else []
+    if c.helper is not None:   # helper mode: sf-system's ports answer, already parsed
+        endpoints = [{"proto": e.get("proto"), "address": e.get("address"), "port": e.get("port"),
+                      "scope": address_scope(str(e.get("address") or "")), "process": e.get("process"),
+                      "unit": e.get("unit"), "source": "sf-system.ports"}
+                     for e in (c.parsed.get(("network", "listeners")) or {}).get("listeners") or []
+                     if isinstance(e, dict)] if listeners else []
+    else:
+        endpoints = parse_ss(listeners["stdout"]) if listeners else []
     for name, entry in containers.items():
         for port in entry.get("ports") or []:
             address = port.get("host_ip") or "0.0.0.0"
@@ -1202,14 +1307,18 @@ def _snake(name: str) -> str:
 # ---------------------------------------------------------------- the snapshot
 
 
-def collect(runner: Any = None, *, sudo: bool = False, known_secrets: Iterable[str] | None = None) -> dict:
+def collect(runner: Any = None, *, sudo: bool = False, known_secrets: Iterable[str] | None = None,
+            helper: Any = None) -> dict:
     """Inventory this host read-only and return the snapshot (Capture format v0, module docstring).
 
     runner: anything with which(program) -> bool and run(argv, timeout) -> Result (SubprocessRunner by
     default). known_secrets: values to redact wherever they appear (default: the credential-named
-    environment variables of this process, such as the factory's API keys).
+    environment variables of this process, such as the factory's API keys). helper: a client of Seraphina's
+    system access (swfactory.helpers.HelperClient for sf-system): helper mode, in which its read verbs replace the
+    probes that needed root (the Docker section and indexes.containers, listeners with their processes, SMART,
+    Compose's hashes and images) and, once it may read them, a users section from its access enumeration.
     """
-    collector = Collector(runner or SubprocessRunner(), sudo=sudo,
+    collector = Collector(runner or SubprocessRunner(), sudo=sudo, helper=helper,
                           known_secrets=env_secret_values() if known_secrets is None else known_secrets)
     collected_at = utc_now()
     collector.run()
@@ -1221,7 +1330,9 @@ def collect(runner: Any = None, *, sudo: bool = False, known_secrets: Iterable[s
         "scope": _scope(collector),
         "redaction": {"marker": MARK, "policy": REDACTION_POLICY},
     }
-    snapshot.update(collector.raw)
+    snapshot.update({section: collector.raw[section] for section in SECTIONS})
+    if "users" in collector.raw:
+        snapshot["users"] = collector.raw["users"]
     snapshot["indexes"] = indexes
     snapshot["scope_limits"] = _scope_limits(collector, indexes)
     snapshot["redaction_review"] = _redaction_review(collector)
@@ -1295,7 +1406,12 @@ def _scope_limits(c: Collector, indexes: dict) -> list[str]:
         "Not captured in v0: users, groups and sudoers, global pip/npm packages, certificates, model servers, "
         "backup history and restore tests.",
     ]
-    if not c.sudo and os.getuid() != 0:
+    if c.helper is not None:
+        limits.append("Helper mode: Docker's containers, who listens on which port, SMART and Compose's hashes and "
+                      "images came from Seraphina's system access (sf-system's fixed read verbs; no Docker socket "
+                      "and no general sudo). Users, groups and sudo rules come from its access enumeration only once "
+                      "it may read them.")
+    elif not c.sudo and os.getuid() != 0:
         limits.append("Run without --sudo: root-only probes ran as this user, so some saw less or were denied.")
     if c.sudo_missing:
         limits.append("sudo is not installed here, so root-only probes ran without it, "

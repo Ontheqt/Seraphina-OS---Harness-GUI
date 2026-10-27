@@ -473,6 +473,153 @@ def stash_all(worktree: Path, message: str, repo: Path | None = None) -> bool:
     return True
 
 
+class CommitRefused(GitError):
+    """The harness commit refused what was staged (a protected path, a secret value): nothing was committed."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(["git", "commit"], message)
+        self.reason = message
+
+    def __str__(self) -> str:
+        return self.reason
+
+
+class CommitResult:
+    """What git did for commit_all: its exit status, the commit id it printed, a hash of its output, the sha read
+    back from the repository afterwards (which must equal the printed id) and the committed paths."""
+
+    def __init__(self, status: int, ids: list[str], body_sha256: str, sha: str, paths: list[str]) -> None:
+        self.status, self.ids, self.body_sha256, self.sha, self.paths = status, ids, body_sha256, sha, paths
+
+
+_COMMIT_ID_RE = re.compile(r"^\[[^\]]*?\b([0-9a-f]{7,40})\]", re.MULTILINE)
+
+
+def commit_all(worktree: Path, message: str, *, protected: Sequence[str] = (), allowed: set[str] | frozenset = frozenset(),
+               secrets: Sequence[str] = (), extra_texts: Sequence[str] = (),
+               author: tuple[str, str] = ("Software Factory", "factory@localhost")) -> CommitResult | None:
+    """Stage every change in worktree and commit it, for a driver that cannot commit itself (commits: harness,
+    BROWSER_AND_CODEX.md §3.3). git runs with HARDENING, its global and system config off and an explicit author,
+    so no filter driver of the harness user's config runs over the tree an agent wrote. Refused (CommitRefused,
+    the index put back, nothing committed): an added or changed path matching protected unless allowed names it,
+    or a staged diff (or one of extra_texts, build.md) containing any of secrets. The diff is read with --text, so
+    a file git takes for binary (a NUL byte, or a .gitattributes binary or -diff) is scanned as its staged bytes,
+    not as a deflated binary patch; a secret inside a compressed or encoded file is not found. None when nothing
+    changed. Refused too when git could not open a folder of the worktree (unreadable_folder): `git add -A` stages
+    past it and exits 0, so the commit would silently lack what is in it (a folder the Codex user left closed to the
+    harness's group). The caller checks the worktree first (verify_worktree)."""
+    env = _clean_env()
+
+    def run(*args: object, check: bool = True, text: bool = True) -> subprocess.CompletedProcess:
+        proc = _run(worktree, args, SLOW_TIMEOUT, text=text, env=env)
+        if check and proc.returncode != 0:
+            raise _error(proc)
+        return proc
+
+    closed = unreadable_folder(run("add", "-A", "--", "."))
+    if closed:
+        run("reset", "-q", check=False)
+        raise CommitRefused(f"the harness cannot read all of the worktree ({closed}), so the commit would lack what "
+                            f"is there: nothing was committed")
+    names = _nul_list(run("diff", "--cached", "--name-only", "-z", "--no-renames", *_DIFF_FLAGS).stdout)
+    if not names:
+        return None
+    try:
+        refused = [path for path in names if matches_any(path, list(protected)) and path not in allowed]
+        if refused:
+            raise CommitRefused("the harness does not commit " + ", ".join(sorted(refused)[:5])
+                                + ": protected (the job's spec does not name it)")
+        staged = run("diff", "--cached", "--text", *_DIFF_FLAGS, text=False).stdout
+        haystacks = [staged, *(text.encode("utf-8", "replace") for text in extra_texts)]
+        for value in secrets:
+            if value and len(value) >= 8 and any(value.encode("utf-8") in hay for hay in haystacks):
+                raise CommitRefused("the staged diff or build.md contains a secret value; nothing was committed")
+    except CommitRefused:
+        run("reset", "-q", check=False)
+        raise
+    name, email = author
+    proc = run("-c", f"user.name={name}", "-c", f"user.email={email}", "-c", "commit.gpgsign=false",
+               "commit", "--no-verify", "--no-edit", "-m", message, check=False)
+    output = (proc.stdout or "") + (proc.stderr or "")
+    if proc.returncode != 0:
+        run("reset", "-q", check=False)
+        raise _error(proc)
+    ids = _COMMIT_ID_RE.findall(proc.stdout or "")
+    sha = run("rev-parse", "--verify", "HEAD^{commit}").stdout.strip()
+    if not ids or not sha.startswith(ids[0]):
+        raise GitError(_cmd(worktree, ["commit"]), f"git printed {ids or 'no commit id'}, but HEAD is {sha}")
+    import hashlib
+
+    return CommitResult(proc.returncode, ids, hashlib.sha256(output.encode("utf-8")).hexdigest(), sha, sorted(names))
+
+
+UNREADABLE = "could not open directory"   # git's warning (LC_ALL=C) for a folder it lists or stages past
+
+
+def unreadable_folder(proc: subprocess.CompletedProcess) -> str | None:
+    """git's first "could not open directory" warning in proc's stderr, or None. git walks past a folder it cannot
+    open and still exits 0, so a listing, a status or an `add -A` that warned is incomplete."""
+    for line in _as_text(proc.stderr).splitlines():
+        if UNREADABLE in line:
+            return line.strip()[:300]
+    return None
+
+
+def ignored_files(worktree: Path) -> dict[str, tuple[int, int, int]]:
+    """Every file git ignores in worktree (`git ls-files --others --ignored --exclude-standard`, into ignored
+    folders too, with global and system config off, as commit_all's `git add -A` sees them), each with its size,
+    mtime and ctime in ns (lstat; one that is gone by then is left out). GitError when git cannot list them, also
+    when it listed past a folder it could not open (unreadable_folder): a shorter list is never an answer."""
+    proc = _run(worktree, ["ls-files", "-z", "--others", "--ignored", "--exclude-standard"], SLOW_TIMEOUT,
+                text=False, env=_clean_env())
+    if proc.returncode != 0:
+        raise _error(proc)
+    closed = unreadable_folder(proc)
+    if closed:
+        raise GitError(proc.args, closed, proc.returncode)
+    found: dict[str, tuple[int, int, int]] = {}
+    for raw in proc.stdout.split(b"\0"):
+        if raw:
+            rel = os.fsdecode(raw)
+            with suppress(OSError):
+                info = os.lstat(Path(worktree) / rel)
+                found[rel] = (info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    return found
+
+
+def reconcile_diff(worktree: Path) -> dict:
+    """What a worktree holds beyond its HEAD, read only, with global and system config off: git status, the changed
+    and untracked paths, and one sha256 over the diff against HEAD and each untracked file's name and content
+    (BROWSER_AND_CODEX.md §3.6). GitError also when git could not open a folder of the worktree
+    (unreadable_folder): the paths would be incomplete. The caller checks the worktree first (verify_worktree)."""
+    import hashlib
+
+    env = _clean_env()
+    status = _run(worktree, ["status", "--porcelain", "--untracked-files=all"], DEFAULT_TIMEOUT, env=env)
+    if status.returncode != 0:
+        raise _error(status)
+    closed = unreadable_folder(status)
+    if closed:
+        raise GitError(status.args, closed, status.returncode)
+    diff = _run(worktree, ["diff", "HEAD", "--binary", *_DIFF_FLAGS], SLOW_TIMEOUT, text=False, env=env)
+    if diff.returncode != 0:
+        raise _error(diff)
+    untracked = _run(worktree, ["ls-files", "--others", "--exclude-standard", "-z"], DEFAULT_TIMEOUT, env=env)
+    changed = _run(worktree, ["diff", "HEAD", "--name-only", "-z", "--no-renames", *_DIFF_FLAGS], DEFAULT_TIMEOUT,
+                   env=env)
+    digest = hashlib.sha256(diff.stdout)
+    extra = _nul_list(untracked.stdout)
+    for rel in sorted(extra):
+        digest.update(b"\0untracked\0" + rel.encode("utf-8", "surrogateescape") + b"\0")
+        path = Path(worktree) / rel
+        with suppress(OSError):
+            if path.is_file() and not path.is_symlink():
+                digest.update(hashlib.sha256(path.read_bytes()).digest())
+    paths = sorted(set(_nul_list(changed.stdout)) | set(extra))
+    return {"status": status.stdout.strip().splitlines()[:200], "paths": paths[:500], "diff_sha256": digest.hexdigest(),
+            "clean": not status.stdout.strip()}
+
+
 def matches_any(path: str, globs: list[str]) -> str | None:
     """The first glob that matches path (gitignore-like), or None.
 
@@ -511,13 +658,25 @@ def _git_env() -> dict[str, str]:
     return env
 
 
+def _clean_env() -> dict[str, str]:
+    """_git_env with git's global and system config switched off (GIT_CONFIG_GLOBAL=/dev/null,
+    GIT_CONFIG_NOSYSTEM=1): the harness commit and the reconcile diff over a tree an agent wrote run no filter
+    driver from the harness user's global or system config (git-lfs installs one), BROWSER_AND_CODEX.md §3.3."""
+    env = _git_env()
+    env.update(GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1")
+    for name in ("GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME",
+                 "GIT_COMMITTER_EMAIL", "GIT_AUTHOR_DATE", "GIT_COMMITTER_DATE", "EMAIL"):
+        env.pop(name, None)
+    return env
+
+
 def _run(repo: Path | None, args: Sequence[object], timeout: float,
-         text: bool = True) -> subprocess.CompletedProcess:
+         text: bool = True, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     cmd = _cmd(repo, args)
     decoding = {"encoding": "utf-8", "errors": "replace"} if text else {}
     try:
         proc = subprocess.run(_argv(cmd), capture_output=True, stdin=subprocess.DEVNULL, check=False,
-                              timeout=timeout, env=_git_env(), **decoding)
+                              timeout=timeout, env=env if env is not None else _git_env(), **decoding)
         proc.args = cmd   # errors show the command without HARDENING
         return proc
     except subprocess.TimeoutExpired as exc:

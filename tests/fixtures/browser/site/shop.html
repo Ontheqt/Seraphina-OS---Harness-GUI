@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Slow shop</title></head>
+<body>
+<h1>Slow shop</h1>
+<p>One fixture mug.</p>
+<button id="order" type="button">Place order</button>
+<p id="result" role="status"></p>
+<script>
+document.getElementById("order").addEventListener("click", function () {
+  document.getElementById("result").textContent = "Placing the order";
+  fetch("/order", {method: "POST", body: "mug"}).then(async function (response) {
+    const reader = response.body.getReader();
+    const first = await reader.read();   // the shop answers at once and keeps the response open
+    document.getElementById("result").textContent = new TextDecoder().decode(first.value);
+    while (!(await reader.read()).done) {}
+  });
+});
+</script>
+</body>
+</html>

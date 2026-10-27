@@ -82,6 +82,9 @@ LAB_CHECKS = (
      "what": "the protection service's reports reach Seraphina, and a report missed while she was off is read later"},
     {"id": "L17", "short": "a power-off during a run",
      "what": "a power-off during a run stops it safely first, so the next run carries on"},
+    {"id": "L13", "short": "starting up with a failed disk", "what": "the server still starts when a disk has failed"},
+    {"id": "L20", "short": "replacing a failed disk",
+     "what": "the checklist for a failed disk works end to end on test disks, and the next run takes the new disk in"},
 )
 METRIC_NAMES = frozenset((
     "snapraid_array_health", "snapraid_build_info", "snapraid_array_block_size_bytes",
@@ -165,6 +168,7 @@ REFUSALS = {
     "one_disk": "Choose files from one disk at a time: the protection service would bring back every chosen name on "
                 "every chosen disk.",
     "typed": "Type the number of changes to confirm.",
+    "rebuild": "A disk is being replaced: finish its checklist first (Backups, Replace a failed disk).",
 }
 WORDS_OF = {"sync": "protecting the latest changes", "scrub": "checking for hidden damage", "fix": "bringing files back",
             "up": "starting the disks", "report": "writing its report", "probe": "checking the disks' power",
@@ -755,6 +759,9 @@ class DaemonRoute:
     def _down(self, d: dict, words: str, now: float) -> None:
         d["error"] = {"at": now, "words": words}
         d.setdefault("down_since", now)
+        rebuild = getattr(self.panel, "rebuild", None)
+        if rebuild is not None and rebuild.expects_down():
+            return                     # the owner turned it off for a disk rebuild (design section 9.4): no alarm
         if d.get("seen") and now - float(d["down_since"]) >= float(self.cfg()["down_minutes"]) * 60 \
                 and not d.get("down_notified"):
             d["down_notified"] = True
@@ -1132,6 +1139,8 @@ class DaemonRoute:
         allow = info.get("allow") or ["read"]
         if "act" not in allow or (action == "accept" and "accept" not in allow):
             return "not_allowed"
+        if action in STARTS_RUNS and self._rebuilding():
+            return "rebuild"            # design section 9.1: no run is started while a restore is open
         if action in STARTS_RUNS:
             count = self.scheduler_count(facts.get("config"))["count"]
             if count is None:
@@ -1141,6 +1150,11 @@ class DaemonRoute:
             if (facts.get("state") or {}).get("health") in BAD_HEALTH:
                 return "health"
         return None
+
+    def _rebuilding(self) -> bool:
+        """The owner's checklist for a failed disk is open (design section 9.4)."""
+        rebuild = getattr(self.panel, "rebuild", None)
+        return rebuild is not None and rebuild.open_one() is not None
 
     def scheduler_count(self, config: dict | None = None) -> dict:
         info = (self.panel.facts().get("info") or None) if self.panel.reader_present() else None
@@ -1657,7 +1671,7 @@ class DaemonRoute:
         ok = self.link() is not None and info.get("auth_on") is True and "act" in allow and \
             re.match(r"^(1[5-9]|[2-9][0-9])\.", str(info.get("engine") or "") + ".") is not None
         health_ok = metrics.get("health") not in BAD_HEALTH
-        one = count.get("count") == 1
+        one = count.get("count") == 1 and not self._rebuilding()      # no run while a disk is being replaced
         return {"stop": ok and bool(metrics.get("active")),
                 "hold_off": ok and bool((d.get("config") or {}).get("maintenance_schedule")),
                 "maintenance": ok and one and health_ok and not metrics.get("active") and not metrics.get("queue_depth"),
@@ -1713,7 +1727,7 @@ class DaemonRoute:
                 item = _open_item(ledger, dedupe)
                 if item is not None and (title is None or item.get("title") == title):
                     ledger.change(tracker.FACTORY, item["id"], "verified", note=why,
-                                  evidence=[{"kind": "receipt", "ref": "snapraidd:tasks", "detail": why}])
+                                  evidence=[{"kind": "receipt", "ref": "snapraidd:tasks", "check": "ok", "detail": why}])
 
     def _publish_action(self, record: dict, state: str) -> None:
         if self.panel.bus is not None:

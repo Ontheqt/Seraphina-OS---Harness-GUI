@@ -1,0 +1,49 @@
+Id=ssh.service
+User=
+ExecStart={ path=/usr/sbin/sshd ; argv[]=/usr/sbin/sshd -D $SSHD_OPTS ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }
+ExecStartPre={ path=/usr/sbin/sshd ; argv[]=/usr/sbin/sshd -t ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }
+ExecStartPost=
+WorkingDirectory=
+EnvironmentFiles=/etc/default/ssh (ignore_errors=yes)
+FragmentPath=/usr/lib/systemd/system/ssh.service
+DropInPaths=
+
+Id=example-indexer.service
+User=
+ExecStart={ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 -B /home/operator/indexer/run.py --quiet ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }
+ExecStartPre=
+ExecStartPost=
+WorkingDirectory=/home/operator/indexer
+EnvironmentFiles=
+FragmentPath=/etc/systemd/system/example-indexer.service
+DropInPaths=/run/systemd/system/example-indexer.service.d/50-refresh.conf
+
+Id=example-shell.service
+User=root
+ExecStart={ path=/usr/bin/bash ; argv[]=/usr/bin/bash /opt/example/start.sh ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }
+ExecStartPre=
+ExecStartPost=
+WorkingDirectory=
+EnvironmentFiles=
+FragmentPath=/etc/systemd/system/example-shell.service
+DropInPaths=
+
+Id=example-agent.service
+User=agent
+ExecStart={ path=/opt/agent/bin/agent ; argv[]=/opt/agent/bin/agent ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }
+ExecStartPre=
+ExecStartPost=
+WorkingDirectory=
+EnvironmentFiles=
+FragmentPath=/etc/systemd/system/example-agent.service
+DropInPaths=
+
+Id=example-writable.service
+User=
+ExecStart={ path=/opt/tools/bin/sync ; argv[]=/opt/tools/bin/sync --all ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }
+ExecStartPre=
+ExecStartPost=
+WorkingDirectory=
+EnvironmentFiles=
+FragmentPath=/etc/systemd/system/example-writable.service
+DropInPaths=

@@ -1151,7 +1151,8 @@ class WakeDoctorTest(DoctorTestCase):
         self.assertCheck(checks, "persona seraphina database", False, "warn",
                          "cannot be read: the query failed (no such column: hidden)", "must match her own schema")
         self.assertNotIn("ACL", checks["persona seraphina database"]["detail"], "her schema's business, not access")
-        self.assertCheck(checks, "persona seraphina read ledger", True, "info", "each read of her own memory")
+        self.assertCheck(checks, "persona seraphina read ledger", True, "info", "each read of her own memory",
+                         "keeps 32 MiB, 2000 copies at most; one read opens 200 files and 8 MiB at most")
         personas.PersonaStore(config.data_dir)._count_in_meta("seraphina", "evicted", 3)
         external["sqlite"]["query"] = "SELECT text, at FROM facts"
         config = self.wake_config({"memory": {"external": external}}, harness={"sandbox": "bwrap"},
@@ -1161,6 +1162,12 @@ class WakeDoctorTest(DoctorTestCase):
         self.assertNotIn("one fact", json.dumps(checks), "never what it returns")
         self.assertCheck(checks, "persona seraphina read ledger", False, "warn", "3 older copies removed",
                          "the newest version of each file kept", "The oldest rollbacks are gone")
+        # the caps are her settings (memory.external): the doctor says the ones set
+        external.update(ledger_mib=64, ledger_copies=5000)
+        config = self.wake_config({"memory": {"external": external}}, harness={"sandbox": "bwrap"},
+                                  wakes={"external_memory_roots": [str(root)]})
+        self.assertCheck(self.checks(config), "persona seraphina read ledger", False, "warn",
+                         "at its cap (64 MiB, 5000 copies)", "raise memory.external.ledger_mib or ledger_copies")
         self.assertEqual(db.read_bytes(), before, "read-only")
 
     def test_a_database_the_harness_cannot_open_points_at_a_snapshot_never_at_an_acl(self) -> None:
@@ -1196,3 +1203,117 @@ class WakeDoctorTest(DoctorTestCase):
                          "not under wakes.external_memory_roots")
         (self.config_path.parent / "notice-rules.json").write_text('{"version": 7}')
         self.assertCheck(self.checks(config), "notice rules", False, "error", "stay off the phone")
+
+
+class BrowserDoctorTest(unittest.TestCase):
+    """The doctor's browser lines (BROWSER_AND_CODEX.md §4.3): T26 (the harness's own runtime, K1) with stand-in
+    binaries, and the timeouts rule. T23 is in tests/test_browser_harness.py (PresetCheckTests) and T25, the Open
+    WebUI pin (K14), in tests/test_personas.py (DoctorTest: the openwebui build line)."""
+
+    INTEGRITY = "sha512-standin"
+
+    def setUp(self) -> None:
+        import hashlib
+        import shutil
+        import tempfile
+
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.runtime = self.tmp / "runtime"
+        node = self.runtime / "node" / "bin" / "node"
+        package = self.runtime / "playwright-mcp" / "node_modules" / "@playwright" / "mcp"
+        chrome = self.runtime / "chrome" / "chrome-headless-shell-linux64" / "chrome-headless-shell"
+        for path, words in ((node, "v22.22.0"), (chrome, "Google Chrome for Testing 155.0.8059.12")):
+            path.parent.mkdir(parents=True)
+            path.write_text(f"#!/bin/sh\necho '{words}'\n")
+            path.chmod(0o755)
+        package.mkdir(parents=True)
+        (package / "package.json").write_text(json.dumps({"name": "@playwright/mcp", "version": "0.0.83"}))
+        (package / "cli.js").write_text("")
+        (package.parent.parent / ".package-lock.json").write_text(json.dumps(
+            {"packages": {"node_modules/@playwright/mcp": {"version": "0.0.83", "integrity": self.INTEGRITY}}}))
+        self.hashes = {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in
+                       (("node", node), ("chrome", chrome))}
+
+    def config(self, **pins: Any) -> Config:
+        base = {"node": {"version": "22.22.0", "sha256": self.hashes["node"]},
+                "playwright_mcp": {"version": "0.0.83", "integrity": self.INTEGRITY},
+                "chrome": {"version": "155.0.8059.12", "sha256": self.hashes["chrome"]}}
+        for key, value in pins.items():
+            base[key] = {**base[key], **value}
+        return Config(self.tmp / "config.json", {"data_dir": str(self.tmp / "data"), "browser": {
+            "enabled": True, "runtime": {"dir": str(self.runtime)}, "pins": base}})
+
+    def pins(self, config: Config) -> dict:
+        from swfactory.browser import checks
+
+        [line] = checks.pins(config, doctor.check)
+        return line
+
+    def test_the_runtime_matches_its_pins(self) -> None:
+        line = self.pins(self.config())
+        self.assertEqual((line["name"], line["ok"]), ("browser pins", True), line)
+        self.assertIn("Node 22.22.0, Playwright MCP 0.0.83, Chrome 155.0.8059.12", line["detail"])
+
+    def test_one_wrong_hash_or_integrity_fails(self) -> None:
+        for pins, words in (({"chrome": {"sha256": "0" * 64}}, "Chrome's sha256 differs"),
+                            ({"node": {"sha256": "1" * 64}}, "Node's sha256 differs"),
+                            ({"playwright_mcp": {"integrity": "sha512-other"}}, "npm integrity differs"),
+                            ({"chrome": {"version": "156.0.0.1"}}, "the pin 156.0.0.1")):
+            with self.subTest(pins=pins):
+                line = self.pins(self.config(**pins))
+                self.assertEqual((line["ok"], line["level"]), (False, "error"), line)
+                self.assertIn(words, line["detail"])
+
+    def test_another_node_and_chrome_on_path_are_never_used(self) -> None:
+        from swfactory.browser import namespace, runs
+
+        other = self.tmp / "other-bin"
+        other.mkdir()
+        for name in ("node", "chrome", "chrome-headless-shell", "headless_shell"):
+            (other / name).write_text("#!/bin/sh\necho 'v99'\n")
+            (other / name).chmod(0o755)
+        with mock.patch.dict(os.environ, {"PATH": f"{other}:{os.environ.get('PATH', '')}"}):
+            config = self.config()
+            self.assertTrue(self.pins(config)["ok"])
+            paths = runs.runtime_paths(config)
+            binds = namespace.runtime_binds(paths)
+        for path in [*paths.values(), *binds]:
+            self.assertTrue(str(path).startswith(str(self.runtime)), path)
+        self.assertFalse([path for path in binds if str(other) in path])
+
+    def test_a_missing_runtime_fails_and_no_browsing_starts(self) -> None:
+        from swfactory.browser import runs
+
+        shutil_tree = self.runtime
+        import shutil
+
+        shutil.rmtree(shutil_tree)
+        line = self.pins(self.config())
+        self.assertEqual((line["ok"], line["level"]), (False, "error"))
+        self.assertIn("missing", line["detail"])
+        agent = SimpleNamespace(name="kate-browser", mcp=["browser"], tools=[], meta={}, browser="fixture")
+        config = self.config()
+        config.raw["mcp_servers"] = {"browser": {"command": "sf-browser", "args": ["mcp"], "sandbox": "self"}}
+        with self.assertRaisesRegex(ValueError, "runtime is missing"):
+            runs.begin(config, agent, kind="chat", ref="chat:1", run="01-turn")
+        unset = Config(self.tmp / "config.json", {"browser": {"enabled": True}})
+        self.assertIn("not set up", self.pins(unset)["detail"])
+
+    def test_the_shims_limit_stays_below_the_harness_timeout(self) -> None:
+        from swfactory.browser import checks
+
+        entry = {"command": "sf-browser", "args": ["mcp"], "sandbox": "self", "timeout": 60}
+        config = Config(self.tmp / "config.json", {"mcp_servers": {"browser": entry}})
+        [line] = checks.timeouts(config, doctor.check)
+        self.assertTrue(line["ok"], line)
+        config = Config(self.tmp / "config.json", {"mcp_servers": {"browser": {**entry, "timeout": 22}}})
+        [line] = checks.timeouts(config, doctor.check)
+        self.assertEqual((line["ok"], line["level"]), (False, "error"))
+
+    def test_off_by_default_is_one_line(self) -> None:
+        from swfactory.browser import checks
+
+        lines = checks.all_checks(Config(self.tmp / "config.json", {}), doctor.check)
+        self.assertEqual([(line["name"], line["ok"]) for line in lines], [("browser", True)])
+        self.assertIn("off", lines[0]["detail"])

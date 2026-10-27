@@ -55,17 +55,22 @@ WORDS = {"proposed": "Suggested", "open": "To do", "doing": "Working on it", "do
          "verified": "Proven", "deferred": "Later", "dropped": "Dropped"}
 KINDS = ("criterion", "finding", "note", "decision", "rework", "commitment", "gap", "risk", "followup")
 BLOCKING_KINDS = frozenset({"criterion", "finding", "decision", "rework"})
-EVIDENCE_KINDS = ("commit", "file", "command", "review", "job", "human", "wake", "receipt", "drift")
+EVIDENCE_KINDS = ("commit", "file", "command", "review", "job", "human", "wake", "receipt", "drift", "check")
 AGENT_EVIDENCE = ("commit", "command", "file")     # what an agent may give for done
 CHECKED_EVIDENCE = frozenset({"commit", "file"})   # checked in code after the run
 # written only by code: a wake's receipt, a merged job, an operator's change receipt (reported, never checked), a
-# drift source's fresh observation that no longer reports a finding (DESIGN §38)
-CODE_EVIDENCE = frozenset({"wake", "job", "receipt", "drift"})
+# drift source's fresh observation that no longer reports a finding (DESIGN §38), the harness's own run of a
+# repository's verify command and a run or browser receipt (DESIGN §44)
+CODE_EVIDENCE = frozenset({"wake", "job", "receipt", "drift", "check"})
+# Code evidence that never defaults to ok (BROWSER_AND_CODEX.md §3.7): its writer says ok or failed (or, for an
+# operator's receipt, reported), so a failing verify or a browser receipt whose expected text was not there can
+# never read as passing.
+EXPLICIT_CHECK = frozenset({"check", "receipt"})
 INSTANCE: dict = {"name": None}   # this harness's instance name (harness.instance_name), set by the Factory
 HUMAN = "human"
 FACTORY = "factory"                                 # the managers' own code (intake, checks, carry-forward)
 CODE = "code"                                       # a code check that closes what it can prove (a wake's receipt)
-LINK_KEYS = ("parent", "job", "plan", "chat", "followup", "wake", "receipt")
+LINK_KEYS = ("parent", "job", "plan", "chat", "followup", "wake", "receipt", "app")   # app: a Your server app (DESIGN §42)
 TAINTS = ("private", "untrusted")                   # what the turn that wrote an item read (Wake & Messages §3.4)
 LOCAL_HOST = "local"                                # every scope's host on a one-machine install (v2 §4.3)
 VERBS = {"doing": "doing", "done": "done", "defer": "deferred", "verified": "verified", "not met": "open",
@@ -671,6 +676,26 @@ class Ledger:
             raise ItemError(problem)
         return self._apply(item, by, target, note=note, reason=reason, evidence=evidence, round=round, links=links)
 
+    def add_evidence(self, by: str, item_id: str, evidence: list, note: Any = "") -> dict | None:
+        """Code's evidence beside an item, whatever its status (DESIGN §44: the harness's verify run and a browser
+        receipt on a job's criteria): only the factory or code adds it, only code-written kinds, each once (kind and
+        ref); the status does not change, so the approver or a person still decides. The item, or None when
+        nothing was new."""
+        if by not in (FACTORY, CODE):
+            raise ItemError("only the factory adds evidence beside an item")
+        item = self.get(item_id)
+        entries = self._evidence(evidence, by)
+        if any(entry["kind"] not in CODE_EVIDENCE for entry in entries):
+            raise ItemError("only code-written evidence is added beside an item")
+        known = {(e.get("kind"), e.get("ref")) for e in item["evidence"]}
+        added = [entry for entry in entries if (entry["kind"], entry["ref"]) not in known]
+        if not added:
+            return None
+        item["evidence"].extend(added)
+        item["updated_at"] = self.now()
+        self._record(item, by, item["status"], item["status"], note=note or "evidence added", evidence=added)
+        return item
+
     def _same_status(self, item: dict, by: str, *, note: Any, evidence: list | None, round: int | None) -> dict | None:
         """An operation that repeats the item's status: the owner's counts as touching it (with new evidence
         and a note kept); anything else changes nothing."""
@@ -904,6 +929,8 @@ class Ledger:
                 ref = ref.lower()
                 if not re.fullmatch(r"[0-9a-f]{7,40}", ref):
                     raise ItemError(f"commit evidence must be a commit sha (7-40 hex characters), got {ref!r}")
+            if kind in EXPLICIT_CHECK and by in (FACTORY, CODE) and not raw.get("check"):
+                raise ItemError(f"{kind} evidence needs an explicit check (ok or failed)")
             given = str(raw.get("check") or ("ok" if kind in CODE_EVIDENCE else "unchecked")) \
                 if by in (FACTORY, CODE) else "unchecked"
             entry = {"kind": kind, "ref": ref, "detail": self._text(raw.get("detail"), EVIDENCE_REF_CHARS),
@@ -1067,8 +1094,12 @@ def _code_rule(item: dict, to: str, evidence: list | None, reason: Any) -> str |
     if item.get("status") in CLOSED:
         return f"{ident} is {WORDS[item['status']]}: only a person can reopen it"
     if to == "verified":
-        kinds = {e.get("kind") for e in evidence or [] if isinstance(e, dict)}
-        return None if kinds & CODE_EVIDENCE else f"{ident}: code proves an item only with its receipt (wake evidence)"
+        entries = [e for e in evidence or [] if isinstance(e, dict)]
+        proving = [e for e in entries if e.get("kind") in CODE_EVIDENCE
+                   and (e.get("kind") not in EXPLICIT_CHECK or e.get("check") == "ok")]
+        if proving:
+            return None
+        return f"{ident}: code proves an item only with its receipt (wake evidence, or a check or receipt whose check is ok)"
     if to == "dropped":
         return None if str(reason or "").strip() else "dropping an item needs a reason"
     return f"code closes {ident} only as verified (with its receipt) or dropped (cancelled)"
@@ -2001,6 +2032,7 @@ def apply_sweep(ledger: Ledger, texts: list[tuple[str, str]], agent: str, *, rou
     its transcript numbers them) are recorded in each source. writer: who wrote the text, for source.agent
     when it is not `agent` (persona:<name> for a persona chat's reply, §33); taint: what that turn read
     (private, untrusted), on every item made. Returns the ids added."""
+    taint = sorted({str(label) for label in taint})
     known = {(item.get("source") or {}).get("hash") for item in ledger.items} | {
         text_hash(item.get("title")) for item in ledger.items}
     for item in ledger.items:
@@ -2026,8 +2058,14 @@ def apply_sweep(ledger: Ledger, texts: list[tuple[str, str]], agent: str, *, rou
             break
         # within the run's limit, or the scope is at its own limit: each sentence on its own, so a folded one
         # keeps its text (the overflow item's detail and history) and its hash (never suggested again)
-        item = ledger.add(FACTORY, sentence, kind=kind, owner=owner, verifier=verifier, blocking=False,
-                          status="proposed", round=round, taint=taint,
+        # a turn that read the web (a browsing turn, §43): the title is code-written, the model's words stay in the
+        # detail and the source's quote, labelled
+        title, detail = sentence, ""
+        if "untrusted" in taint:
+            title = f"Check a suggestion from a turn that read the web ({file} line {line})"
+            detail = f"The model's words, from a turn that read the web (untrusted): {sentence}"
+        item = ledger.add(FACTORY, title, kind=kind, owner=owner, verifier=verifier, blocking=False,
+                          status="proposed", round=round, taint=taint, detail=detail,
                           source={"type": "sweep", "agent": writer or agent, "file": file, "line": line,
                                   "hash": digest, "quote": sentence, "run": run, "turn": turn})
         if item["id"] not in added:
@@ -2088,7 +2126,10 @@ def _evidence_label(item: dict) -> str:
         elif kind in ("review", "human", "job", "drift"):
             parts.append(f"{kind} {clip(ref, 40)}")
         elif kind == "receipt":
-            parts.append(f"receipt {clip(ref, 40)} reported")
+            parts.append(f"receipt {clip(ref, 40)}" + (" ✓" if check == "ok" else " ✗" if check == "failed"
+                                                       else " reported"))
+        elif kind == "check":
+            parts.append(f"check {clip(ref, 40)}" + (" ✓" if check == "ok" else " ✗"))
     return ", ".join(parts[:4])
 
 
@@ -3056,7 +3097,7 @@ def human_action(ledger: Ledger, item_id: str, action: str, *, note: Any = "", r
 
 def open_once(ledger: Ledger, fields: dict, dedupe: str | None = None) -> tuple[dict, bool]:
     """Open an item by the factory for a person (owner and verifier human; never refused for the cap):
-    {title, detail?, kind?, source?, due?}. With dedupe, an item still open whose source.hash is dedupe is
+    {title, detail?, kind?, source?, due?, status? (open or proposed), taint?}. With dedupe, an item still open whose source.hash is dedupe is
     returned instead of a new one (an Open WebUI profile that changed again before anyone looked). (item, added)."""
     if dedupe:
         for item in ledger.items:
@@ -3065,9 +3106,12 @@ def open_once(ledger: Ledger, fields: dict, dedupe: str | None = None) -> tuple[
     source = dict(fields.get("source") or {"type": "added", "by": FACTORY})
     if dedupe:
         source["hash"] = dedupe
+    # status proposed and taint: an item born from an untrusted run (a browsing turn's login_required, §43)
+    status = "proposed" if fields.get("status") == "proposed" else "open"
     item = ledger.add(FACTORY, fields.get("title"), kind=fields.get("kind") or "commitment",
                       detail=fields.get("detail") or "", source=source, due=check_due(fields.get("due")),
-                      owner=HUMAN, verifier=HUMAN, uncapped=True)
+                      owner=HUMAN, verifier=HUMAN, uncapped=True, status=status,
+                      taint=[t for t in fields.get("taint") or () if t in TAINTS])
     return item, True
 
 

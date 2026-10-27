@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Decoy</title></head>
+<body>
+<h1>Decoy</h1>
+<form id="greet"><label>Name <input id="name" name="name"></label> <button type="submit">Submit</button></form>
+<p id="result" role="status">No greeting yet</p>
+<p aria-hidden="true">Hello, Kate</p>
+<div style="position:absolute;left:-9999px">Hello, Kate</div>
+<script>
+document.getElementById("greet").addEventListener("submit", function (event) {
+  event.preventDefault();
+  fetch("/submit", {method: "POST", body: "name=" + encodeURIComponent(document.getElementById("name").value)})
+    .then(function () { document.getElementById("result").textContent = "Thanks"; });   // drops the name
+});
+</script>
+</body>
+</html>

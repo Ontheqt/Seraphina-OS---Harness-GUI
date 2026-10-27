@@ -14,6 +14,8 @@ no ``chat_id`` (DESIGN.md section 33):
 - ``GET /api/v1/models/export?ids=`` (``/api/v1/models/export``): the full records, for a key with write
   access (``writer``); 403 otherwise.
 - ``GET /api/v1/configs/models``: ``{"DEFAULT_MODEL_PARAMS": ...}`` for an admin key; 403 otherwise.
+- ``GET /api/v1/functions/`` (``functions``) and ``GET /api/v1/pipelines/list`` (``pipelines``; 404 when None) for
+  an admin key: what the browsing preset check reads (filters that run on every request).
 - ``POST /api/chat/completions`` (``/api/v1/chat/completions``): the preset applied the way §1 of the
   research describes, then a scripted "upstream" model answers (``upstream`` records each request as
   TabbyAPI would get it):
@@ -89,6 +91,11 @@ class MockOpenWebUI:
         self.forbidden: list[dict] = []             # requests that carried a FORBIDDEN key
         self.gets: list[tuple[str, str | None]] = []   # (path, the key used or None)
         self.writes: list[tuple[str, str]] = []       # (method, path) of every request that would change state
+        # GET /api/v1/functions/ (admins: every function with its type, is_active and is_global) and GET
+        # /api/v1/pipelines/list (connected Pipelines servers; None answers 404), read by the browsing preset check
+        # (BROWSER_AND_CODEX.md §2.10 rule 7)
+        self.functions: list[dict] = []
+        self.pipelines: list[dict] | None = []
         self._lock = threading.Lock()
         self._ids = itertools.count(1)
         self._server: ThreadingHTTPServer | None = None
@@ -321,6 +328,16 @@ class _Handler(BaseHTTPRequestHandler):
             with self.mock._lock:
                 found = [copy.deepcopy(r) for i, r in self.mock.records.items() if not ids or i in ids]
             return self._json(200, found)
+        if path in ("/api/v1/functions/", "/api/v1/functions"):
+            if not user.get("admin"):
+                return self._json(401, {"detail": "Unauthorized"})
+            return self._json(200, copy.deepcopy(self.mock.functions))
+        if path == "/api/v1/pipelines/list":
+            if self.mock.pipelines is None:
+                return self._json(404, {"detail": "Not Found"})
+            if not user.get("admin"):
+                return self._json(401, {"detail": "Unauthorized"})
+            return self._json(200, {"data": copy.deepcopy(self.mock.pipelines)})
         if path == "/api/v1/configs/models":
             if not user.get("admin"):
                 return self._json(401, {"detail": "Unauthorized"})

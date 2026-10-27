@@ -2239,7 +2239,10 @@
       ? 'The read ledger is on: each time the harness reads her memory, it records what it read and keeps a private copy of each version, so you can look back, compare and prepare a restore. It never writes her memory.'
       : 'The read ledger is off: the harness keeps no copy of what it reads. Turn it on in Persona setup (Keep a read ledger)' + (files.length ? '; what it kept before is still listed.' : '.'), [
       capNotes.length ? callout('warn', 'alert', null, capNotes.join(' ')) : null,
-      h('p', { class: 'mw-row-sub', dataset: { part: 'ledger-size' } }, SF.plural(Number(L.reads) || 0, 'read') + ' recorded · copies ' + kb(L.kept_bytes) + ' of ' + kb(L.cap_bytes)),
+      h('p', { class: 'mw-row-sub', dataset: { part: 'ledger-size' } }, SF.plural(Number(L.reads) || 0, 'read') + ' recorded · copies ' + kb(L.kept_bytes) + ' of ' + kb(L.cap_bytes)
+        // her memory.external's caps as set now (ledger_copies, max_files): settings, not constants
+        + (Number(L.cap_copies) ? ' · ' + (Number(L.kept_copies) || 0) + ' of ' + Number(L.cap_copies) + ' copies' : '')
+        + (Number(L.max_files) ? ' · one read opens at most ' + SF.plural(Number(L.max_files), 'file') : '')),
       files.length ? files.map((f) => ledgerFile(name, f)) : muted('Nothing read yet.'),
       arr(L.sqlite).length ? [h('h4', { class: 'mw-h4' }, 'Her database, as read'), h('ul', { class: 'mw-plain mw-ledger-db' }, arr(L.sqlite).map((r) => h('li', { dataset: { db: r.error ? 'error' : 'ok' } }, when(r.at), ' ',
         r.error ? h('span', { class: 'mw-error-text' }, 'could not be read (' + String(r.error) + ')') : SF.plural(Number(r.rows) || 0, 'row') + ' ', r.sha256 ? muted('fingerprint ' + shortSha(r.sha256)) : null)))] : null,

@@ -42,7 +42,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterator, TextIO
+from typing import Any, Callable, Iterable, Iterator, TextIO
 
 from . import __version__
 from .agentdefs import AgentDef, read_small_text
@@ -118,13 +118,19 @@ def load_env_file(path: Path) -> None:
 
 
 @contextlib.contextmanager
-def factory_lock(data_dir: Path, url: str | None = None) -> Iterator[Path]:
+def factory_lock(data_dir: Path, url: str | None = None, keep: Iterable[Path] = ()) -> Iterator[Path]:
     """Hold <data_dir>/factory.lock (fcntl.flock) for the block; CliError if another process holds it.
 
     While held, the file holds this process's pid and, for `factory serve`, the URL clients
     reach it at (so CLI commands find a server started with --host or --port). It is emptied
     on release.
+
+    The process runs with umask 077 from here on, so everything it and its children create
+    in the data folder is its own (the Codex worker's group may pass through that folder,
+    DESIGN §44); once the lock is held, what older versions left there under umask 022 is
+    made private once (codex.work.seal_data_dir; keep: the folders the setup shares).
     """
+    os.umask(0o077)
     data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = data_dir / LOCK_FILE
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
@@ -137,6 +143,9 @@ def factory_lock(data_dir: Path, url: str | None = None) -> Iterator[Path]:
             raise CliError(f"another factory (pid {holder}) is already running on {data_dir} "
                            f"(lock {path})") from None
         locked = True
+        from .codex.work import seal_data_dir
+
+        seal_data_dir(data_dir, keep)
         os.ftruncate(fd, 0)
         os.pwrite(fd, (f"{os.getpid()}\n" + (f"{url}\n" if url else "")).encode("ascii", "replace"), 0)
         yield path
@@ -145,6 +154,12 @@ def factory_lock(data_dir: Path, url: str | None = None) -> Iterator[Path]:
             with contextlib.suppress(OSError):
                 os.ftruncate(fd, 0)
         os.close(fd)
+
+
+def _shared_dirs(config: Config) -> list[Path]:
+    from .codex.work import shared_dirs
+
+    return shared_dirs(config)
 
 
 def recorded_server_url(data_dir: Path) -> str | None:
@@ -715,7 +730,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
     if host not in LOOPBACK_HOSTS:
         warn(f"listening on {host}: anyone who can reach port {port} and has the token can run agents")
     # The lock file records the address, so CLI commands reach a server on a --host/--port override.
-    with factory_lock(config.data_dir, url=connect_url(host, port)):
+    with factory_lock(config.data_dir, url=connect_url(host, port), keep=_shared_dirs(config)):
         from .orchestrator import new_factory
         from .server import run_server
 
@@ -741,7 +756,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     repo = _known_repo(config, args.repo)
     feature = text_arg(args.feature)
     _validate(config)
-    with factory_lock(config.data_dir), sigterm_as_interrupt():
+    with factory_lock(config.data_dir, keep=_shared_dirs(config)), sigterm_as_interrupt():
         from .orchestrator import ActionError, new_factory
 
         factory, bus = new_factory(config)   # the bus redacts factory.secret_values() (per-run presets too)
@@ -1319,6 +1334,8 @@ def cmd_personas_ledger(args: argparse.Namespace) -> int:
             return 0
         print(f"erased {str(result.get('sha256'))[:12]}: {result.get('copies', 0)} copy removed, "
               f"{result.get('entries', 0)} manifest entries keep its sha256 only")
+        if result.get("run_logs"):
+            hint(f"taken out of {result['run_logs']} wake run log(s) whose prompt held it")
         hint("her own store is not touched: while a file there holds that text, wakes still read it")
         return 0
     if args.show:
@@ -1360,6 +1377,9 @@ def cmd_personas_ledger(args: argparse.Namespace) -> int:
         return 0
     print(f"read ledger: {'on' if result.get('ledger') else 'off'}; {result.get('reads', 0)} reads, "
           f"{result.get('kept_bytes', 0)} of {result.get('cap_bytes', 0)} bytes kept (private)")
+    if result.get("cap_copies"):   # her memory.external's caps as set now
+        hint(f"{result.get('kept_copies', 0)} of {result['cap_copies']} copies kept; one read opens at most "
+             f"{result.get('max_files')} files (memory.external.ledger_mib, ledger_copies, max_files, read_mib)")
     caps = result.get("caps") or {}
     for key, words in (("evicted", "older copies removed to stay under the cap (the newest of each file kept)"),
                        ("trimmed", "oldest manifests removed to stay under the cap"),
@@ -1547,7 +1567,11 @@ def cmd_operator_receipts(args: argparse.Namespace) -> int:
             rows = reader.rows(limit=args.limit, since=parse_when(args.since))
         except ValueError as exc:
             raise CliError(str(exc)) from None
-        result = {"receipts": rows, "refused": reader.index().get("refused") or [], "scan": reader.summary()}
+        from .receipts import unreadable
+
+        index = reader.index()
+        result = {"receipts": rows, "refused": index.get("refused") or [], "unreadable": unreadable(index),
+                  "scan": reader.summary()}
     if args.json:
         print_json(result)
         return 0
@@ -1555,7 +1579,10 @@ def cmd_operator_receipts(args: argparse.Namespace) -> int:
         for line in receipt_lines(row):
             print(line)
     for row in result.get("refused") or []:
-        print(f"{row.get('file')}  refused: {row.get('why')}")
+        print(f"{row.get('file')}  {'unreadable' if row.get('unreadable') else 'refused'}: {row.get('why')}")
+    if result.get("unreadable"):
+        hint(f"{len(result['unreadable'])} the harness's user may not read, left as they are (never widened): "
+             + ", ".join(result["unreadable"]))
     problem = (result.get("scan") or {}).get("problem")
     if problem:
         hint(problem)
@@ -1570,7 +1597,8 @@ def cmd_operator_scan(args: argparse.Namespace) -> int:
     if args.json:
         print_json(scan)
         return 0
-    print(f"{scan.get('read', 0)} read, {scan.get('cannot_read', 0)} cannot read, {scan.get('refused', 0)} refused; "
+    print(f"{scan.get('read', 0)} read, {scan.get('cannot_read', 0)} cannot read, {scan.get('refused', 0)} refused, "
+          f"{scan.get('unreadable', 0)} unreadable (left as they are); "
           f"{scan.get('new', 0)} new, {scan.get('changed', 0)} changed, {scan.get('gone', 0)} gone; items changed: "
           f"{', '.join(scan.get('items') or []) or 'none'}")
     if scan.get("problem"):
@@ -1939,10 +1967,19 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
     """Inventory this server read-only (the first Blueprint capture) into snapshot.json and overview.md."""
     from .blueprint.collect import UnsafeCommand, collect, write_snapshot
 
+    helper = None
+    if getattr(args, "helper", False):
+        from .helpers import HelperClient
+        from .yourserver import HELPER, TIMEOUTS
+
+        if args.sudo:
+            raise CliError("use --sudo or --helper, not both")
+        helper = HelperClient(HELPER, name="Seraphina's system access", timeouts=TIMEOUTS)
     hint("Collecting a read-only inventory of this host (allow-listed commands only; this takes a minute)"
-         + (", with sudo -n where root sees more." if args.sudo else "."))
+         + (", with sudo -n where root sees more." if args.sudo else
+            ", with Seraphina's system access for what needs root." if helper else "."))
     try:
-        snapshot = collect(sudo=args.sudo)
+        snapshot = collect(sudo=args.sudo, helper=helper)
     except UnsafeCommand as exc:   # the probe list itself asked for something outside the allowlist
         raise CliError(f"the capture stopped; this command was refused and never ran: {exc}") from None
     try:
@@ -2033,6 +2070,8 @@ def cmd_snapraid(args: argparse.Namespace) -> int:
         return _snapraid_helper(args)
     if action == "link":
         return _snapraid_link(args)
+    if action == "rebuild":
+        return _snapraid_rebuild(args)
     client = Client(load_config())
     if action == "check-now":
         what = args.what or "status"
@@ -2132,6 +2171,42 @@ def _snapraid_link(args: argparse.Namespace) -> int:
     return 0
 
 
+def _snapraid_rebuild(args: argparse.Namespace) -> int:
+    """`factory snapraid rebuild`: the owner's checklist for a whole failed disk (BACKUPS_SNAPRAID.md §9.4), its
+    steps and the current step's check and copy blocks. Opening it, ticking a step and the new disk's commands (its
+    serial number typed) are the cockpit's: Backups, Replace a failed disk."""
+    page = Client(load_config()).get("/api/snapraid/rebuild")
+    if args.json:
+        print_json(page)
+        return 0
+    if page.get("start_problem"):
+        print(page["start_problem"])
+    if not page.get("open"):
+        print(f"{page.get('title')}: no checklist is open.")
+        for row in page.get("choices") or []:
+            print(f"  {row.get('label')} ({row.get('name')}): {row.get('health_words')}"
+                  + (f"  <- {page.get('suggested')}" if row.get("suggested") else ""))
+        hint("open it in the cockpit: Backups, Replace a failed disk")
+        return 0
+    record = page.get("record") or {}
+    print(f"{page.get('title')}: {record.get('label')} ({record.get('disk')}) at {record.get('mount')}")
+    for step in page.get("steps") or []:
+        mark = {"done": "x", "current": ">"}.get(step.get("state"), " ")
+        print(f"[{mark}] {step.get('n')}. {step.get('title')}")
+        if step.get("state") != "current":
+            continue
+        for text in (step.get("what") or []) + (step.get("facts") or []):
+            print(f"      {text}")
+        check = step.get("check") or {}
+        if check:
+            print(f"      check: {check.get('words')}")
+        print()
+        _print_blocks(step.get("blocks") or [], "")
+    print(page.get("lab_line"))
+    hint("tick each step and go on in the cockpit: Backups, Replace a failed disk")
+    return 0
+
+
 def _print_blocks(blocks: list, check_command: str) -> None:
     for block in blocks:
         print(f"# {block['id']}. {block['title']}")
@@ -2193,6 +2268,125 @@ def _snapraid_helper(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_apps(args: argparse.Namespace) -> int:
+    """(server) Your server's apps (DESIGN §42): the cards in plain text, one app, or its QR code drawn with block
+    characters. Addresses are confirmed in the cockpit; this only reads."""
+    from .qr import terminal
+    from .yourserver import card_lines
+
+    client = Client(load_config())
+    action = getattr(args, "apps_action", None)
+    if action == "show":
+        view = client.get(f"/api/yourserver/apps/{_quote(args.app)}")
+        if args.json:
+            print_json(view)
+            return 0
+        card = view.get("app") or {}
+        for line in card_lines({"apps": [card]}):
+            print(line)
+        for part in view.get("parts") or []:
+            print(f"  part {part.get('name')}: {'running' if part.get('running') else 'stopped'}"
+                  + (f"; {', '.join(part['privileges'])}" if part.get("privileges") else ""))
+        for line in (card.get("backup") or {}).get("lines") or []:
+            print(f"  {line.get('words')}")
+        return 0
+    if action == "qr":
+        code = client.get(f"/api/yourserver/apps/{_quote(args.app)}/qr")
+        if args.json:
+            print_json(code)
+            return 0
+        print(terminal(code.get("rows") or []))
+        hint("it opens the app only while Tailscale is on on the phone")
+        return 0
+    view = client.get("/api/yourserver/apps")
+    if args.json:
+        print_json(view)
+        return 0
+    for line in card_lines(view):
+        print(line)
+    if (view.get("review") or {}).get("pending"):
+        hint("confirm the names and addresses once in the cockpit (Your server)")
+    return 0
+
+
+def cmd_system(args: argparse.Namespace) -> int:
+    """(server) Your server now (DESIGN §42): the host strip, Seraphina's system access, and its one paste to set it
+    up or remove it (the harness never runs sudo)."""
+    from .yourserver import host_lines
+
+    client = Client(load_config())
+    action = getattr(args, "system_action", None) or "host"
+    if action == "helper":
+        if args.helper_action == "check":
+            result = client.post("/api/yourserver/setup/check", {})
+            if args.json:
+                print_json(result)
+                return 0
+            print(result.get("words") or ("ok" if result.get("ok") else "not ok"))
+            return 0 if result.get("ok") else 1
+        setup = client.post("/api/yourserver/setup/stage", {}) if args.helper_action == "stage" else \
+            client.get("/api/yourserver/setup")
+        blocks = setup.get("blocks") if args.helper_action == "stage" else setup.get("removal")
+        if args.json:
+            print_json(blocks)
+            return 0
+        _print_blocks(blocks or [], "factory system helper check")
+        if args.helper_action == "stage":
+            hint(f"staged in {setup.get('setup_dir')} (0700); paste the line yourself, with your own sudo")
+        return 0
+    if action == "check":
+        client.post(f"/api/yourserver/checks/{args.check_name}", {})
+        for _ in range(600):   # the check runs in the background; a few seconds, SMART up to minutes
+            view = client.get("/api/yourserver/checks")
+            check = next(c for c in view["checks"] if c["id"] == args.check_name)
+            if check["state"] != "running":
+                break
+            time.sleep(1)
+        if args.json:
+            print_json(check)
+            return 0
+        print(f"{check['title']}: {check['words']}")
+        for row in (check.get("result") or {}).get("rows") or []:
+            print(f"  {row.get('words')}" + (f": {row['sub']}" if row.get("sub") else ""))
+        return 0
+    if action == "root":
+        view = client.get("/api/yourserver/root")
+        if args.json:
+            print_json(view)
+            return 0
+        if not view.get("available"):
+            for reason in view.get("reasons") or []:
+                print(reason.get("words"))
+            print(f"In your own terminal: {view['explain']['commands'][0]}")
+            return 0
+        print(view.get("headline") or "")
+        for group in view.get("groups") or []:
+            print(f"{group['title']}:")
+            for row in group["rows"]:
+                print(f"  {'*' if row['way'] else '-'} {row['words']}" + (" (known)" if row.get("known") else "") +
+                      (" (new)" if row.get("new") else ""))
+        return 0
+    if action == "receipts":
+        view = client.get(f"/api/yourserver/receipts/{_quote(args.receipt)}") if args.receipt else \
+            client.get("/api/yourserver/receipts")
+        if args.json or args.receipt:
+            print_json(view)
+            return 0
+        for row in view.get("receipts") or []:
+            print(f"{row.get('id')}  {row.get('time')}  {row.get('outcome')}  {row.get('words')}  ({row.get('label')})")
+        return 0
+    view = client.get("/api/yourserver")
+    if args.json:
+        print_json(view)
+        return 0
+    for line in host_lines(view.get("host") or {}):
+        print(line)
+    helper = view.get("helper") or {}
+    print(f"Seraphina's system access: {helper.get('words')}")
+    print(view.get("looks_only") or "")
+    return 0
+
+
 def cmd_custody(args: argparse.Namespace) -> int:
     """(server) The providers under GPU custody: the register's residency and the leases this harness holds."""
     view = Client(load_config()).get("/api/custody" + ("?refresh=1" if args.refresh else ""))
@@ -2208,7 +2402,8 @@ def cmd_custody(args: argparse.Namespace) -> int:
               f"generation {register.get('generation')}  resident: {resident or '-'}{follows}")
         held = row.get("held_wait_seconds")
         if row.get("needs_lease"):
-            print(f"  HELD (the card is held by someone else): {f'waits up to {held:g}s' if held else 'no wait'}; "
+            print(f"  HELD (the card is held by someone else): "
+                  f"{f'another free card at once, else waits up to {held:g}s' if held else 'no wait'}; "
                   f"FULL (the card cannot fit the model now): the next build at once")
         fenced = register.get("fenced")
         if fenced:
@@ -2225,6 +2420,41 @@ def cmd_custody(args: argparse.Namespace) -> int:
                   f"({entry.get('purpose')})")
     if not view.get("providers"):
         hint("no provider names a custody register (providers.<name>.custody)")
+    return 0
+
+
+def cmd_codex(args: argparse.Namespace) -> int:
+    """The Codex worker (DESIGN §44): `setup` prints the owner's blocks (nothing is applied; --stage writes the files
+    they install into <data_dir>/codex-setup/), `check` runs the Responses check of BROWSER_AND_CODEX.md §3.3 (b)
+    under a custody request lease for each codex-worker route (a POST: only in a swap window the owner schedules)."""
+    from .codex import checks as codex_checks
+    from .codex import setup as codex_setup
+    from .codex import work as codex_work
+
+    config = load_config()
+    if args.action == "check":
+        routes = codex_checks.codex_routes(config)
+        if not routes:
+            hint("no agent runs on codex-worker (agents.<name>.driver)")
+            return 1
+        failed = 0
+        for agent, model in routes:
+            record = codex_work.responses_check(config, model)
+            print(f"{agent}: {model.provider.name}/{model.model}: {'passed' if record.get('ok') else 'not passed'}"
+                  f" ({record.get('detail')})")
+            failed += 0 if record.get("ok") else 1
+        return 1 if failed else 0
+    if args.stage:
+        try:
+            folder = codex_setup.stage(config)
+        except codex_work.WorkError as exc:
+            raise CliError(str(exc)) from None
+        hint(f"staged the files the blocks install in {folder} (read them first; nothing was installed)")
+        for name in codex_setup.missing_keys(config):
+            hint(f"the harness has no value for {name}: after block c4, write {name}=<the key> into "
+                 f"{codex_setup.server_key_file(config)} with sudo (a keyless local server needs a placeholder "
+                 f"value), never into the staged copy")
+    sys.stdout.write(codex_setup.text(config))
     return 0
 
 
@@ -2519,6 +2749,8 @@ def build_parser() -> argparse.ArgumentParser:
                      "(created 0700; files 0600)")
     sub.add_argument("--sudo", action="store_true", help="run root-only probes through `sudo -n` (never prompts; "
                      "falls back to this user when sudo needs a password)")
+    sub.add_argument("--helper", action="store_true", help="ask Seraphina's system access (sf-system's read verbs) "
+                     "for what needs root, instead of sudo (Your server's helper mode)")
 
     sub = add(commands, "capture", cmd_capture, "bundle the harness's logs for a time window, read-only (capture "
               "before fix)",
@@ -2566,10 +2798,55 @@ def build_parser() -> argparse.ArgumentParser:
                "link to the SnapRAID Daemon, or check it")
     link.add_argument("link_action", choices=("install", "check", "remove"))
     link.add_argument("--json", action="store_true", help="print JSON")
+    rebuild = add(snapraid_actions, "rebuild", cmd_snapraid, "(server) the checklist for a failed disk: its steps, "
+                  "the current one's check and copy blocks (you run them; opening and ticking are the cockpit's)")
+    rebuild.add_argument("--json", action="store_true", help="print JSON")
+
+    sub = add(commands, "apps", cmd_apps, "(server) Your server's apps: their lights and addresses",
+              "Every app on this server in plain text: its light and reason, its address, what manages it. This\n"
+              "only reads; addresses are confirmed once in the cockpit.")
+    sub.add_argument("--json", action="store_true", help="print JSON")
+    apps_actions = sub.add_subparsers(title="actions", metavar="<action>", dest="apps_action")
+    show = add(apps_actions, "show", cmd_apps, "(server) one app: its parts and backup lines")
+    show.add_argument("app", help="an app id such as a-photos")
+    show.add_argument("--json", action="store_true", help="print JSON")
+    qr = add(apps_actions, "qr", cmd_apps, "(server) the QR code of an app's confirmed Tailscale address")
+    qr.add_argument("app", help="an app id such as a-photos")
+    qr.add_argument("--json", action="store_true", help="print JSON")
+
+    sub = add(commands, "system", cmd_system, "(server) your server now, and Seraphina's system access",
+              "The host strip (free memory, CPU, disks, GPUs, temperatures) and the state of Seraphina's system\n"
+              "access. It only looks; `system helper stage` prints the one paste that sets it up.")
+    sub.add_argument("--json", action="store_true", help="print JSON")
+    system_actions = sub.add_subparsers(title="actions", metavar="<action>", dest="system_action")
+    host = add(system_actions, "host", cmd_system, "(server) the host strip")
+    host.add_argument("--json", action="store_true", help="print JSON")
+    shelper = add(system_actions, "helper", cmd_system, "(server) the one paste that sets up or removes Seraphina's "
+                  "system access, or check it")
+    shelper.add_argument("helper_action", choices=("stage", "check", "remove"))
+    shelper.add_argument("--json", action="store_true", help="print JSON")
+    scheck = add(system_actions, "check", cmd_system, "(server) run one Check now and print its result (it only "
+                 "looks)")
+    scheck.add_argument("check_name", choices=("updates", "restart", "disk", "failed", "health", "listening",
+                                               "tailscale"))
+    scheck.add_argument("--json", action="store_true", help="print JSON")
+    sroot = add(system_actions, "root", cmd_system, "(server) who can take full control of the server (view only)")
+    sroot.add_argument("--json", action="store_true", help="print JSON")
+    sreceipts = add(system_actions, "receipts", cmd_system, "(server) the records of what Seraphina's system access "
+                    "changed")
+    sreceipts.add_argument("receipt", nargs="?", help="one record, such as R-3")
+    sreceipts.add_argument("--json", action="store_true", help="print JSON")
 
     sub = add(commands, "custody", cmd_custody, "(server) GPU custody: residency and the leases this harness holds")
     sub.add_argument("--refresh", action="store_true", help="read residency from the register now")
     sub.add_argument("--json", action="store_true", help="print JSON")
+
+    sub = add(commands, "codex", cmd_codex, "the Codex worker: the owner's setup blocks, or the Responses check",
+              "setup prints the blocks the owner pastes (users, group, ACLs, launcher, sudoers, nftables; nothing is "
+              "applied). check sends one Responses request under a custody request lease: run it only in a swap "
+              "window the owner schedules (K20).")
+    sub.add_argument("action", choices=("setup", "check"))
+    sub.add_argument("--stage", action="store_true", help="setup: also write the files the blocks install")
 
     sub = add(commands, "models", cmd_models, "list model entries, or test one")
     sub.add_argument("--json", action="store_true", help="print the models as JSON")

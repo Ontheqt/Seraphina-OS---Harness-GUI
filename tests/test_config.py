@@ -109,7 +109,7 @@ class DefaultsTest(unittest.TestCase):
                          {"thinking": {"type": "enabled"}, "reasoning_effort": "high"})
         self.assertEqual(DEFAULTS["models"]["haiku"]["extra_body"], {"thinking": {"type": "disabled"}})
         self.assertEqual(DEFAULTS["agents"], {"*": {"driver": "builtin"}})
-        self.assertEqual(sorted(DEFAULTS["drivers"]), ["builtin", "claude", "codex", "qwen"])
+        self.assertEqual(sorted(DEFAULTS["drivers"]), ["builtin", "claude", "codex", "codex-worker", "qwen"])
         self.assertEqual(DEFAULTS["pipeline"]["reviewers"], ["security", "ux", "ui", "code"])
         self.assertEqual(DEFAULTS["limits"]["max_context_chars"], 1500000)
         self.assertIn("**/*.key", DEFAULTS["escalate_paths"])

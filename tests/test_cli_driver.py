@@ -206,12 +206,27 @@ class PresetArgvTest(CliTestCase):
         common = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox",
                   "--skip-git-repo-check", "--json", "-m", "strata", "-C", str(self.cwd),
                   "--add-dir", str(self.job_dir)]
-        self.assertEqual(runner.command_line(ctx, "Build round 1.", SID),
-                         [*common, system + "\n\n---\n\nBuild round 1."])
-        self.assertEqual(runner.command_line(ctx, "Again.", SID, resume=True),
-                         [*common, "resume", SID, "Again."])
+        # the prompt goes on stdin ("-"), from a writer thread (BROWSER_AND_CODEX.md §3.3, both presets)
+        self.assertEqual(runner.command_line(ctx, "Build round 1.", SID), [*common, "-"])
+        self.assertEqual(runner._stdin_text(ctx, "Build round 1.", resume=False),
+                         system + "\n\n---\n\nBuild round 1.")
+        self.assertEqual(runner.command_line(ctx, "Again.", SID, resume=True), [*common, "resume", SID, "-"])
+        self.assertEqual(runner._stdin_text(ctx, "Again.", resume=True), "Again.")
         self.assertTrue(runner.supports_resume)
         self.assertNotIn("--full-auto", PRESETS["codex"]["run_args"])
+        self.assertEqual(runner.interrupt, "SIGINT")
+
+    def test_codex_worker_is_told_to_keep_the_ignored_files_it_did_not_make(self) -> None:
+        """verify counts only the ignored files the job's Codex runs made or changed; what the repository's setup
+        installed (node_modules, .venv) stays, and without network Codex could never put it back."""
+        runner = CliRunner(None, driver("codex-worker"))
+        system = runner.system_text(self.ctx())
+        self.assertIn(cli.IGNORED_NOTE, system)
+        self.assertIn("Leave no file that git ignores that you created or changed", cli.IGNORED_NOTE)
+        self.assertIn("Ignored files that were there before your run, such as installed dependencies, stay",
+                      cli.IGNORED_NOTE)
+        self.assertIn("no `git clean -X`", cli.IGNORED_NOTE)
+        self.assertNotIn("Leave no file that git ignores in the worktree", cli.IGNORED_NOTE)
 
     def test_codex_profile_goes_after_exec_in_run_and_resume(self) -> None:
         runner = CliRunner(None, driver("codex", profile="local"))
@@ -242,10 +257,18 @@ class PresetArgvTest(CliTestCase):
                 self.assertIn(preset["system_mode"], ("flag", "prepend"))
                 self.assertIn(preset["output"], ("stream-json", "jsonl", "text"))
                 self.assertTrue(preset["env_hint"])
-                self.assertIn("{prompt}", preset["run_args"])
+                if preset.get("prompt_stdin"):   # the Codex presets: the prompt on stdin
+                    self.assertEqual(preset["run_args"][-1], "-")
+                    self.assertEqual(preset["resume_args"][-1], "-")
+                else:
+                    self.assertIn("{prompt}", preset["run_args"])
                 self.assertIn("{session_id}", preset["resume_args"])
                 self.assertIn(preset["usage_style"], ("anthropic", "openai"))
-                self.assertTrue(preset["env_keep"])
+                if name == "codex-worker":   # Codex's own environment is the launcher's (DESIGN §44)
+                    self.assertEqual(preset["env_keep"], [])
+                    self.assertEqual(preset["commits"], "harness")
+                else:
+                    self.assertTrue(preset["env_keep"])
 
 
 class ModelSelectionTest(CliTestCase):
@@ -310,7 +333,7 @@ class TemplateTest(CliTestCase):
         argv = runner.command_line(ctx, "Build round 1.", SID)
         self.assertEqual(argv[argv.index("--append-system-prompt") + 1], system)
         codex = CliRunner(None, driver("codex"))
-        self.assertIn(card, codex.command_line(ctx, "Build round 1.", SID)[-1], "prepend mode carries it too")
+        self.assertIn(card, codex._stdin_text(ctx, "Build round 1.", resume=False), "prepend mode carries it too")
 
     def test_driver_args_override_preset_and_unknown_placeholders_stay(self) -> None:
         runner = CliRunner(None, driver("claude", run_args=["--x", "{prompt}", "{nope}",
@@ -394,7 +417,8 @@ class CommandTest(CliTestCase):
         self.assertTrue(result.ok, result.error)
         argv = self.recorded()["argv"]
         self.assertEqual(argv[:3], ["exec", "--profile", "local"])
-        self.assertTrue(argv[-1].endswith("\n\n---\n\n" + NASTY_PROMPT))
+        self.assertEqual(argv[-1], "-")
+        self.assertTrue(self.recorded()["stdin"].endswith("\n\n---\n\n" + NASTY_PROMPT.replace("\0", "")))
         self.assertEqual(result.session_ref, "0199b000-0000-7000-8000-00000000000a")
 
 
@@ -428,7 +452,8 @@ class ProcessTest(CliTestCase):
         self.assertEqual(result, AgentRun(
             ok=True, error=None, final_text="fake done",
             usage={"input_tokens": 130, "output_tokens": 20, "cached_tokens": 30, "calls": 3},
-            session_ref=result.session_ref, turns=3))
+            session_ref=result.session_ref, turns=3, outcome="completed", details=result.details))
+        self.assertEqual(result.details["exit"], 0)
         lines = [data["line"] for data in self.events.of("agent.output")]
         self.assertIn("not json {", lines)
         self.assertIn("a warning", lines)
@@ -486,13 +511,16 @@ class ProcessTest(CliTestCase):
         self.assertEqual(self.events.of("agent.tool_result"),
                          [{"id": "item_1", "name": "shell", "ok": True, "output": "hi\n"}])
         self.assertEqual(self.events.of("agent.reasoning"), [{"text": "pondering"}])
-        self.assertTrue(self.recorded()["argv"][-1].startswith("You are the builder."))
+        self.assertEqual(self.recorded()["argv"][-1], "-")
+        self.assertTrue(self.recorded()["stdin"].startswith("You are the builder."))
+        self.assertEqual(result.outcome, "completed")
 
         runner.driver.env["FAKE_CLI_USAGE"] = json.dumps(
             {"input_tokens": 150, "cached_input_tokens": 40, "output_tokens": 26})
         resumed = runner.resume(self.ctx(), thread, "Round 1 reviews are in.")
         self.assertTrue(resumed.ok, resumed.error)
-        self.assertEqual(self.recorded()["argv"][-3:], ["resume", thread, "Round 1 reviews are in."])
+        self.assertEqual(self.recorded()["argv"][-3:], ["resume", thread, "-"])
+        self.assertEqual(self.recorded()["stdin"], "Round 1 reviews are in.")
         self.assertEqual(resumed.usage, {"input_tokens": 50, "output_tokens": 6,
                                          "cached_tokens": 10, "calls": 1})
 
@@ -908,7 +936,7 @@ class InputSafetyTest(CliTestCase):
         self.assertFalse(self.record.exists())
 
     def test_prompt_over_the_argument_limit_gets_a_clear_error(self) -> None:
-        for preset, size in (("claude", 200000), ("codex", cli.MAX_ARG_BYTES)):
+        for preset, size in (("claude", 200000), ("qwen", cli.MAX_ARG_BYTES + 1)):
             with self.subTest(preset=preset):
                 result = self.fake(preset).run(self.ctx(), "x" * size)
                 self.assertFalse(result.ok)
@@ -916,6 +944,14 @@ class InputSafetyTest(CliTestCase):
                                 result.error)
                 self.assertIn(f"limit {cli.MAX_ARG_BYTES}", result.error)
                 self.assertFalse(self.record.exists())
+
+    def test_codex_takes_a_prompt_over_the_argument_limit_on_stdin(self) -> None:
+        """210,000 bytes worked with Codex 0.163.0 on stdin (codex-runtime.md probe 5); no argv item carries it."""
+        runner = self.fake("codex", env={"FAKE_CLI_FORMAT": "jsonl"})
+        result = runner.run(self.ctx(), "z" * 210000)
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(self.recorded()["argv"][-1], "-")
+        self.assertTrue(self.recorded()["stdin"].endswith("z" * 210000))
 
     def test_prompt_at_the_argument_limit_still_runs(self) -> None:
         result = self.fake("claude").run(self.ctx(), "y" * cli.MAX_ARG_BYTES)

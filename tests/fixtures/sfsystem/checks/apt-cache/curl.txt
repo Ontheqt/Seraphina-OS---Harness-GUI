@@ -1,0 +1,3 @@
+Package: curl
+Version: 8.5.0-2ubuntu10.5
+Depends: libc6 (>= 2.34), libcurl4t64 (= 8.5.0-2ubuntu10.5), zlib1g (>= 1:1.1.4)

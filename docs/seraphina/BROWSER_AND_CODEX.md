@@ -3,8 +3,9 @@
 **Status.** Design, written 2026-10-21 and revised the same day after a security
 review and a feasibility review (the Review log at the end has one line per
 issue), then revised on 2026-10-25 to carry Kate's decisions of 22 Oct 2026, and
-again that day after a review of that revision. Nothing here is built or
-deployed, and the harness installed or ran nothing on the owner's server. The
+again that day after a review of that revision. Nothing here was built when it
+was written (BC1a is built since, in the repository only: see below), and the harness
+installed or ran nothing on the owner's server. The
 only checks there were Kate's own read-only ones, and this document repeats
 their results without names (K1, K13, K14, K17, K20; the Publication paragraph
 lists them). Work already running there, including the live test battery, is not
@@ -50,6 +51,24 @@ her sudo grant, so every step that said "Kate runs on the server" or "with
 Kate's agreement" waits, or passes explicitly to the owner, while she is
 paused, and the system changes of §4.7 step 7 are the owner's only (§2.10,
 §2.14, §4.7).
+
+**Built since: BC1a (26 Oct 2026).** Phase BC1a of §4.3 is built in this
+repository and tested against the real Playwright MCP 0.0.83 (with Chrome 141,
+not the pinned 155; §4.3.1), off by default; DESIGN.md §43 describes what was
+built, and §4.3.1 below lists it against this design, with the §4.6 tests it
+covers and what is not built. Nothing of it is installed on the owner's server
+(§4.7 still holds). BC0's supervised run, BC1b and BC1c are not built.
+
+**Built since: BC1b (26 Oct 2026).** Phase BC1b of §4.4 is built in this
+repository and tested against the real pinned Codex 0.163.0 under `exec`
+(against `tests/mock_responses.py`; no hosted model, no sign-in), off by
+default; DESIGN.md §44 describes what was built, and §4.4.1 below lists it
+against this design, with the §4.6 tests it covers and what is not built. The
+owner's answers applied: O3, O4, O5, O6, O8, O9 as changed (the uid nftables
+rule on, supplied as a block; `/etc/codex/requirements.toml` off, with the
+residual risk of §3.11 item 5 accepted) and O10. Nothing of it is installed on
+the owner's server (§4.7 still holds). BC0's supervised run and BC1c are not
+built.
 
 **What it serves.** GPT Astra, an AI reviewer, relayed a request from the owner:
 find a way to bring Codex into the harness so that Kate can, among other
@@ -777,7 +796,9 @@ only between calls. BC1a therefore adds:
 - the shim's reader thread hands `notifications/cancelled`, stdin EOF and
   SIGTERM to the call in flight, which cancels its own Playwright call the same
   way and records `cancelled` in the action log (or `unknown` for a commit
-  already sent).
+  already sent, and for a link or an input already sent whose effect check the
+  closing session stopped: by K15 it counts as a commit; a typed `navigate`
+  stopped while its page loads stays `cancelled`).
 
 A unit test against `tests/mock_mcp_server.py`'s `sleep` tool checks that a
 turn ends within 5 seconds of Stop. The research run showed a cancelled
@@ -1594,7 +1615,9 @@ message)`:
   the job's spec names the path;
 - it scans the staged diff and `build.md` for every value in
   `Factory.secret_values()`, any live browser token (BC2) and the values of the
-  job's `CODEX_HOME` credentials, if any, and refuses the commit on a match;
+  job's `CODEX_HOME` credentials, if any, and refuses the commit on a match
+  (the diff is read as text, so a file git takes for binary is scanned as its
+  bytes; a secret inside a compressed or encoded file is not found);
 - a refusal fails the step with the reason; a run that changed nothing makes
   no commit, and the build check's "no commits" rule applies as today.
 
@@ -1611,7 +1634,9 @@ default `none`, and Codex-written tests must not run as the harness user with
 its reads): the new `minimal` base with the worktree read-only, the toolchain
 the repository config names, private tmpfs `HOME` and `/tmp`, `--clearenv` with
 an explicit environment, `--die-with-parent`, no network,
-`PYTHONDONTWRITEBYTECODE=1`, and on the server as the Codex user through the
+`PYTHONDONTWRITEBYTECODE=1` and `PYTHONPYCACHEPREFIX` in the private `/tmp`
+(no `.pyc` in the worktree is read: one is valid by its source's mtime, which
+the commit does not hold), and on the server as the Codex user through the
 launcher. When bwrap is unusable, `verify` does not run and the step fails with
 a reason the doctor also shows. The worktree is checked clean afterwards. Its
 argv, exit code, duration, output sha256 and the commit it ran on become a
@@ -2024,9 +2049,15 @@ v2 items; in the test suite each is exercised by T19, as far as one user can.
 1. **A separate Unix user for Codex** (for example `ai-codex`, a name still
    free on the owner's server, observed), not the harness's user. The worktree root is shared through a group with default
    ACLs, so the harness can read, revert and commit what Codex wrote and Codex
-   can write only there; that the write-policy revert and host-side git work
-   with this mixed ownership is **UNVERIFIED**, and the doctor and T19 check
-   it. Each job's `CODEX_HOME` is owned by the Codex user. The harness starts
+   can write only there. A file Codex writes 0600 (through a temporary name)
+   or a folder it makes 0700 shuts the harness out despite the default ACLs,
+   so after every run (and, for a run the harness was killed during, at
+   the restart's recovery before its reconcile; and before the harness
+   removes the worktree) the launcher's `share-worktree`, as the Codex user,
+   gives what it created to the group; T19 checks in the suite that the
+   harness's git, as a non-root member of the group, then reconciles, commits
+   and removes such a worktree (on the server it is **UNVERIFIED** until the
+   trial). Each job's `CODEX_HOME` is owned by the Codex user. The harness starts
    Codex only through `bin/sf-codex-launch`, installed by root, and a sudoers
    rule lets the harness's user run exactly that launcher as the Codex user and
    nothing else. On the owner's server `sudo` is sudo-rs 0.2.13, with classic
@@ -2086,7 +2117,12 @@ v2 items; in the test suite each is exercised by T19, as far as one user can.
    model's, Open WebUI's included: bridge and loopback services are reachable
    from any host user (observed: such a relay runs on a bridge network). The
    rule needs root to write and to read (observed). A system change for the
-   owner (O9).
+   owner (O9). A rule loaded by `nft -f` lasts only until the next boot, and the
+   owner's server powers off every night, so BC1b's block c6 also installs a
+   oneshot unit that loads it at every boot, and the file replaces its table
+   whole (a reload never appends); before every Codex run the harness checks
+   that a loopback connect from the Codex user to a port the rule does not
+   allow is dropped, and refuses the run otherwise (DESIGN §44).
 5. **Host requirements, a host-wide change.** At the pin, requirements load
    only from system-wide sources: `/etc/codex/requirements.toml`, the cloud
    bundle and `/etc/codex/managed_config.toml` (Source,
@@ -2112,6 +2148,12 @@ v2 items; in the test suite each is exercised by T19, as far as one user can.
    ignores its own configuration (a bug, or a behaviour change at an upgrade)
    is held only by the Unix user's file permissions and the egress rule, and an
    upgrade must re-run T19 before use.
+   **The owner's answer (O9, 26 Oct 2026): declined, residual accepted.** The
+   operator runs her own Codex on the host and from a Windows PC on the LAN,
+   and the harness never gates the operator's own tools, so no requirements
+   file is installed; the per-job `CODEX_HOME`, the template check and the
+   launcher hold BC1b's Codex, with the separate user and the uid egress rule
+   (which the owner accepted, as a block the harness prints and never applies).
 6. **The sandbox on Ubuntu.** The global user-namespace restriction is on, one
    level of bwrap works and a second level fails (observed), so **Codex is never
    nested inside the harness's bwrap**: a hard rule, not a v2 question. Codex
@@ -2257,6 +2299,57 @@ before BC1a is built.
 | `docs/tools.md` | a section on the adapter beside agent-browser |
 | `tests/test_mcp_cancel.py`, `tests/test_framing.py`, `tests/test_browser_shim.py`, `tests/test_browser_session_locks.py`, `tests/test_browser_live.py`, `tests/test_doctor.py` (the doctor's browser checks: T23, T25, T26), `tests/fixtures/browser/` (pages, the slow shop, injection, decoy and popup pages, recorded 0.0.83 responses) | the tests of §4.6 |
 
+### 4.3.1 What BC1a built (26 Oct 2026)
+
+Every row of the table above is built, in the files it names, with these
+additions: `swfactory/browser/rules.py` (the URL rules, the parsing of 0.0.83's
+responses, the classes and the effect check), `namespace.py` (`bin/sf-browser`'s
+lock and exec), `preset.py` (rule 7), `runs.py` (the core side) and
+`checks.py` (the doctor's lines), the GUI area `swfactory/web/views/browser.js`,
+`tests/fake_playwright.py`, `tests/browser_rig.py`,
+`tests/test_browser_harness.py` and `tests/fixtures/browser/README.md`. The owner's
+answers applied: O6 as the caps' defaults (5 GB, 30 days), O11 as Chrome's
+`--no-sandbox` inside the shim's namespace, O1, O2, O4 and O7 as "nothing built".
+
+What the build pinned that this design had as UNVERIFIED (read from the
+recordings and the live runs, with Playwright MCP 0.0.83 and
+chromium-headless-shell 141.0.7390.37, as root, under the minimal binds):
+`--caps testing` is accepted and offers `browser_verify_text_visible`;
+`browser_network_requests` reports each request's method and the status the
+site answered, not whether it had a body, and numbers requests per page load;
+the current tab stays on the page that opened a popup; bwrap passes the
+inherited lock descriptors through (the lock is held until the namespace ends,
+T10); the namespace dies with the harness (`kill -9`, T10, T20). Still
+UNVERIFIED: this exact argv as a non-root user with Chromium's own sandbox, and
+Chrome 155.
+
+The §4.6 tests, as built:
+
+| Test | Where | Kind |
+| ---- | ----- | ---- |
+| T1 to T6 | `tests/test_browser_shim.py` `SliceTests`, `tests/test_browser_live.py` `LiveSliceTests` (with the fixture's log), `tests/test_browser_harness.py` `BrowsingTurnTests` (through the mock Open WebUI) | unit and live |
+| T7 | `tests/test_mcp_cancel.py` (unit), `LifecycleTests.test_stop_during_a_wait_frees_everything` (live) | unit and live |
+| T8 | `SliceTests.test_stale_refs_after_a_re_render` | unit and live |
+| T9 | `LoginTests` | unit and live |
+| T10 | `tests/test_browser_session_locks.py` (busy, the same grant, racing launchers, the kernel freeing a lock, old lock numbers refused), `LifecycleTests.test_competing_runs_and_revoke` and `test_kill_9_of_the_harness_ends_the_namespace` | unit and live |
+| T11 | `SliceTests` (duplicates, again, renamed, Enter), `EffectTests` (reclassified links, the slow shop) | unit and live |
+| T12 | `InjectionTests`; the session rules, the browser: line and the preset in `tests/test_browser_harness.py`; untrusted proposals and carry-forward in `BrowsingTurnTests` | unit and live |
+| T18 | `TabAndUrlTests`, `EffectTests` (the redirect) | unit and live |
+| T20 | `LifecycleTests.test_sigterm_sigkill_and_eof_leave_nothing` | live |
+| T21 | `BrowsingTurnTests` (no Open WebUI write), `ToolPreservationTests`; its other clauses were built before (§2.11) | unit |
+| T22 | `tests/test_browser_session_locks.py` `VocabularyTests` | unit |
+| T23 | `tests/test_browser_harness.py` `PresetCheckTests` | unit |
+| T25 | the existing `tests/test_personas.py` `DoctorTest` (the openwebui build line) | unit |
+| T26 | `tests/test_doctor.py` `BrowserDoctorTest`, and `SessionRuleTests` (no runtime, no browsing) | unit |
+| Also measured | the schemas' size and that no Playwright tool reaches a model (`ToolSetTests`); the namespace's binds and network (`NamespaceTests`); the recordings against the real server (`ContractLiveTests`) | unit and live |
+
+Not built in BC1a: BC0's supervised run (Kate's, §4.2), the persona model test
+through the dedicated preset (§2.11), T13 to T17, T19 and T24 (BC1b, BC1c), the
+"Verify in the browser" button of T14 (its preview sibling and relay are built
+and tested with a stand-in preview), the morning summary's list of unknown
+commits, and recordings with Chrome 155. Differences kept on purpose are listed
+in DESIGN.md §43.
+
 ### 4.4 BC1b: files and config
 
 | File | Change |
@@ -2269,13 +2362,64 @@ before BC1a is built.
 | `swfactory/orchestrator.py` | the harness commit after every builder run on a `commits: harness` driver, corrective resumes included, with protected paths and the secret scan; `verify` under bwrap after it, one corrective resume on failure; run receipts in `<data_dir>/receipts/`; `job.runs[]` pointers; reconcile on an unclean end; the Retry summary; the routing check; the per-job `CODEX_HOME` deletion after the rollout hash |
 | `swfactory/items.py` | `check` and `receipt` in `EVIDENCE_KINDS` and `CODE_EVIDENCE`, with an explicit check required and the `_code_rule` limit of §3.7 |
 | `swfactory/server.py`, `swfactory/web/` | receipts on the run card; "Verify in the browser" on a job with a `preview`, offered only while the job's worktree exists (review, approved or needs-human); it writes `verify: {repo, job, branch, preview}` into the new chat's `chat.json` through the server endpoint, and the grant is built from that |
-| `swfactory/doctor.py` | `codex version` (the pin), `codex launcher` (hash, sudoers rule present on the server), `codex home` (template hashes), `codex model` (a blocker until Strata's Responses route has passed its check in a swap window under a custody request lease, whenever the endpoint is not loaded, and whenever the route's provider would need no lease under DESIGN §37; only GETs outside a lease; K20), `codex sandbox` (the T19 probes), `codex reads` (the extended read check), `codex egress` (a public connect fails) |
+| `swfactory/doctor.py` | `codex version` (the pin), `codex launcher` (hash, sudoers rule present on the server), `codex home` (template hashes), `codex model` (a blocker until Strata's Responses route has passed its check in a swap window under a custody request lease, whenever the endpoint is not loaded, and whenever the route's provider would need no lease under DESIGN §37; only GETs outside a lease; K20), `codex sandbox` (the T19 probes), `codex reads` (the extended read check), `codex key` (the launcher's key-check, as the Codex user), `codex egress` (a public connect fails; the unit that loads the rule at boot is enabled) |
 | `tests/test_codex_worker.py`, `tests/test_codex_containment.py`, `tests/mock_responses.py`, `tests/fixtures/fixture-app/` | the tests of §4.6, T24 included |
 
 At the end of a "Verify in the browser" run, the core (not the chat) adds the
 browser `receipt` evidence to the job's criterion items through the
 orchestrator, so no chat writes into a job's ledger. The button is never a merge
 gate in BC1.
+
+### 4.4.1 What BC1b built (26 Oct 2026)
+
+Every row of the table above is built, with these differences in where things
+live: the launcher's code is `swfactory/codex/launch.py` (self-contained, so
+root can install it; `bin/sf-codex-launch` runs this checkout's copy), and the
+Codex pieces are in `swfactory/codex/` (`settings.py` the `codex` section and the
+repository entries, `work.py` the routing check, the blocker, the Responses
+check, the deny list, the commit, `verify`, the reconcile and the receipts,
+`checks.py` the doctor's lines, `setup.py` the owner's blocks for
+`factory codex setup`). The GUI is `swfactory/web/views/codex.js` (the Receipts
+tab, the Codex chip and outcome, the reconcile, the Verify button, `#/codex`).
+Besides the files named: `tests/fake_codex.py` (a stand-in Codex),
+`tests/codex_rig.py`, `tests/gui_mock/codex.py` and `tests/gui/codex.mjs`. The
+owner's answers applied as in the status paragraph at the top.
+
+What the live runs pinned that this design had as UNVERIFIED (Codex 0.163.0,
+`exec`, as root and as a non-root user through setpriv): the permissions profile
+of §3.3 is accepted with `--strict-config` and `--ignore-rules`; a denied file
+fails a sandboxed `cat`, a denied folder reads as missing, and a `read` entry
+below a denied folder does not open it again, while a writable root below a
+denied folder stays writable (so the deny list names every sibling one by one);
+a deny entry for a missing path is accepted; `/tmp` is read-only and `socket()`
+is refused; no key reaches a command's environment; exec answers SIGINT with
+exit 1 and no terminal event; exec in a git repository appends a **trusted**
+project entry for the repository's root to `config.toml`, so the launcher writes
+the root and the worktree as untrusted first (then Codex leaves the file alone).
+Still UNVERIFIED: the sudo path itself (the suite uses setpriv), the egress rule
+on the server (T19's egress probe is skipped where the owner's rule is not
+installed; the staged rule's reload and its drop of the Codex user's loopback
+connects were checked as root in a private network namespace with nft 1.0.9),
+and Strata's Responses route (only the stub was reached).
+
+The §4.6 tests, as built:
+
+| Test | Where | Kind |
+| ---- | ----- | ---- |
+| T13 | `tests/test_codex_worker.py` `FixTheFixtureAppTests` (the stand-in: the fix, the harness commit, `verify`, a corrective resume, no change), `LiveCodexTests` | unit and live |
+| T14 | `VerifyInBrowserTests` (the button's record, the grant, the preview sibling, the receipt beside the criteria), `VerifyInBrowserLiveTests` (Kate's scripted turn on the preview with the live browser runtime, a decoy variant) | unit and live |
+| T15 | `StopAndCrashTests` (Stop sends SIGINT first, the wall clock, a server stop, Retry's summary), `LiveCodexTests` | unit and live |
+| T16 | `StopAndCrashTests` (`kill -9` of Codex, a harness restart in another process: `unknown`, reconciled, nothing sent again), `LiveCodexTests` | unit and live |
+| T19 | `tests/test_codex_containment.py` `LiveContainmentTests` (as nobody: the environment, every denied path, `/tmp`, the worktree and `TMPDIR`, what Codex wrote committed by the harness, the sandbox probe, never a trusted project; egress only where the rule is installed), `AsTheCodexUserTests` (as root with real users, without Codex: block c2 as printed, and the mixed-ownership worktree reconciled, committed and removed by a non-root harness in the group, also after a harness restart mid-run, with the job folder closed again), `PlantedThingsTests`, `LauncherTests`, `RunFolderTests`, `RestartAndJobEndTests`, `DataFolderPrivacyTests`, `UnreadableFolderTests`, `KeyFileTests` (the key file the Codex user's alone, hidden from agents' Bash, a comment-only file failing the doctor's line), `EgressRuleTests` (the reload, the boot unit, the run gate; live in a private network namespace) | unit and live |
+| T24 | `ResponsesCheckTests` (one POST under a lease, only GETs outside one, a 404, a denied lease, no lease possible, not loaded, off by default) | unit |
+| Also | `RoutingCheckTests`, `EvidenceTests`, `RouteTests`, `SetupBlockTests`, `DoctorLineTests`; the GUI smoke's codex suite | unit |
+
+Differences kept on purpose are listed in DESIGN.md §44 (the job's Stop is its
+Cancel, so the job ends `cancelled`; `verify` runs for any builder; codex-worker
+runs the builder only; the route's key file is the launcher's to read; the
+untrusted projects). Not built in BC1b: BC1c (T17), BC3, hosted models, the
+server steps of §4.7 (7 to 9), the power-off rule and phone notices for a Codex
+job (Wake & Messages).
 
 ### 4.5 BC1c: files and config (optional)
 
@@ -2382,7 +2526,12 @@ system changes of step 7 are the owner's only, whether or not she is paused:
    nftables uid rule; install the pinned Codex for the Codex user; and, only if
    accepted after checking every existing Codex user on the host (the owner's
    own and the battery's), `/etc/codex/requirements.toml`, otherwise the
-   recorded fallback and residual of §3.11.
+   recorded fallback and residual of §3.11. (O9, 26 Oct 2026: the nftables
+   rule yes, the requirements file no, the residual accepted. BC1b's
+   `factory codex setup` prints these as blocks c0 to c8: c0 stages the files
+   the others install, c7 installs the release's standalone binary after the
+   owner compares its sha256 with the one GitHub shows (no Node or npm on the
+   host); the harness never applies them.)
 8. The doctor's Codex checks pass, including §3.11's extended read check, the
    egress probe and T19.
 9. In the first swap window the owner schedules, Strata's Responses check of
@@ -2390,6 +2539,9 @@ system changes of step 7 are the owner's only, whether or not she is paused:
    running by then (§3.3 (c)). Only after it passes: T13 to T16 with Codex on
    the local model, in swap windows of §3.3 (Strata loaded, the battery not
    running, Kate's chats moved or paused as the owner chose, O8), then T14.
+   (O8: every server trial runs only in a window the operator proposes and the
+   owner agrees; the harness has no code for this, it is this checklist's
+   rule.)
 10. Results, receipts and anything unexpected go to the owner and Kate; nothing
     stays running.
 

@@ -23,7 +23,7 @@ FILES = ("index.html", "app.js", "flows.js", "style.css", "login.html")
 URL_RE = re.compile(r"https?://", re.I)
 PRODUCT = "Seraphina OS Harness"
 SVG_NS = "http://www.w3.org/2000/svg"   # the favicon's XML namespace: a name, never fetched
-AREAS = ("routing", "tracker", "personas", "messages", "operator", "backups")   # one view module, mock module and suite each
+AREAS = ("routing", "tracker", "personas", "messages", "operator", "backups", "yourserver", "browser", "codex")   # one view module, mock module and suite each
 VIEWS = WEB / "views"
 # window.SF, the one namespace the view modules use (app.js, "view modules"): area builders rely on these names.
 SF_API = ("version", "product", "registerView", "registerJobTab", "extend", "refreshJobs", "h", "add", "clear", "icon", "btn",

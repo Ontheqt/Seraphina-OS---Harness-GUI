@@ -1,0 +1,152 @@
+{
+ "StreamConfig": {},
+ "State": {
+  "Running": true,
+  "Paused": false,
+  "Restarting": false,
+  "OOMKilled": false,
+  "RemovalInProgress": false,
+  "Dead": false,
+  "Pid": 4301,
+  "ExitCode": 0,
+  "Error": "",
+  "StartedAt": "2026-10-25T06:00:01.123456789Z",
+  "FinishedAt": "2026-10-24T22:58:12.987654321Z",
+  "Health": {
+   "Status": "starting",
+   "FailingStreak": 0,
+   "Log": [
+    {
+     "Output": "PLANTED-HEALTH-LOG"
+    }
+   ]
+  }
+ },
+ "ID": "1111111111111111111111111111111111111111111111111111111111111111",
+ "Created": "2026-10-01T10:00:00.000000000Z",
+ "Managed": false,
+ "Path": "/photoprism/entrypoint.sh",
+ "Args": [
+  "--admin-password",
+  "PLANTED-CMD-ARG"
+ ],
+ "Config": {
+  "Hostname": "1111111111",
+  "Domainname": "",
+  "User": "",
+  "AttachStdin": false,
+  "ExposedPorts": {
+   "2342/tcp": {}
+  },
+  "Tty": false,
+  "Env": [
+   "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+   "PHOTOPRISM_ADMIN_PASSWORD=PLANTED-ENV-VALUE",
+   "TS_AUTHKEY=tskey-PLANTED-AUTHKEY",
+   "TS_EXTRA_ARGS=--authkey=PLANTED-EXTRA",
+   "TS_HOSTNAME=photos"
+  ],
+  "Cmd": [
+   "photoprism",
+   "start",
+   "--password=PLANTED-CMD"
+  ],
+  "Image": "photoprism/photoprism:241021",
+  "Volumes": null,
+  "WorkingDir": "/photoprism",
+  "Entrypoint": [
+   "/scripts/entrypoint.sh"
+  ],
+  "Labels": {
+   "com.docker.compose.config-hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "com.docker.compose.container-number": "1",
+   "com.docker.compose.depends_on": "db:service_started:false",
+   "com.docker.compose.image": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "com.docker.compose.oneoff": "False",
+   "com.docker.compose.project": "photos",
+   "com.docker.compose.project.config_files": "/opt/stacks/photos/compose.yaml",
+   "com.docker.compose.project.working_dir": "/opt/stacks/photos",
+   "com.docker.compose.service": "photos",
+   "com.docker.compose.version": "5.6.1",
+   "org.opencontainers.image.version": "241021",
+   "org.opencontainers.image.title": "<img src=x onerror=alert('label')>",
+   "org.opencontainers.image.description": "PLANTED-FREE-TEXT a publisher wrote",
+   "maintainer": "PLANTED-MAINTAINER",
+   "traefik.http.middlewares.auth.basicauth.users": "admin:PLANTED-HTPASSWD"
+  }
+ },
+ "Image": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+ "NetworkSettings": {
+  "Bridge": "",
+  "SandboxID": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "SandboxKey": "/var/run/docker/netns/cccccccc",
+  "Ports": {
+   "2342/tcp": null
+  },
+  "Networks": {
+   "photos_default": {
+    "IPAMConfig": null,
+    "Links": null,
+    "Aliases": [
+     "photos-photos-1",
+     "photos"
+    ],
+    "DriverOpts": null,
+    "GwPriority": 0,
+    "NetworkID": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "EndpointID": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "Gateway": "172.19.0.1",
+    "IPAddress": "172.19.0.3",
+    "IPPrefixLen": 16,
+    "MacAddress": "02:42:ac:13:00:03",
+    "DNSNames": [
+     "photos-photos-1",
+     "photos",
+     "111111111111"
+    ]
+   }
+  }
+ },
+ "LogPath": "/var/lib/docker/containers/1111111111111111111111111111111111111111111111111111111111111111/1111111111111111111111111111111111111111111111111111111111111111-json.log",
+ "Name": "/photos-photos-1",
+ "RestartCount": 0,
+ "Driver": "overlayfs",
+ "Platform": "linux",
+ "MountLabel": "",
+ "ProcessLabel": "",
+ "AppArmorProfile": "docker-default",
+ "MountPoints": {
+  "/photoprism/originals": {
+   "Source": "/srv/data1/photos/originals",
+   "Destination": "/photoprism/originals",
+   "RW": true,
+   "Name": "",
+   "Driver": "",
+   "Type": "bind",
+   "Propagation": "rprivate",
+   "Spec": {
+    "Type": "bind",
+    "Source": "/srv/data1/photos/originals",
+    "Target": "/photoprism/originals"
+   },
+   "SkipMountpointCreation": false
+  },
+  "/photoprism/storage": {
+   "Source": "",
+   "Destination": "/photoprism/storage",
+   "RW": true,
+   "Name": "photos_storage",
+   "Driver": "local",
+   "Type": "volume",
+   "Spec": {
+    "Type": "volume",
+    "Source": "photos_storage",
+    "Target": "/photoprism/storage"
+   }
+  }
+ },
+ "SecretReferences": null,
+ "ConfigReferences": null,
+ "HasBeenStartedBefore": true,
+ "HasBeenManuallyStopped": false
+}

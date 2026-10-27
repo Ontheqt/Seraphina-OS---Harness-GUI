@@ -37,6 +37,13 @@ cannot be told apart from the sibling's own write; only a sandbox (bwrap) or a
 dedicated Unix user contains that (section 17). confirmed.md is the
 orchestrator's own: a person's confirm action writes it, and it is put back
 to that record before every approver run.
+
+A builder whose driver cannot commit (the codex-worker preset, ``commits: harness``; DESIGN §44) is committed by the
+harness after every run on it, corrective resumes included, after the write-policy check: protected paths refused,
+the staged diff scanned for secrets (codex/work.py). A repository's ``verify`` command then runs, always under
+bwrap, and the build check gives the builder one corrective resume when it fails. Every Codex run gets a receipt in
+<data_dir>/receipts/, outside every root Codex can write, and a run that did not end cleanly is reconciled (git
+status and the diff's hash) and never replayed (DESIGN §40).
 """
 
 from __future__ import annotations
@@ -58,6 +65,7 @@ from typing import Any, Callable, Iterator, NamedTuple
 
 from . import gitops
 from . import items as tracker
+from .codex import work as codex_work
 from . import outcomes as rule
 from .agentdefs import AgentDef, discover_agents, read_small_text, required_agents
 from .config import (Config, HousekeepingConfig, ModelConfig, ProviderConfig, RepoConfig, agent_dirs, deep_merge,
@@ -75,6 +83,7 @@ from .custody import (Claims, CustodyDenied, custody_on_server, lease_of, leased
 from .custody import REFUSAL_WORDS as CUSTODY_WORDS
 from .custody import client_for as custody_client_for
 from .custody import parse_settings as parse_custody
+from .custody import lease_problem as custody_lease_problem
 from .custody import needs_lease as custody_needs_lease
 from .custody import settings_of as custody_settings_of
 from .custody import set_journal as custody_journal
@@ -87,7 +96,7 @@ from .routing import (JUDGE_HINT, REACHABILITY, ROUTE_KEYS as PLACEMENT_KEYS, Bu
                       independence_map, is_judge, judge_choice, merged_placements, model_family, overflow_key,
                       placement_reason, price_table, profile_name, profile_routes, reason, route_family, run_cost,
                       shared_model, shared_status, take_slot, zero_cost)
-from .runners import AgentRun, RunContext, Runner, add_usage, launch_model, make_runner
+from .runners import AgentRun, RunContext, Runner, add_usage, launch_model, make_runner, outcome_of
 from .skills import skill_dirs
 
 JobKey = tuple[str, str]
@@ -160,12 +169,20 @@ SPEC_FROM_BRANCH = "The work is already on the branch; describe what it does and
 SPEC_RETRY = "You did not write spec.md."
 BUILD_MD_FIX = "build.md must start with STATUS: READY or STATUS: BLOCKED."
 COMMIT_FIX = "Commit or discard your uncommitted changes, then update build.md."
+VERIFY_FIX = ("The harness ran the repository's verify command on your latest commit and it failed (exit {code}). "
+              "Fix the code so it passes, then update build.md. The end of its output:\n{tail}")
 ITEMS_FIX = ("These blocking items are not addressed in build.md: {ids}. Add a ## Items line for each (done with "
              "evidence, or doing with what is left), then update build.md.")
 REVIEW_RETRY = "Your review file is missing or its first line is not a verdict."
 MERGE_BUSY = "approved; main checkout busy — approve again when clean"
 INTERRUPTED = "interrupted (server restarted)"
 STOPPED = "interrupted (server stopped)"
+# Files git ignores below these folders that a Codex run made or changed are caches: the harness removes them after
+# the run, so verify never reads one (one it cannot remove fails verify like any other ignored file the run left)
+VERIFY_CACHES = frozenset({"__pycache__", ".pytest_cache"})
+IGNORED_KEEP = 200                  # job.codex_ignored: at most this many paths (more: counted by time, see below)
+IGNORED_SLACK = 1.0                 # seconds: a file's ctime runs on a coarser clock than time.time() (and the
+                                    # wait after the harness's own ACL change, before a run's start)
 
 
 class ActionError(Exception):
@@ -267,6 +284,7 @@ class Factory:
         self._wakes: Any = None         # wakes.WakeManager (Wake & Messages W2, W3), made by _wake_manager()
         self._drift: Any = None         # driftsources.DriftSources (section 38), made by _drift_manager()
         self._snapraid: Any = None      # snapraid.SnapraidPanel (section 41), made by _snapraid_manager()
+        self._yourserver: Any = None    # yourserver.YourServer (section 42), made by _yourserver_manager()
         self._system: HousekeepingManager | None = None
         self._tokens: AgentTokens | None = None
         self._receipts: Any = None   # receipts.Receipts, made on first use (DESIGN §36)
@@ -299,6 +317,7 @@ class Factory:
         self._wake_manager().start()
         self._drift_manager().start()
         self._snapraid_manager().start()
+        self._yourserver_manager().start()
 
     def start_jobs(self) -> None:
         """Restart recovery and the job workers only, without chats, plans or the Notifier (`factory run`)."""
@@ -320,6 +339,8 @@ class Factory:
             self._drift.stop(min(2.0, timeout))
         if self._snapraid is not None:
             self._snapraid.stop(min(2.0, timeout))
+        if self._yourserver is not None:
+            self._yourserver.stop(min(2.0, timeout))
         if wakes is not None:   # no new wakes during shutdown; the turn in flight is cut (S17 retries it once)
             wakes.stop(deadline)
         for manager in (self._plans, self._chats):
@@ -341,7 +362,7 @@ class Factory:
             self.config = new_config
             custody_journal(new_config.data_dir)
             self._forget_secrets()
-            for manager in (self._chats, self._plans, self._drift, self._snapraid):
+            for manager in (self._chats, self._plans, self._drift, self._snapraid, self._yourserver):
                 if manager is not None:
                     manager.config = new_config
             if self._system is not None:
@@ -379,11 +400,31 @@ class Factory:
             key = (listed.get("repo"), listed.get("id"))
             with self._lock:
                 known = key in self._cancels
-            if listed.get("stage") not in ACTIVE_STAGES or known:
+            if known:
+                continue
+            if listed.get("stage") not in ACTIVE_STAGES:
+                if isinstance(listed.get("codex_run"), dict):
+                    self._recover_stopped_codex_run(key)
                 continue
             job = self._entry(key)
             with self._job_lock(key):
+                if isinstance(job.get("codex_run"), dict):   # a Codex run was in flight: unknown, reconciled (§44)
+                    self._codex_interrupted(job)
                 self._mark_failed(job, self._interrupted_merge(job) if job.get("stage") == "merging" else INTERRUPTED)
+
+    def _recover_stopped_codex_run(self, key: JobKey) -> None:
+        """A job that left the active stages while its Codex run was in flight (Stop sets cancelled at once; the run's
+        wind-down, which records it and takes the job folder's share back, never came because the harness was killed
+        before it): the run is recorded unknown and reconciled as for an active job (_codex_interrupted), and a job
+        that ended gets its end (_job_ended: the carry-forward, the follow-up, the Codex home and run folders) that
+        _drive's finally never reached. The stage stays as it is."""
+        job = self._entry(key)
+        with self._job_lock(key):
+            if not isinstance(job.get("codex_run"), dict):
+                return
+            self._codex_interrupted(job)
+            if job.get("stage") in END_STAGES:
+                self._job_ended(job)
 
     def _interrupted_merge(self, job: dict) -> str:
         """The failed reason of a job a previous server left merging (DESIGN §40): what it did is looked at again,
@@ -541,6 +582,9 @@ class Factory:
             except GitError:
                 raise ValueError(f"branch {from_branch!r} does not exist in {repo}") from None
         snapshot, name = self._routing(repo_cfg, pipeline.reviewers, routing, profile=profile)
+        problem = self._codex_problem(repo, snapshot)
+        if problem:   # a codex-worker job does not start (BROWSER_AND_CODEX.md §3.3, DESIGN §44)
+            raise ValueError(f"this job's builder runs on codex-worker and cannot start: {problem}")
         if items is not None and not (isinstance(items, list) and all(isinstance(entry, dict) for entry in items)):
             raise ValueError("items must be a list of item fields")
         if handoff_models is not None and not (isinstance(handoff_models, list)
@@ -818,7 +862,9 @@ class Factory:
                 raise ActionError(f"cannot retry {repo}/{job_id} while it is {job['stage']}")
             self._require_idle(key)
             step = job.get("failed_step") if job.get("failed_step") in STEPS else "setup"
-            self._requeue(job, step, detail=f"retrying {step}")
+            reconciled = job.get("reconcile") if isinstance(job.get("reconcile"), dict) else None
+            note = f": {reconciled['summary']}" if reconciled and reconciled.get("summary") else ""
+            self._requeue(job, step, detail=f"retrying {step}{note}")
             return copy.deepcopy(job)
 
     def cancel(self, repo: str, job_id: str) -> dict:
@@ -855,6 +901,12 @@ class Factory:
                 profile = job["profile"] or ""   # the job's own profile, or none when it ran without one
             snapshot, name = self._routing(self.config.repo(repo), job["reviewers"], routing, keep=keep,
                                            profile=profile)
+            # §3.3 holds for the rest of the job: the routing check as at submit, and once Codex ran, no route
+            # (the builder's too) that reads its work off this machine (GETs only: the model may be unloaded now)
+            problem = codex_work.routing_problem(self.config, repo, snapshot) or (
+                self._codex_hosted_problem(repo, snapshot) if self._ran_codex(job) else None)
+            if problem:
+                raise ValueError(f"cannot route {repo}/{job_id} this way: {problem}")
             self._update(job, routing=snapshot, profile=name)
             self._forget_secrets()
             return copy.deepcopy(job)
@@ -1598,6 +1650,457 @@ class Factory:
         """chat.json plus "messages" [{role, text}]."""
         return self._chat_manager().chat(chat_id)
 
+    # -- the browser adapter (section 43) ---------------------------------------------------------------------
+
+    def browser_state(self) -> dict:
+        """GET /api/browser: the browser card (on or off, the runtime, the profiles, BC1's stated limits) and the
+        newest session folders' receipts summarized (ids, counts and hashes; never page text)."""
+        from .browser import runs as browser_runs
+
+        return {**browser_runs.card(self.config), "sessions": browser_runs.recent_sessions(self.config.data_dir)}
+
+    def browser_revoke(self, grant_id: str) -> dict:
+        """A person revokes a browsing run's session lock (§2.6 rule 3): the grant says revoked and the locking run's
+        MCP client is closed, which ends the shim's namespace. KeyError for an unknown grant."""
+        from .browser import runs as browser_runs
+
+        found = browser_runs.revoke(self.config.data_dir, grant_id)
+        self.bus.publish("browser.revoked", {"grant": grant_id, "closed": found["closed"]})
+        return found
+
+    def browser_shot(self, chat_id: str, session_lock: str, name: str) -> Path:
+        """A screenshot of one of the chat's browsing turns (KeyError when the chat has no such session)."""
+        from .browser import runs as browser_runs
+
+        chat = self._chat_manager().chat(chat_id)
+        if not any(isinstance(r, dict) and r.get("session_lock") == session_lock for r in chat.get("browser") or []):
+            raise KeyError("no such screenshot")
+        return browser_runs.artifact_path(self.config.data_dir, session_lock, name)
+
+    # -- the Codex worker (DESIGN §44; BROWSER_AND_CODEX.md §3) --------------------------------------------------
+
+    def job_receipts(self, repo: str, job_id: str) -> dict:
+        """GET …/receipts: the job's run receipts as the run card shows them (ids, outcomes, paths, the commit, the
+        checks; never text), whether their hash chain holds, and the reconcile summary of an unclean end."""
+        job = self.job(repo, job_id)
+        store = codex_work.Receipts(self.config.data_dir)
+        return {"receipts": store.summaries(repo, job_id), "chain_broken": store.verify_chain(repo, job_id),
+                "reconcile": job.get("reconcile"), "verify": job.get("verify"),
+                "preview": self._preview_offer(job)}
+
+    def job_receipt(self, repo: str, job_id: str, run: str) -> dict:
+        """One run receipt as written (KeyError for none)."""
+        self.job(repo, job_id)
+        return codex_work.Receipts(self.config.data_dir).read(repo, job_id, run)
+
+    def _preview_offer(self, job: dict) -> dict:
+        """Whether "Verify in the browser" is offered (§4.4): a repository with a preview, the job's worktree there,
+        the job in review, approved or needs-human; with why not otherwise."""
+        try:
+            repo = self.config.repo(job["repo"])
+        except KeyError:
+            return {"offered": False, "why": "the repository is no longer configured"}
+        if not repo.preview:
+            return {"offered": False, "why": "the repository has no preview setting"}
+        if job.get("stage") not in ("review", "approve", "needs-human"):
+            return {"offered": False, "why": "offered while the job is in review, approved or needs you"}
+        if not Path(job["worktree"]).is_dir():
+            return {"offered": False, "why": "the job's worktree is gone"}
+        return {"offered": True, "persona": codex_work.settings(self.config)["verify_persona"],
+                "port": repo.preview.get("port")}
+
+    def verify_in_browser(self, repo: str, job_id: str) -> dict:
+        """POST …/verify-in-browser: a browsing chat for the persona of codex.verify_persona whose chat.json carries
+        verify {repo, job, branch, preview}; its grant is built from that record (the preview from this job's branch
+        in its sibling namespace, §2.9), never from the model. ActionError when it is not offered; ValueError (and no
+        chat) when the persona's route could take the page off this machine on a repository not marked
+        personal_data: false (§3.3; each turn checks where it was placed again)."""
+        job = self.job(repo, job_id)
+        offer = self._preview_offer(job)
+        if not offer.get("offered"):
+            raise ActionError(f"Verify in the browser is not offered: {offer.get('why')}")
+        preview = dict(self.config.repo(repo).preview or {})
+        record = {"repo": repo, "job": job_id, "branch": job.get("branch"), "preview": preview}
+        manager = self._chat_manager()
+        chat = manager.new_chat(None, agent=str(offer["persona"]))
+        try:
+            return manager.set_verify(chat["id"], record)
+        except ValueError:
+            with contextlib.suppress(Exception):
+                manager.chat_delete(chat["id"])
+            raise
+
+    def attach_browser_receipt(self, repo: str, job_id: str, record: dict) -> list[str]:
+        """At the end of a "Verify in the browser" turn the core (never the chat) adds the browser receipt as receipt
+        evidence beside the job's criteria: check ok only when the turn checked an expected text and every check
+        matched (a decoy outside the result element reads matched: false). Never a merge gate in BC1."""
+        receipt = str(record.get("receipt") or "")
+        if not receipt:
+            return []
+        expects = [row.get("expect") for row in record.get("rows") or [] if isinstance(row, dict)
+                   and isinstance(row.get("expect"), dict)]
+        matched = bool(expects) and all(expect.get("matched") is True for expect in expects)
+        entry = {"kind": "receipt", "ref": receipt[:200], "check": "ok" if matched else "failed",
+                 "detail": f"Verify in the browser: {len(expects)} expected text(s) checked, "
+                           f"{'all matched' if matched else 'not all matched'}; grant {record.get('grant')}"}
+        job = self.job(repo, job_id)
+        return self._criteria_evidence(job, entry)
+
+    def _criteria_evidence(self, job: dict, entry: dict) -> list[str]:
+        """entry (code-written check or receipt evidence) beside every criterion item of the job; their ids."""
+        added: list[str] = []
+        try:
+            with self._job_items(job) as ledger:
+                for item in list(ledger.items):
+                    if item.get("kind") == "criterion" and item.get("status") not in ("dropped",):
+                        if ledger.add_evidence(tracker.FACTORY, item["id"], [dict(entry)]) is not None:
+                            added.append(item["id"])
+        except (tracker.ItemError, OSError) as exc:
+            self._log(job, "warn", f"could not add {entry.get('kind')} evidence to the criteria: {exc}")
+        return added
+
+    def _codex_problem(self, repo: str, routing: dict) -> str | None:
+        """Why a job whose builder (or a rung of it) runs on codex-worker may not start: the routing check, then the
+        codex model blocker for each such route (GETs only, §3.3 (c)), then the host's containment (with a Codex user:
+        this version's launcher, the uid egress rule loaded). None for other jobs."""
+        if not codex_work.worker_agents(self.config, routing):
+            return None
+        problem = codex_work.routing_problem(self.config, repo, routing)
+        if problem:
+            return problem
+        builder = routing.get("builder") if isinstance(routing.get("builder"), dict) else {}
+        provider = None
+        for route in [builder, *[rung for rung in builder.get("escalate") or [] if isinstance(rung, dict)]]:
+            if not codex_work.is_worker(self.config, route.get("driver")):
+                continue
+            try:
+                model = self._model_config(route)
+            except StepError as exc:
+                return str(exc)
+            problem = codex_work.model_blocker(self.config, model.provider, model.model)
+            if problem:
+                return problem
+            provider = provider or model.provider
+        return codex_work.containment_blocker(self.config, provider)
+
+    def _ran_codex(self, job: dict) -> bool:
+        """Whether a Codex run has been in this job (one in flight, or a job.runs entry on codex-worker or with a
+        receipt: only Codex runs get one)."""
+        return bool(job.get("codex_run")) or any(
+            isinstance(entry, dict) and ("receipt" in entry or codex_work.is_worker(self.config, entry.get("driver")))
+            for entry in job.get("runs") or [])
+
+    def _codex_hosted_problem(self, repo: str, routing: dict) -> str | None:
+        """§3.3 for a job that ran Codex, whatever its routing says now: on a repository not marked
+        personal_data: false, the first route of routing (the builder's too, once it is off codex-worker) that would
+        send what it reads (Codex's diff, build.md, the verify output) off this machine, in the routing check's
+        words; None when every route stays here."""
+        if not codex_work.repo_work(self.config, repo).personal_data:
+            return None
+        for name, route in sorted((routing or {}).items()):
+            why = codex_work.hosted_route(self.config, route)
+            if why:
+                return (f"{name} would read what Codex wrote, and {why}: on a repository not marked "
+                        f"personal_data: false no role of a codex-worker job leaves this machine "
+                        f"(BROWSER_AND_CODEX.md §3.3)")
+        return None
+
+    def _unfinished_codex_run(self, job: dict, agent_name: str) -> dict | None:
+        """The agent's last run when it was a Codex run that did not complete (unknown, failed, timed out,
+        cancelled, or cut off by a restart): its thread is never resumed and its prompt never sent again (§3.6,
+        DESIGN §40), so the next run starts a new session. None otherwise."""
+        last = _last_run(job, agent_name)
+        if not last or last.get("outcome") in (None, "completed"):
+            return None
+        return last if "receipt" in last or codex_work.is_worker(self.config, last.get("driver")) else None
+
+    def _unfinished_note(self, job: dict, unfinished: dict) -> str:
+        """What the next builder run is told about a Codex run that did not complete: how it ended and the reconcile's
+        summary of what it left."""
+        reconciled = job.get("reconcile") if isinstance(job.get("reconcile"), dict) else {}
+        summary = reconciled.get("summary") if reconciled.get("run") == unfinished.get("run") else None
+        left = f"Reconciled: {summary}." if summary else "What it left is in the worktree."
+        return (f"The previous builder run ({unfinished.get('run')}) ended {unfinished.get('outcome')}: its session is "
+                f"never resumed and its request never sent again. {left} Check the worktree before you go on: it is "
+                f"as that run left it.")
+
+    def _codex_session_gone(self, job: dict, agent_name: str) -> bool:
+        """Whether the agent ran on codex-worker in this job and its thread was dropped with the job's home at job end
+        (_codex_job_ended): job.agents keeps no session for it."""
+        record = (job.get("agents") or {}).get(agent_name) or {}
+        return bool(record.get("runs")) and not record.get("session") and codex_work.is_worker(self.config,
+                                                                                                record.get("driver"))
+
+    def _ignored_files(self, worktree: Path) -> dict[str, tuple[int, int, int]] | None:
+        """The worktree's ignored files (gitops.ignored_files: size, mtime, ctime), or None when git cannot list
+        them."""
+        try:
+            return gitops.ignored_files(worktree)
+        except (GitError, OSError):
+            return None
+
+    def _ignored_left(self, job: dict, before: dict[str, tuple[int, int, int]] | None = None,
+                      since: float | None = None) -> list[str] | None:
+        """The files git ignores that the job's Codex runs made or changed and left in the worktree. The commit does
+        not hold them, so verify in the worktree would not be verify on the commit (§3.3); kept as
+        job.codex_ignored, so a later verify still sees the ones that stay.
+
+        since (the run's start, time.time()) is given after every Codex run, whatever its outcome. What the run
+        made or changed is told by before (the worktree's ignored files before it, by size, mtime and ctime: ctime
+        is the one time no process can set back, so a rewrite to the same size that puts the mtime back counts too);
+        without one (a harness restart mid-run, or git could not list them) by time: every ignored file whose mtime
+        or ctime is at or after since. The harness's own change to the worktree's ACLs (open_worktree) comes before
+        since and the snapshot, past IGNORED_SLACK, so the ctimes it changes never count. job.codex_ignored_since
+        keeps that time while the files cannot be listed, or are more than IGNORED_KEEP, so a later call counts them
+        the same way. The caches among them (VERIFY_CACHES) are removed, so verify never reads one; one that cannot
+        be removed counts. None when they cannot be listed (verify then fails closed)."""
+        kept = [str(path) for path in job.get("codex_ignored") or []]
+        pending = job.get("codex_ignored_since")
+        pending = float(pending) if isinstance(pending, (int, float)) else None
+        if since is None and pending is None and not kept:
+            return []
+        worktree = Path(str(job.get("worktree") or ""))
+        now = self._ignored_files(worktree) if job.get("worktree") else None
+        if since is not None and (before is None or now is None):   # this run is counted by time
+            pending = since if pending is None else min(pending, since)
+        if now is None:
+            if pending != job.get("codex_ignored_since"):
+                self._update(job, codex_ignored_since=pending)
+            return None
+        found = {path for path in kept if path in now}
+        if since is not None and before is not None:
+            found |= {path for path, seen in now.items() if tuple(before.get(path, ())) != tuple(seen)}
+        if pending is not None:
+            cutoff = int((pending - IGNORED_SLACK) * 1e9)
+            found |= {path for path, seen in now.items() if max(seen[1], seen[2]) >= cutoff}
+        caches = {path for path in found if set(PurePosixPath(path).parts) & VERIFY_CACHES}
+        left = sorted(found - {path for path in caches if _remove_below(worktree, path)})
+        times = [moment for moment in (pending, since) if moment is not None]
+        pending = min(times) if times and len(left) > IGNORED_KEEP else None   # more than the list keeps: by time
+        if left[:IGNORED_KEEP] != kept or pending != job.get("codex_ignored_since"):
+            self._update(job, codex_ignored=left[:IGNORED_KEEP] or None, codex_ignored_since=pending)
+        return left
+
+    def _codex_after(self, job: dict, agent_name: str, round_: int | None, result: AgentRun, model: ModelConfig,
+                     run_route: dict, log_path: Path, grid: Any, violation: str | None, started: str,
+                     ignored_before: dict[str, tuple[int, int, int]] | None = None,
+                     since: float = 0.0) -> str | None:
+        """After a codex-worker run (§3.3, §3.6, §3.7): the ignored files it made or changed, whatever its outcome
+        (ignored_before is the worktree's before this run, since its start: _ignored_left), the harness commit
+        (after the write-policy check, and only when collect()'s share-worktree answered without an error: a
+        check record otherwise, and the step fails), verify on that commit (failed without running while the job's
+        runs left ignored files the commit does not hold; stopped by the job's Stop), the reconcile of an unclean
+        end, and the run's receipt with the job.runs pointer. Returns why the step fails (a refused or skipped
+        commit), else None. Never raises for the receipt itself."""
+        run = log_path.stem
+        outcome = outcome_of(result)
+        details = result.details or {}
+        checks: list[dict] = [{"kind": "write_policy", "ok": violation is None,
+                               **({"reason": violation} if violation else {})}]
+        commit_: dict | None = None
+        reconciled: dict | None = None
+        error: str | None = None
+        artifacts: dict[str, Any] = {"paths": [], "diff_sha256": None, "final_message_sha256":
+                                     codex_work.text_sha256(result.final_text)}
+        left = self._ignored_left(job, ignored_before, since)
+        if left:
+            artifacts["ignored_left"] = left[:50]
+        build_text = _read_text(Path(job["job_dir"]) / "build.md")
+        artifacts["build_md_sha256"] = codex_work.text_sha256(build_text) if details.get("build_md_copied") else None
+        share = details.get("share") if isinstance(details.get("share"), dict) else {}
+        if share.get("error"):   # a folder Codex left closed would be missing from the commit, git says nothing
+            checks.append({"kind": "share_worktree", "ok": False, "reason": str(share["error"])[:400]})
+            if outcome == "completed" and violation is None:
+                error = (f"what Codex wrote could not be made the group's (the launcher's share-worktree: "
+                         f"{str(share['error'])[:300]}), so nothing was committed: a file or folder it left closed "
+                         f"to the harness would be missing from the commit")
+        if error is None and outcome == "completed" and violation is None and codex_work.commits_by_harness(
+                self.config, run_route.get("driver")):
+            try:
+                commit_ = codex_work.commit(self.config, job, int(round_ or job.get("round") or 1),
+                                            self.secret_values(), [build_text])
+                checks.append({"kind": "secret_scan", "ok": True})
+            except (codex_work.WorkError, GitError) as exc:
+                checks.append({"kind": "secret_scan", "ok": False, "reason": str(exc)})
+                error = f"the harness commit was refused: {exc}"
+            if commit_:
+                artifacts["paths"] = commit_.get("paths") or []
+                with contextlib.suppress(GitError):
+                    shown = gitops.git(Path(job["worktree"]), "show", "--binary", "--format=", "--no-color",
+                                       "--no-ext-diff", "--no-textconv", commit_["sha"], timeout=gitops.SLOW_TIMEOUT)
+                    artifacts["diff_sha256"] = hashlib.sha256(shown.encode("utf-8", "surrogateescape")).hexdigest()
+                cancel = self._cancel_event(_key(job))
+                check = codex_work.verify(self.config, job, run, commit_["sha"], ignored_left=left, cancel=cancel)
+                if check:
+                    checks.append(check)
+                    if not cancel.is_set():   # a stopped verify is never the commit's result
+                        self._note_verify(job, check, run)
+        elif outcome != "completed":
+            reconciled = codex_work.reconcile(self.config, job)
+            artifacts["paths"] = list(reconciled.get("paths") or [])
+            artifacts["diff_sha256"] = reconciled.get("diff_sha256")
+            self._update(job, reconcile={"run": run, "outcome": outcome, "summary": codex_work.retry_summary(reconciled),
+                                         "paths": artifacts["paths"][:50], "diff_sha256": reconciled.get("diff_sha256"),
+                                         "at": codex_work.utc_now()})
+        if outcome == "completed" and error is None:
+            self._update(job, reconcile=None)
+        what = (error or (f"committed {commit_['sha'][:12]}" if commit_ else "nothing to commit") if outcome == "completed"
+                else f"run {outcome}: reconciled, nothing committed, never replayed")
+        attempt = sum(1 for entry in job.get("runs") or [] if entry.get("agent") == agent_name)
+        record = codex_work.run_record(
+            job=job, run=run, agent=agent_name, attempt=max(1, attempt), grid=grid, version=None,
+            thread_id=details.get("thread_id") or result.session_ref, model=str(model.model), provider=model.provider,
+            home=details.get("home") if isinstance(details.get("home"), dict) else {}, started=started,
+            ended=codex_work.utc_now(), outcome=outcome, error=result.error, artifacts=artifacts, checks=checks,
+            commit_=commit_, reconciled=reconciled, result=what, exit_code=details.get("exit"))
+        self._write_receipt(job, run, record, outcome)
+        return error
+
+    def _write_receipt(self, job: dict, run: str, record: dict, outcome: str) -> None:
+        try:
+            rel, digest = codex_work.Receipts(self.config.data_dir).write(job["repo"], job["id"], run, record)
+        except (codex_work.WorkError, OSError) as exc:
+            self._log(job, "error", f"could not write the receipt of {run}: {exc}")
+            rel, digest = None, None
+        with self._job_lock(_key(job)):
+            for entry in reversed(job.get("runs") or []):
+                if entry.get("run") == run:
+                    entry.update(receipt=rel, sha256=digest, outcome=outcome)
+                    break
+            else:
+                job.setdefault("runs", []).append({"run": run, "agent": record["request"]["agent"], "ok": False,
+                                                   "outcome": outcome, "receipt": rel, "sha256": digest})
+            job["codex_run"] = None
+            self._save(job)
+
+    def _note_verify(self, job: dict, check: dict, run: str | None) -> None:
+        """Keep the last verify result on the job (the build check reads it for the commit it ran on) and put it
+        beside the criteria as check evidence (code-written, with its check set explicitly)."""
+        self._update(job, verify={key: check.get(key) for key in ("commit", "check", "exit", "seconds",
+                                                                    "output_sha256", "tail", "reason", "not_run")}
+                     | {"run": run})
+        sha = str(check.get("commit") or "")[:12] or "the worktree"
+        if check.get("not_run"):   # about the worktree, not the commit: a later run on the commit is evidence too
+            ref, detail = f"verify@{sha} (not run)", f"verify did not run: {check.get('reason')}"
+        else:
+            ref = f"verify@{sha}"
+            detail = (f"the harness ran `{check.get('argv', ['', '', ''])[-1]}` under bwrap: exit {check.get('exit')} "
+                      f"in {check.get('seconds')}s, output sha256 {str(check.get('output_sha256') or '')[:16]}")
+        self._criteria_evidence(job, {"kind": "check", "ref": ref, "check": check.get("check") or "failed",
+                                      "detail": detail})
+
+    def _verify_problem(self, job: dict, repo: RepoConfig) -> tuple[str, str] | None:
+        """The build check's verify rule: (problem, the corrective prompt) when the repository's verify command fails
+        on the branch's head, None when it passes or there is none. A result for the head commit is reused (the
+        harness ran it right after its own commit) unless ignored files the job's Codex runs left were in the way
+        then or are now; otherwise it runs now, under bwrap, until the job's Stop."""
+        if not repo.verify:
+            return None
+        head = gitops.rev_parse(repo.path, job["branch"])
+        left = self._ignored_left(job)
+        found = job.get("verify") if isinstance(job.get("verify"), dict) else None
+        if not found or found.get("commit") != head or found.get("not_run") or left != []:
+            check = codex_work.verify(self.config, job, f"{int(job.get('round') or 1):02d}-verify", head,
+                                      ignored_left=left, cancel=self._cancel_event(_key(job)))
+            self._check_cancel(job)   # a stopped verify is never kept as the head's result
+            self._note_verify(job, check, None)
+            found = job.get("verify")
+        if found.get("check") == "ok":
+            return None
+        tail = str(found.get("tail") or found.get("reason") or "")[-2000:]
+        return (f"verify failed on {head[:12]} (exit {found.get('exit')})" + (f": {found['reason']}" if found.get("reason")
+                                                                             else ""),
+                VERIFY_FIX.format(code=found.get("exit"), tail=tail))
+
+    def _codex_interrupted(self, job: dict) -> None:
+        """Restart recovery of a Codex run that was in flight (§3.6): unknown, reconciled, recorded in a receipt;
+        its prompt is never sent again. The run's own end never came, so first what the Codex user wrote in the
+        worktree is made the group's (share-worktree), so that the count of its ignored files and the reconcile see
+        every file: a folder Codex made 0700 is closed to the harness until then, and git lists past it without
+        failing. The share only adds group bits to the Codex user's entries, and its ctime change falls on entries
+        only the interrupted run can have made, so the count by time that follows (its snapshot went with the old
+        process; an intent without its start counts every one) counts no fewer. Then the job folder's share is taken
+        back (§3.11) and the worktree reconciled."""
+        intent = job.get("codex_run") or {}
+        run = str(intent.get("run") or "")
+        since = intent.get("since")
+        shared = codex_work.share_worktree(self.config, job)
+        if shared.get("error"):   # the count below then fails closed where git cannot open a folder
+            self._log(job, "warn", f"what Codex wrote could not be shared before its ignored files were counted and "
+                                   f"the reconcile: {shared['error']}")
+        left = self._ignored_left(job, None, float(since) if isinstance(since, (int, float)) else 0.0)
+        codex_work.unshare_job(self.config, job)
+        reconciled = codex_work.reconcile(self.config, job)
+        self._update(job, reconcile={"run": run, "outcome": "unknown", "summary": codex_work.retry_summary(reconciled),
+                                     "paths": list(reconciled.get("paths") or [])[:50],
+                                     "diff_sha256": reconciled.get("diff_sha256"), "at": codex_work.utc_now()})
+        if not codex_work.RUN_NAME_RE.fullmatch(run):
+            self._update(job, codex_run=None)
+            return
+        route = (job.get("routing") or {}).get(intent.get("agent") or "builder") or {}
+        record = codex_work.run_record(
+            job=job, run=run, agent=str(intent.get("agent") or "builder"), attempt=1, grid=None, version=None,
+            thread_id=None, model=str(route.get("model_id") or ""), provider=None, home={},
+            started=str(intent.get("started") or ""), ended=codex_work.utc_now(), outcome="unknown", error=INTERRUPTED,
+            artifacts={"paths": list(reconciled.get("paths") or []), "diff_sha256": reconciled.get("diff_sha256"),
+                       **({"ignored_left": left[:50]} if left else {})},
+            checks=[], commit_=None, reconciled=reconciled, result="the harness restarted mid-run: unknown, never replayed")
+        self._write_receipt(job, run, record, "unknown")
+
+    def _codex_share_worktree(self, job: dict) -> None:
+        """Before the harness removes a Codex job's worktree: what the Codex user wrote there is made the group's
+        once more (share-worktree, §3.11), so a file it left 0600 or a folder it left 0700 never stops the removal;
+        nothing without a Codex user or for a job Codex never ran in."""
+        if self._codex_ran(job):
+            codex_work.share_worktree(self.config, job)
+
+    def _codex_ran(self, job: dict) -> bool:
+        """Whether a Codex run ever started for the job: one whose intent is still on record (codex_run: it never
+        reached its end), a run on a codex-worker driver or with Codex's labels (the driver may have left the
+        configuration since), or one with a receipt (the entry a restart's recovery writes for a run that was in
+        flight names no driver)."""
+        return isinstance(job.get("codex_run"), dict) or any(
+            codex_work.is_worker(self.config, entry.get("driver")) or "codex" in entry or "receipt" in entry
+            for entry in job.get("runs") or [])
+
+    def _codex_job_ended(self, job: dict) -> None:
+        """At job end: the job folder's share is taken back whatever its runs say (a no-op without codex.group), the
+        job's CODEX_HOME is deleted (its rollouts' hash is in each run's receipt) and its run folders with it; old
+        receipts are pruned within the caps the browser's sessions keep (O6). The Codex threads lived in that home,
+        so none of them is resumed again: a delivered job that comes back (a conflicting merge, then rework) starts
+        its builder in a new session with the full system text."""
+        codex_work.unshare_job(self.config, job)
+        if not self._codex_ran(job):
+            return
+        codex_work.remove_home(self.config, job)
+        with self._job_lock(_key(job)):
+            for record in (job.get("agents") or {}).values():
+                if isinstance(record, dict) and record.get("session") and codex_work.is_worker(self.config,
+                                                                                               record.get("driver")):
+                    record["session"] = None
+            self._save(job)
+        runs = codex_work.work_root(self.config) / "runs" / codex_work.job_key(job)
+        if runs.is_dir() and not runs.is_symlink():
+            shutil.rmtree(runs, ignore_errors=True)
+        from .browser.runs import settings as browser_settings
+
+        caps = browser_settings(self.config)["caps"]
+        codex_work.Receipts(self.config.data_dir).prune(
+            int(float(caps["max_gb"]) * (1 << 30)), float(caps["max_days"]),
+            keep=lambda repo, job_id: self._job_alive(repo, job_id))
+
+    def codex_state(self) -> dict:
+        """GET /api/codex: the worker's settings (no secret), what is checked and the owner's setup blocks."""
+        from .codex import setup as codex_setup
+
+        merged = codex_work.settings(self.config)
+        return {"enabled": merged["enabled"], "pin": merged["pin"], "user": merged["user"], "via": merged["via"],
+                "group": merged["group"], "binary": merged["binary"],
+                "launcher": str(codex_work.launcher_path(self.config)),
+                "work_root": str(codex_work.work_root(self.config)),
+                "checks": codex_work.check_record(self.config), "setup": codex_setup.blocks(self.config),
+                "risk": codex_setup.RESIDUAL_RISK}
+
     def new_chat(self, repo: str | None, model: str | None = None, mode: str = "worktree", agent: str = "coder",
                  profile: str | None = None, persona: str | None = None) -> dict:
         """Create a chat on repo (mode worktree or repo) with agent (any agent with tools; default coder), or
@@ -2226,12 +2729,158 @@ class Factory:
     def snapraid_run(self, number: int) -> dict:
         return self._snapraid_manager().daemon.run(number)
 
+    # the owner's checklist for a whole failed disk (BACKUPS_SNAPRAID.md §9.4): read-only checks; he runs the blocks
+
+    def snapraid_rebuild(self) -> dict:
+        return self._snapraid_manager().rebuild.page()
+
+    def snapraid_rebuild_start(self, disk: str) -> dict:
+        return self._snapraid_manager().rebuild.start(disk)
+
+    def snapraid_rebuild_step(self, step: str, confirm: list | None = None) -> dict:
+        return self._snapraid_manager().rebuild.step(step, confirm)
+
+    def snapraid_rebuild_prepare(self, by_id: str, typed: str) -> dict:
+        return self._snapraid_manager().rebuild.prepare(by_id, typed)
+
+    def snapraid_rebuild_close(self) -> dict:
+        return self._snapraid_manager().rebuild.close()
+
     def snapraid_report(self, subject: Any, detail: Any) -> None:
         """A parity.report event from the daemon's forwarder (notify.PANEL_HOOK_KINDS): read the daemon now, in the
         background (the hook answers at once)."""
         panel = self._snapraid_manager()
         threading.Thread(target=panel.daemon.report_event, args=(subject, detail), name="snapraid-report",
                          daemon=True).start()
+
+    # -- Your server (section 42; docs/seraphina/YOUR_SERVER.md, phase P1a: it only looks) --------------------------
+
+    def yourserver_view(self) -> dict:
+        """GET /api/yourserver: the host strip, the helper's state, the apps' summary, Beszel, Needs you."""
+        return self._yourserver_manager().view()
+
+    def yourserver_apps(self) -> dict:
+        return self._yourserver_manager().apps_view()
+
+    def yourserver_app(self, app: str) -> dict:
+        return self._yourserver_manager().app_view(app)
+
+    def yourserver_app_update(self, app: str, body: dict) -> dict:
+        return self._yourserver_manager().app_update(app, body)
+
+    def yourserver_address(self, app: str, body: dict) -> dict:
+        return self._yourserver_manager().address(app, body)
+
+    def yourserver_qr(self, app: str) -> dict:
+        return self._yourserver_manager().qr(app)
+
+    def yourserver_ask(self, app: str, question: Any) -> dict:
+        return self._yourserver_manager().ask(app, question)
+
+    def yourserver_review(self) -> dict:
+        return self._yourserver_manager().review_view()
+
+    def yourserver_review_confirm(self, rows: Any, tailnet: Any = None) -> dict:
+        return self._yourserver_manager().review_confirm(rows, tailnet)
+
+    def yourserver_groups(self, body: dict) -> dict:
+        return self._yourserver_manager().groups(body)
+
+    def yourserver_beszel(self, body: dict) -> dict:
+        """POST /api/yourserver/beszel: the read-only Beszel login's password (kept in the env file) or its check."""
+        return self._yourserver_manager().beszel_login(body)
+
+    def yourserver_refresh(self) -> dict:
+        """POST /api/yourserver/refresh: read the server again now (every read only looks)."""
+        area = self._yourserver_manager()
+        area.numbers(force=True)
+        area.host(force=True)
+        if area.settings().get("enabled") and area.helper_present():
+            area.refresh_map()
+        return area.view()
+
+    def yourserver_setup(self) -> dict:
+        return self._yourserver_manager().setup()
+
+    def yourserver_setup_action(self, action: str, body: dict | None = None) -> dict:
+        """stage (the files the one paste installs, with the classes ticked) or check (the helper's info)."""
+        area = self._yourserver_manager()
+        body = body or {}
+        if action == "stage":
+            if set(body) - {"classes"}:
+                raise ValueError("stage takes classes")
+            return area.stage(classes=body.get("classes"))
+        if action == "check":
+            return area.check()
+        raise ValueError("action must be stage or check")
+
+    def yourserver_checks(self) -> dict:
+        """GET /api/yourserver/checks: the Check buttons' last results (memory only)."""
+        return self._yourserver_manager().checks_view()
+
+    def yourserver_check(self, check: str, body: dict) -> dict:
+        """POST /api/yourserver/checks/<check>: one Check now; it only looks (refresh: the list of updates)."""
+        return self._yourserver_manager().run_check(check, body)
+
+    def yourserver_logs(self, app: str, member: str | None, lines: str | None, before: str | None) -> dict:
+        """GET /api/yourserver/apps/<id>/logs: one redacted page, kept nowhere, or why it waits."""
+        return self._yourserver_manager().logs(app, member, lines, before)
+
+    def yourserver_keep(self) -> dict:
+        """POST /api/yourserver/keep: the keep pass now (it only adds names)."""
+        return self._yourserver_manager().keep_now()
+
+    def yourserver_jobs(self) -> dict:
+        return self._yourserver_manager().jobs_view()
+
+    def yourserver_job(self, job: str) -> dict:
+        return self._yourserver_manager().job_view(job)
+
+    def yourserver_receipts(self, cursor: str | None = None) -> dict:
+        return self._yourserver_manager().receipts_view(cursor)
+
+    def yourserver_receipt(self, receipt: str) -> dict:
+        return self._yourserver_manager().receipt_view(receipt)
+
+    def yourserver_root(self) -> dict:
+        """GET /api/yourserver/root: who can act as root (view only), or why the page waits."""
+        return self._yourserver_manager().root_view()
+
+    def yourserver_root_check(self) -> dict:
+        return self._yourserver_manager().root_check()
+
+    def yourserver_root_mark(self, row: str, body: dict) -> dict:
+        return self._yourserver_manager().root_mark(row, body)
+
+    def _yourserver_manager(self) -> Any:
+        from .yourserver import YourServer
+
+        system = self._system_manager()
+        notifier = self._notify_manager()
+        with self._lock:
+            if self._yourserver is None:
+                self._yourserver = YourServer(self.config, system, notifier, self.bus, protection=self._protection,
+                                              operator_receipts=self._yourserver_operator_receipts)
+                self._yourserver.update_config = self.update_config
+                self._yourserver.set_secret = self.set_secret
+            return self._yourserver
+
+    def _yourserver_operator_receipts(self) -> list[dict]:
+        """The operator's reported receipts for Your server's receipts page (none when no operator is set up)."""
+        try:
+            return self.operator_receipts(limit=50).get("receipts") or []
+        except Exception:  # noqa: BLE001 - no operator, or her folder unreadable: the helper's receipts alone
+            return []
+
+    def _protection(self) -> dict | None:
+        """The disk protection panel's protected folders and its line, for Your server's backup lines (§2.9)."""
+        panel = self._snapraid_manager()
+        if not panel.settings().get("enabled"):
+            return None
+        view = panel.view()
+        dirs = [row.get("mount") for row in view.get("disks") or [] if row.get("role") == "data" and row.get("mount")]
+        reason = str((view.get("light") or {}).get("reason") or "")
+        return {"dirs": dirs, "words": reason[:1].lower() + reason[1:]} if dirs else None
 
     # -- the factory's own system items (§33 drift, §15 a deleted chat without a repository) ------------
 
@@ -2269,7 +2918,7 @@ class Factory:
                 "several": list(op.section(raw).get("several") or []), "problem": op.rule_problem(raw),
                 "receipts_dir": reader.settings()["receipts_dir"], "label": op.REPORTED,
                 "scan": {key: summary[key] for key in ("scanned_at", "read", "cannot_read", "refused", "past_limit",
-                                                       "writable", "gone", "problem")}}
+                                                       "unreadable", "writable", "gone", "problem")}}
 
     def operator_scan(self, force: bool = True) -> dict:
         """Read the operator's receipts directory now (only what changed is read again) and bring the tracker items
@@ -2279,10 +2928,13 @@ class Factory:
 
     def operator_receipts(self, limit: int = 200, since: str | None = None, until: str | None = None,
                           rescan: bool = False) -> dict:
-        """{receipts, refused, scan}: the receipts the harness read, newest first (a scan first, at most every
-        operator.scan_seconds unless rescan), each labelled "reported by the operator". A scan that fails (the
-        tracker was busy) still serves what the index holds, with scan.problem saying why."""
+        """{receipts, refused, unreadable, scan}: the receipts the harness read, newest first (a scan first, at most
+        every operator.scan_seconds unless rescan), each labelled "reported by the operator" and carrying its actor
+        as written (null: not stated), whoever that is: every actor's receipt is listed. unreadable: what the
+        harness's user may not read there, by name, left as it is. A scan that fails (the tracker was busy) still
+        serves what the index holds, with scan.problem saying why."""
         from .activity import parse_when
+        from .receipts import unreadable
 
         reader = self._receipt_reader()
         try:
@@ -2290,8 +2942,9 @@ class Factory:
         except Exception as exc:  # noqa: BLE001 - what was read before is still served
             scan = {**reader.summary(), "skipped": False, "problem": f"the scan failed ({type(exc).__name__}): "
                                                                       "what was read before is shown"}
+        index = reader.index()
         return {"receipts": reader.rows(limit=limit, since=parse_when(since), until=parse_when(until)),
-                "refused": reader.index().get("refused") or [], "scan": scan}
+                "refused": index.get("refused") or [], "unreadable": unreadable(index), "scan": scan}
 
     def operator_receipt(self, receipt_id: str) -> dict:
         """{receipt, duplicates}: one receipt by its id, with before and after (KeyError when unknown)."""
@@ -2486,6 +3139,8 @@ class Factory:
                 problem, fix = "builder left uncommitted changes", COMMIT_FIX
             elif gitops.commits_ahead(repo.path, job["base"], job["branch"]) == 0:
                 problem, fix = "builder made no commits", None
+            elif (failed_verify := self._verify_problem(job, repo)) is not None:
+                problem, fix, kind = failed_verify[0], failed_verify[1], "verify"
             else:
                 untouched = self._untouched_blocking(job, n)
                 if not untouched:
@@ -2752,6 +3407,7 @@ class Factory:
             except (GitError, OSError, ValueError) as exc:
                 raise StepError(f"folder delivery failed: {exc}") from None
         self._check_cancel(job)
+        self._codex_share_worktree(job)
         try:
             gitops.remove_worktree(repo.path, Path(job["worktree"]))
         except GitError as exc:
@@ -2822,6 +3478,7 @@ class Factory:
 
     def _remove_checkout(self, job: dict, repo: RepoConfig) -> None:
         """Remove the job's worktree and branch; failures are logged, not raised."""
+        self._codex_share_worktree(job)
         try:
             gitops.remove_worktree(repo.path, Path(job["worktree"]))
             gitops.delete_branch(repo.path, job["branch"], force=True)
@@ -3006,15 +3663,54 @@ class Factory:
                                    {**placement.info, **independence})
         if reason_:
             labels["reason"] = reason_
-        if resume and session is None and agent_name == "builder" and self._model_changed(job, agent_name, run_route,
-                                                                                           model):
-            prompt = self._handover_prompt(job, prompt)
+        worker = codex_work.is_worker(self.config, run_route.get("driver"))
+        unfinished = self._unfinished_codex_run(job, agent_name)
+        why = self._unfinished_note(job, unfinished) if unfinished is not None else None
+        if why is None and worker and resume and session is None and self._codex_session_gone(job, agent_name):
+            why = ("The earlier Codex session is gone with the job's Codex home, which is deleted when the job ends "
+                   "(here: when it was delivered).")
+        if resume and session is None and agent_name == "builder" and (
+                why is not None or self._model_changed(job, agent_name, run_route, model)):
+            prompt = self._handover_prompt(job, prompt, why)
             labels["handover"] = True
+        elif unfinished is not None:   # a fresh run after an unclean end (§3.6): told what that run left
+            prompt += "\n\n" + str(why)
+        ignored_before: dict[str, tuple[int, int, int]] | None = None
+        since = 0.0
+        if worker:   # BC1b (DESIGN §44): the routing check, the codex model blocker, the run's lease and the host's
+            # containment (the launcher; the uid egress rule, gone after a reboot unless its unit loads it), then its
+            # intent
+            problem = (codex_work.routing_problem(self.config, job["repo"], job.get("routing") or {})
+                       or codex_work.model_blocker(self.config, model.provider, model.model)
+                       or custody_lease_problem(model.provider, model.model)
+                       or codex_work.containment_blocker(self.config, model.provider))
+            if problem:
+                raise StepError(f"{agent_name} cannot start on codex-worker: {problem}")
+            from .codex import APPROVAL_POLICY, CODEX_PIN, PROFILE, SURFACE
+
+            labels["codex"] = {"version": codex_work.settings(self.config)["pin"] or CODEX_PIN, "surface": SURFACE,
+                               "permissions_profile": PROFILE, "approval_policy": APPROVAL_POLICY}
+            ctx.codex_job = True   # the driver runs Codex only for a run cleared here (K20)
+            if codex_work.open_worktree(self.config, job):   # its setfacl changes ctimes: before the run's start,
+                time.sleep(IGNORED_SLACK)                    # and past the slack, so none is counted as the run's
+            since = time.time()   # before the snapshot: what changes after it is this run's (_ignored_left)
+            ignored_before = self._ignored_files(worktree)
+            self._update(job, codex_run={"run": log_path.stem, "agent": agent_name, "round": round,
+                                         "started": codex_work.utc_now(), "since": since})
+        elif self._ran_codex(job):   # a job that ran Codex: no later run reads its work off this machine (§3.3)
+            hosted = self._codex_hosted_problem(job["repo"], {agent_name: run_route})
+            if hosted:
+                raise StepError(f"{agent_name} cannot start: {hosted}")
+        started_at = codex_work.utc_now()
         before = _scan(job_dir, keep=True) if guard else None
         result = self._invoke(run_route, ctx, prompt, session, emit, labels)
+        codex_error = None
         try:
             violation = self._record_run(job, agent_name, result, model, run_route, log_path, labels, grid, session,
                                          before, write_paths)
+            if worker:
+                codex_error = self._codex_after(job, agent_name, round, result, model, run_route, log_path, grid,
+                                                violation, started_at, ignored_before, since)
         except BaseException:
             if ingest:   # whatever ended the run, its Items calls are taken in (section 32)
                 with contextlib.suppress(Exception):
@@ -3028,7 +3724,11 @@ class Factory:
         if violation:
             raise StepError(violation)
         if not result.ok:
-            raise StepError(f"{agent_name} failed: {result.error or 'the run did not finish'}")
+            ended = outcome_of(result)
+            how = f" (outcome {ended})" if worker and ended != "failed" else ""
+            raise StepError(f"{agent_name} failed{how}: {result.error or 'the run did not finish'}")
+        if codex_error:
+            raise StepError(codex_error)
         return result
 
     def _record_run(self, job: dict, agent_name: str, result: AgentRun, model: ModelConfig, run_route: dict,
@@ -3059,7 +3759,8 @@ class Factory:
                 "run": log_path.stem, "agent": agent_name, "round": labels.get("round"), "driver": run_route["driver"],
                 "model": run_route["model"], "provider": model.provider.name, "model_id": model.model,
                 **{key: value for key, value in labels.items() if key not in ("round",)},
-                "ok": result.ok, "usage": {key: int((result.usage or {}).get(key) or 0) for key in USAGE_KEYS},
+                "ok": result.ok, "outcome": outcome_of(result),
+                "usage": {key: int((result.usage or {}).get(key) or 0) for key in USAGE_KEYS},
                 "cost_usd": cost, "priced": priced})
             self._save(job)
         return self._run_policy(job, agent_name, before, write_paths) if before is not None else None
@@ -3077,9 +3778,10 @@ class Factory:
         On a server under GPU custody the build's request lease is taken here (purpose: what the run is,
         for the register): a build the register gives none for is passed over (section 37), and a judge's
         alternate it gives none for counts as not answering (the judge then stays on its own model, reduced).
-        A HELD answer waits first, for at most the provider's overflow_after_seconds, until cancel (default: the
-        job's cancel event) is set; on_wait(provider, seconds, the refusal) is told once when it starts. FULL
-        passes the build over at once. A CLI route whose provider needs a lease takes it too, and fails the step
+        A HELD answer sends the run at once to another build that can take it (another card); only when none can
+        does it wait, for at most the provider's overflow_after_seconds, until cancel (default: the job's cancel
+        event) is set; on_wait(provider, seconds, the refusal) is told once when it starts. FULL passes the build
+        over at once. A CLI route whose provider needs a lease takes it too, and fails the step
         without one (it has no overflow)."""
         if cancel is None and job is not None:
             cancel = self._cancel_event(_key(job))
@@ -3478,17 +4180,22 @@ class Factory:
             return True
         return bool(last and last.get("model_id") and last["model_id"] != model.model)
 
-    def _handover_prompt(self, job: dict, prompt: str) -> str:
-        """The builder's first prompt on a new model mid-job: the paths line, what the earlier model built
-        and why it was sent back (the spec, build.md, the last round's CHANGES reviews and any rework
-        note, the diff so far), then the request it would have resumed with."""
+    def _handover_prompt(self, job: dict, prompt: str, why: str | None = None) -> str:
+        """The builder's first prompt in a new session mid-job: on a new model, or (why: the reason, said first) when
+        the Codex session cannot go on (its last run did not complete, §3.6; its home was deleted at job end): the
+        paths line, what the earlier runs built and why it was sent back (the spec, build.md, the last round's
+        CHANGES reviews and any rework note, the diff so far), then the request it would have resumed with."""
         paths, _, request = prompt.partition("\n")
         job_dir = Path(job["job_dir"])
         last = _last_run(job, "builder") or {}
         before = f"{last.get('provider')}/{last.get('model_id')}" if last.get("model_id") else "another model"
-        parts = [f"Hand-over: you take over this job's build from {before}. Its session cannot continue on "
-                 f"another model, so you start fresh: everything it did is on the branch {job['branch']}.",
-                 f"The spec is {job_dir / 'spec.md'}; read it first."]
+        if why:
+            opening = (f"Hand-over: you take over this job's build in a new session. {why} Everything committed is "
+                       f"on the branch {job['branch']}.")
+        else:
+            opening = (f"Hand-over: you take over this job's build from {before}. Its session cannot continue on "
+                       f"another model, so you start fresh: everything it did is on the branch {job['branch']}.")
+        parts = [opening, f"The spec is {job_dir / 'spec.md'}; read it first."]
         quoted = [("The previous builder's notes", job_dir / "build.md")]
         n = _last_review_round(job)
         rounds = [entry for entry in job.get("history") or [] if entry.get("round") == n]
@@ -3614,7 +4321,8 @@ class Factory:
                 result = AgentRun(ok=False, error=f"{type(exc).__name__}: {exc}")
         cost, priced = run_cost(result.usage, price_table(ctx.model))
         emit("agent.end", {"ok": result.ok, "error": result.error, "usage": result.usage, "turns": result.turns,
-                           "seconds": max(0.0, self.clock() - started), "cost_usd": cost, "priced": priced})
+                           "seconds": max(0.0, self.clock() - started), "cost_usd": cost, "priced": priced,
+                           "outcome": outcome_of(result)})
         return result
 
     def _context(self, agent: AgentDef, model: ModelConfig, *, cwd: Path, job_dir: Path, repo_path: Path,
@@ -3650,6 +4358,8 @@ class Factory:
         record = (job.get("agents") or {}).get(agent_name) or {}
         ref = record.get("session")
         if not ref or record.get("driver") != route["driver"] or record.get("model") != route["model"]:
+            return None
+        if self._unfinished_codex_run(job, agent_name) is not None:   # never the old prompt in the old thread
             return None
         last = _last_run(job, agent_name)
         if model is not None and last and last.get("model_id") and last["model_id"] != model.model:
@@ -4254,6 +4964,10 @@ class Factory:
             self._settle_followups(job)
         except Exception as exc:  # noqa: BLE001
             self._log(job, "error", f"could not update the follow-up of this job: {type(exc).__name__}: {exc}")
+        try:
+            self._codex_job_ended(job)
+        except Exception as exc:  # noqa: BLE001
+            self._log(job, "error", f"could not remove the job's Codex home: {type(exc).__name__}: {exc}")
 
     def _carry_forward(self, job: dict) -> None:
         """Copy every item still open to the repo's follow-ups (or, for a plan's job, the plan); the job's
@@ -4780,6 +5494,32 @@ def _confirmed(job: dict) -> list[str]:
 def _is_temp_name(name: str) -> bool:
     """A temporary file of an atomic write (JobStore ".sf-*.tmp", session saves ".<name>.*.tmp")."""
     return name.startswith(".") and name.endswith(".tmp")
+
+
+def _remove_below(root: Path, rel: str) -> bool:
+    """Remove the file rel (a relative POSIX path) below root, never following a symlink on the way (a symlink as the
+    last part is removed itself); whether it is gone."""
+    parts = PurePosixPath(rel).parts
+    if not parts or PurePosixPath(rel).is_absolute() or any(part in (".", "..") for part in parts):
+        return False
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    try:
+        folder = os.open(root, flags)
+    except OSError:
+        return False
+    try:
+        for part in parts[:-1]:
+            inner = os.open(part, flags, dir_fd=folder)
+            os.close(folder)
+            folder = inner
+        os.unlink(parts[-1], dir_fd=folder)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    finally:
+        os.close(folder)
+    return True
 
 
 def _scan(root: Path, keep: bool = False) -> dict[str, _FileState]:
